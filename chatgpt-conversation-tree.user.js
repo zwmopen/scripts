@@ -1,0 +1,3326 @@
+// ==UserScript==
+// @name         ChatGPT 最近对话分组（飞书式目录）
+// @namespace    https://chatgpt.com/
+// @version      1.4.9
+// @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT“最近”列表，并保留原对话菜单。
+// @author       Codex
+// @match        https://chatgpt.com/*
+// @match        https://chat.openai.com/*
+// @run-at       document-idle
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_listValues
+// @grant        unsafeWindow
+// ==/UserScript==
+
+(() => {
+  'use strict';
+
+  const APP_ID = 'cgpt-conversation-tree';
+  const HEADER_ID = `${APP_ID}-header-actions`;
+  const MENU_ID = `${APP_ID}-menu`;
+  const STYLE_ID = `${APP_ID}-style`;
+  const PARKING_ID = `${APP_ID}-parking`;
+  const RENAME_ID = `${APP_ID}-batch-rename`;
+  const RENAME_STAGE_ID = `${APP_ID}-rename-stage`;
+  const IMPORT_INPUT_ID = `${APP_ID}-import-input`;
+  const PAGE_OPEN_EVENT = `${APP_ID}:page-open-chat`;
+  // v1 曾被多个同名/改名后的脚本版本同时读写。1.0 起改用独立存储区，
+  // 旧脚本即使仍在运行，也不能再覆盖新版数据。
+  const STORAGE_KEY = `${APP_ID}:state:v3`;
+  const LEGACY_STORAGE_KEY = `${APP_ID}:state:v1`;
+  const BACKUP_PREFIX = `${APP_ID}:backup:`;
+  const MAX_BACKUPS = 20;
+  const GM_STATE_KEY = 'state-v3';
+  const GM_BACKUP_PREFIX = 'backup:';
+  const UNGROUPED_COLLAPSED_KEY = 'ungrouped-collapsed';
+  const DRAG_MIME = `application/x-${APP_ID}`;
+
+  const icons = {
+    chevron: (open) => open
+      ? '<svg viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></svg>'
+      : '<svg viewBox="0 0 16 16"><path d="m6 4 4 4-4 4"/></svg>',
+    folder: '<svg viewBox="0 0 18 18"><path d="M2.5 5.2h5l1.5 1.6h6.5v7.4H2.5z"/><path d="M2.5 5.2V3.8h4.2l1.4 1.4"/></svg>',
+    plus: '<svg viewBox="0 0 18 18"><path d="M9 3v12M3 9h12"/></svg>',
+    fold: '<svg viewBox="0 0 18 18"><path d="m4 7 5-4 5 4M4 11l5 4 5-4"/></svg>',
+    dots: '<svg viewBox="0 0 18 18"><circle cx="4" cy="9" r="1"/><circle cx="9" cy="9" r="1"/><circle cx="14" cy="9" r="1"/></svg>',
+    chat: '<svg viewBox="0 0 18 18"><path d="M3 3.5h12v8.8H8l-3.6 2.2.8-2.2H3z"/></svg>',
+    move: '<svg viewBox="0 0 18 18"><path d="M3 5.2h5l1.4 1.5H15v7.1H3z"/><path d="m8 10 2-2 2 2M10 8v4"/></svg>',
+    out: '<svg viewBox="0 0 18 18"><path d="M3 4.5h7v9H3z"/><path d="M8 9h7m-2-2 2 2-2 2"/></svg>',
+    batch: '<svg viewBox="0 0 18 18"><path d="M7 4h8M7 9h8M7 14h8"/><path d="m2.5 4 1 1 2-2M2.5 9l1 1 2-2M2.5 14l1 1 2-2"/></svg>',
+    pencil: '<svg viewBox="0 0 18 18"><path d="m4 13 1-4 7-7 3 3-7 7z"/><path d="m10.5 3.5 3 3M4 13l3.7-.8"/></svg>',
+  };
+
+  const defaultState = () => ({
+    version: 3,
+    tree: [],
+    known: {},
+    updatedAt: 0,
+  });
+
+  // 必须在 loadState() 前初始化；1.1.0 的顺序错误会让刷新时读取失败并回落为空数据。
+  let lastSavedTree = '';
+  let lastLegacySnapshot = '';
+  let state = loadState();
+  let historyRoot = null;
+  let nativeList = null;
+  let recentHeader = null;
+  let host = null;
+  let parkingLot = null;
+  let headerActions = null;
+  let nativeRows = new Map();
+  let activeDrag = null;
+  let lastActiveChatId = '';
+  let scanTimer = 0;
+  let saveTimer = 0;
+  let renderTimer = 0;
+  let rendering = false;
+  let ignoreMutationsUntil = 0;
+  let eventsBound = false;
+  let pendingNativeMenuChatId = '';
+  let pendingNativeMenuAnchor = null;
+  let pendingNativeMenuUntil = 0;
+  let nativeMenuAugmented = false;
+  let sortPendingOnLoad = true;
+  let batchSelectedChatIds = [];
+  let renameRun = null;
+  let pendingImportMode = 'merge';
+  let pendingRecentMenuUntil = 0;
+  let recentMenuAugmented = false;
+  let ungroupedCollapsed = (() => {
+    try {
+      return Boolean(GM_getValue(UNGROUPED_COLLAPSED_KEY, false));
+    } catch {
+      return false;
+    }
+  })();
+
+  function loadState() {
+    const modernSources = [];
+    try {
+      modernSources.push(GM_getValue(GM_STATE_KEY, null));
+    } catch {
+      // 兼容不支持 GM 存储的脚本管理器。
+    }
+    try {
+      modernSources.push(JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'));
+    } catch {
+      modernSources.push(null);
+    }
+
+    const validModern = modernSources.filter((candidate) => (
+      candidate && Array.isArray(candidate.tree)
+    ));
+    const nonEmptyModern = validModern.filter((candidate) => {
+      const counts = countStateItems(candidate);
+      return counts.folders > 0 || counts.chats > 0;
+    });
+
+    let legacy = null;
+    try {
+      legacy = JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) || 'null');
+    } catch {
+      legacy = null;
+    }
+
+    let candidates = nonEmptyModern.length ? nonEmptyModern : validModern;
+    if (!nonEmptyModern.length && legacy && Array.isArray(legacy.tree)) {
+      candidates = [...candidates, legacy];
+    }
+
+    if (!candidates.some((candidate) => {
+      const counts = countStateItems(candidate);
+      return counts.folders > 0 || counts.chats > 0;
+    })) {
+      const backupCandidates = [];
+      localStorageKeys()
+        .filter((key) => key.startsWith(BACKUP_PREFIX))
+        .forEach((key) => {
+          try {
+            const item = JSON.parse(localStorage.getItem(key) || 'null');
+            if (item?.state && Array.isArray(item.state.tree)) backupCandidates.push(item.state);
+          } catch {
+            // 忽略损坏快照。
+          }
+        });
+      try {
+        GM_listValues()
+          .filter((key) => key.startsWith(GM_BACKUP_PREFIX))
+          .forEach((key) => {
+            const item = GM_getValue(key, null);
+            if (item?.state && Array.isArray(item.state.tree)) backupCandidates.push(item.state);
+          });
+      } catch {
+        // localStorage 快照仍然可用。
+      }
+      candidates.push(...backupCandidates);
+    }
+
+    const parsed = candidates
+      .filter((candidate) => candidate && Array.isArray(candidate.tree))
+      .sort((a, b) => {
+        const timeDifference = Number(b.updatedAt || 0) - Number(a.updatedAt || 0);
+        if (timeDifference) return timeDifference;
+        const ac = countStateItems(a);
+        const bc = countStateItems(b);
+        return (bc.chats - ac.chats)
+          || (bc.folders - ac.folders)
+          || (Object.keys(b.known || {}).length - Object.keys(a.known || {}).length);
+      })[0];
+    if (!parsed) return defaultState();
+    lastSavedTree = JSON.stringify(parsed.tree);
+    return {
+      ...defaultState(),
+      ...parsed,
+      version: 3,
+      known: parsed.known && typeof parsed.known === 'object' ? parsed.known : {},
+    };
+  }
+
+  function countStateItems(candidate) {
+    let folders = 0;
+    let chats = 0;
+    const walk = (nodes) => (Array.isArray(nodes) ? nodes : []).forEach((node) => {
+      if (node?.type === 'folder') {
+        folders += 1;
+        walk(node.children);
+      } else if (node?.type === 'chat' && node.chatId) {
+        chats += 1;
+      }
+    });
+    walk(candidate?.tree);
+    return { folders, chats };
+  }
+
+  function localStorageKeys() {
+    const keys = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key) keys.push(key);
+    }
+    return keys;
+  }
+
+  function trimBackups() {
+    const keys = localStorageKeys()
+      .filter((key) => key.startsWith(BACKUP_PREFIX))
+      .sort()
+      .reverse();
+    keys.slice(MAX_BACKUPS).forEach((key) => localStorage.removeItem(key));
+    try {
+      const gmKeys = GM_listValues()
+        .filter((key) => key.startsWith(GM_BACKUP_PREFIX))
+        .sort()
+        .reverse();
+      gmKeys.slice(MAX_BACKUPS).forEach((key) => GM_deleteValue(key));
+    } catch {
+      // localStorage 备份仍然可用。
+    }
+  }
+
+  function storeBackup(candidate, reason = '自动备份') {
+    if (!candidate || !Array.isArray(candidate.tree)) return '';
+    const treeText = JSON.stringify(candidate.tree);
+    if (!treeText || treeText === '[]') return '';
+    const stamp = new Date().toISOString();
+    const key = `${BACKUP_PREFIX}${stamp}`;
+    const counts = countStateItems(candidate);
+    localStorage.setItem(key, JSON.stringify({
+      savedAt: stamp,
+      reason,
+      counts,
+      state: candidate,
+    }));
+    try {
+      GM_setValue(`${GM_BACKUP_PREFIX}${stamp}`, {
+        savedAt: stamp,
+        reason,
+        counts,
+        state: candidate,
+      });
+    } catch {
+      // localStorage 备份仍然可用。
+    }
+    trimBackups();
+    return key;
+  }
+
+  function parseStateValue(raw) {
+    try {
+      const parsed = JSON.parse(raw || 'null');
+      return parsed && Array.isArray(parsed.tree) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function captureLegacyCandidate() {
+    const raw = localStorage.getItem(LEGACY_STORAGE_KEY) || '';
+    if (!raw || raw === lastLegacySnapshot) return;
+    lastLegacySnapshot = raw;
+    const legacy = parseStateValue(raw);
+    if (!legacy) return;
+    const legacyTree = JSON.stringify(legacy.tree);
+    const currentTree = JSON.stringify(state.tree);
+    if (legacyTree === currentTree || legacyTree === '[]') return;
+    storeBackup(legacy, '从仍在运行的旧版脚本捕获');
+  }
+
+  function syncLegacyChanges() {
+    const raw = localStorage.getItem(LEGACY_STORAGE_KEY) || '';
+    if (!raw || raw === lastLegacySnapshot) return;
+    const legacy = parseStateValue(raw);
+    lastLegacySnapshot = raw;
+    if (!legacy) return;
+    const legacyCounts = countStateItems(legacy);
+    if (!legacyCounts.folders && !legacyCounts.chats) return;
+    if (JSON.stringify(legacy.tree) === JSON.stringify(state.tree)) return;
+    // 旧脚本可能携带过期状态，只捕获为恢复快照，不再自动覆盖当前树。
+    storeBackup(legacy, '捕获旧版脚本的分组副本');
+  }
+
+  function strongestPersistedState() {
+    const candidates = [];
+    try {
+      candidates.push(GM_getValue(GM_STATE_KEY, null));
+    } catch {
+      // 继续读取网页存储。
+    }
+    for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY]) {
+      try {
+        candidates.push(JSON.parse(localStorage.getItem(key) || 'null'));
+      } catch {
+        // 忽略单个损坏副本。
+      }
+    }
+    return candidates
+      .filter((candidate) => candidate && Array.isArray(candidate.tree))
+      .filter((candidate) => {
+        const counts = countStateItems(candidate);
+        return counts.folders > 0 || counts.chats > 0;
+      })
+      .sort((a, b) => {
+        const timeDifference = Number(b.updatedAt || 0) - Number(a.updatedAt || 0);
+        if (timeDifference) return timeDifference;
+        const ac = countStateItems(a);
+        const bc = countStateItems(b);
+        return (bc.chats - ac.chats) || (bc.folders - ac.folders);
+      })[0] || null;
+  }
+
+  function saveState(immediate = false, allowEmpty = false) {
+    clearTimeout(saveTimer);
+    const save = () => {
+      try {
+        const nextTree = JSON.stringify(state.tree);
+        const nextCounts = countStateItems(state);
+        const persisted = strongestPersistedState();
+        if (
+          persisted
+          && !allowEmpty
+          && nextCounts.folders === 0
+          && nextCounts.chats === 0
+          && JSON.stringify(persisted.tree) !== '[]'
+        ) {
+          console.warn('[ChatGPT 最近对话分组] 已阻止空数据覆盖，并恢复本地有效分组。');
+          state = {
+            ...defaultState(),
+            ...persisted,
+            version: 3,
+            known: persisted.known && typeof persisted.known === 'object'
+              ? persisted.known
+              : {},
+          };
+          lastSavedTree = JSON.stringify(state.tree);
+          queueRender();
+          return;
+        }
+        const previous = parseStateValue(localStorage.getItem(STORAGE_KEY));
+        if (
+          previous
+          && lastSavedTree
+          && lastSavedTree !== nextTree
+          && JSON.stringify(previous.tree) !== nextTree
+        ) {
+          storeBackup(previous, '分组结构修改前');
+        }
+        state.version = 3;
+        state.updatedAt = Date.now();
+        try {
+          GM_setValue(GM_STATE_KEY, state);
+        } catch {
+          // localStorage 主存储仍然可用。
+        }
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        // 给最初的 0.1 版保留 version:1 镜像，避免旧脚本把数据判为空。
+        const legacyMirror = { ...state, version: 1 };
+        const legacyRaw = JSON.stringify(legacyMirror);
+        localStorage.setItem(LEGACY_STORAGE_KEY, legacyRaw);
+        lastLegacySnapshot = legacyRaw;
+        lastSavedTree = nextTree;
+      } catch (error) {
+        console.warn('[ChatGPT 最近对话分组] 保存失败：', error);
+      }
+    };
+    if (immediate) save();
+    else saveTimer = window.setTimeout(save, 100);
+  }
+
+  function uid(prefix) {
+    if (crypto?.randomUUID) return `${prefix}:${crypto.randomUUID()}`;
+    return `${prefix}:${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function compactTitle(value) {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .replace(/^(打开|Open)\s*/i, '')
+      .trim()
+      .slice(0, 180);
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+  }
+
+  function chatInfoFromHref(href) {
+    try {
+      const url = new URL(href, location.href);
+      if (url.origin !== location.origin) return null;
+      const match = url.pathname.match(/\/c\/([^/?#]+)/);
+      if (!match) return null;
+      return {
+        chatId: decodeURIComponent(match[1]),
+        url: url.pathname,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function titleFromAnchor(anchor) {
+    const titleClone = anchor.cloneNode(true);
+    titleClone.querySelectorAll('button, [role="button"]').forEach((element) => element.remove());
+    const visibleTitle = compactTitle(titleClone.innerText || titleClone.textContent);
+    if (visibleTitle) return visibleTitle;
+    return compactTitle(
+      anchor.getAttribute('aria-label')
+        ?.replace(/，已置顶对话$/, '')
+        .replace(/（未读）$/, '')
+    ) || '未命名对话';
+  }
+
+  function findRecentElements() {
+    const history = document.querySelector(
+      'nav[aria-label="历史聊天记录"] #history, nav[aria-label="Chat history"] #history, #history'
+    );
+    if (!history) return null;
+    const list = [...history.children].find((child) => child.tagName === 'UL')
+      || history.querySelector('ul');
+    if (!list) return null;
+    const section = history.parentElement;
+    const header = history.previousElementSibling
+      || section?.querySelector('.group\\/sidebar-expando-section-header');
+    return { history, list, section, header };
+  }
+
+  function injectStyles() {
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      #${APP_ID}, #${APP_ID} ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      #${APP_ID} {
+        width: 100%;
+      }
+      #${PARKING_ID} {
+        display: none !important;
+      }
+      #${RENAME_STAGE_ID} {
+        position: fixed;
+        left: -10000px;
+        top: 0;
+        width: 260px;
+        min-height: 40px;
+        opacity: .001;
+        pointer-events: none;
+        z-index: -1;
+      }
+      #${HEADER_ID} {
+        display: inline-flex;
+        align-items: center;
+        gap: 1px;
+      }
+      .cgpt-tree-button {
+        width: 28px;
+        height: 28px;
+        display: inline-grid;
+        place-items: center;
+        padding: 0;
+        border: 0;
+        border-radius: 8px;
+        color: var(--text-secondary, currentColor);
+        background: transparent;
+        cursor: pointer;
+      }
+      .cgpt-tree-button:hover {
+        color: var(--text-primary, currentColor);
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+      }
+      .cgpt-tree-button svg,
+      .cgpt-folder-icon svg,
+      .cgpt-fallback-icon svg {
+        width: 17px;
+        height: 17px;
+        display: block;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.55;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .cgpt-folder-row {
+        position: relative;
+        min-height: 36px;
+        margin: 0 6px;
+        padding: 2px 4px 2px calc(6px + var(--cgpt-depth, 0) * 14px);
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        border-radius: 8px;
+        color: var(--text-primary, inherit);
+        cursor: default;
+      }
+      .cgpt-folder-row:hover,
+      .cgpt-folder-row.cgpt-drop-folder {
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+      }
+      .cgpt-folder.cgpt-drop-folder-range {
+        border-radius: 9px;
+        background: color-mix(in srgb, #4b7bec 8%, transparent);
+        box-shadow: inset 0 0 0 2px color-mix(in srgb, #4b7bec 58%, transparent);
+      }
+      .cgpt-folder.cgpt-drop-folder-range > .cgpt-folder-row {
+        background: color-mix(in srgb, #4b7bec 12%, transparent);
+      }
+      .cgpt-folder-row.cgpt-drop-folder {
+        outline: 2px solid color-mix(in srgb, #4b7bec 72%, transparent);
+        outline-offset: -2px;
+      }
+      .cgpt-folder-row.cgpt-drop-before::before {
+        content: "";
+        position: absolute;
+        top: -1px;
+        left: calc(12px + var(--cgpt-depth, 0) * 14px);
+        right: 8px;
+        height: 2px;
+        border-radius: 2px;
+        background: #4b7bec;
+      }
+      .cgpt-chevron {
+        width: 20px;
+        height: 28px;
+        flex: 0 0 20px;
+      }
+      .cgpt-chevron svg {
+        width: 14px;
+        height: 14px;
+      }
+      .cgpt-folder-icon {
+        width: 20px;
+        height: 28px;
+        display: grid;
+        place-items: center;
+        flex: 0 0 20px;
+        color: #4b7bec;
+      }
+      .cgpt-folder-title {
+        min-width: 0;
+        flex: 1;
+        overflow: hidden;
+        padding: 5px 2px;
+        border: 0;
+        color: inherit;
+        background: transparent;
+        text-align: left;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 500;
+      }
+      .cgpt-folder-count {
+        min-width: 17px;
+        color: var(--text-tertiary, #888);
+        font-size: 11px;
+        text-align: center;
+      }
+      .cgpt-folder-action {
+        width: 26px;
+        height: 26px;
+        display: none;
+        flex: 0 0 26px;
+      }
+      .cgpt-folder-row:hover .cgpt-folder-action {
+        display: inline-grid;
+      }
+      .cgpt-folder-children.cgpt-collapsed {
+        display: none;
+      }
+      .cgpt-system-folder .cgpt-folder-icon {
+        color: var(--text-tertiary, #888);
+      }
+      .cgpt-system-folder .cgpt-folder-title {
+        font-weight: 400;
+      }
+      li.cgpt-native-chat {
+        padding-inline-start: calc(var(--cgpt-depth, 1) * 14px);
+      }
+      li.cgpt-native-chat > a {
+        width: calc(100% - var(--cgpt-depth, 1) * 14px);
+        max-width: calc(100% - var(--cgpt-depth, 1) * 14px);
+      }
+      li.cgpt-native-chat:hover button[aria-label*="对话选项"],
+      li.cgpt-native-chat:focus-within button[aria-label*="对话选项"],
+      li.cgpt-native-chat:hover button[aria-label*="conversation options" i],
+      li.cgpt-native-chat:focus-within button[aria-label*="conversation options" i] {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+      }
+      li.cgpt-native-chat.cgpt-dragging,
+      .cgpt-folder-row.cgpt-dragging {
+        opacity: .42;
+      }
+      li.cgpt-native-source-row {
+        min-height: 0 !important;
+        height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        overflow: hidden !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+      }
+      li.cgpt-native-source-row > * {
+        visibility: hidden !important;
+      }
+      li.cgpt-native-unclassified-row {
+        scroll-margin-bottom: 120px;
+      }
+      .cgpt-fallback-chat {
+        min-height: 36px;
+        margin: 0 6px;
+        padding: 2px 7px 2px calc(8px + var(--cgpt-depth, 1) * 14px);
+        display: flex;
+        align-items: center;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .cgpt-fallback-chat:hover {
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+      }
+      .cgpt-fallback-link {
+        min-width: 0;
+        flex: 1;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        min-height: 32px;
+        color: inherit;
+        text-decoration: none;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .cgpt-proxy-options {
+        width: 28px;
+        height: 28px;
+        flex: 0 0 28px;
+        display: none;
+        place-items: center;
+        padding: 0;
+        border: 0;
+        border-radius: 8px;
+        color: inherit;
+        background: transparent;
+        cursor: pointer;
+        pointer-events: auto;
+      }
+      .cgpt-fallback-chat:hover .cgpt-proxy-options,
+      .cgpt-fallback-chat:focus-within .cgpt-proxy-options {
+        display: grid;
+      }
+      .cgpt-proxy-options:hover {
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.08));
+      }
+      #${APP_ID}.cgpt-drop-root {
+        border-radius: 8px;
+        box-shadow: inset 0 0 0 2px color-mix(in srgb, #4b7bec 62%, transparent);
+      }
+      .cgpt-recent-drop {
+        border-radius: 8px;
+        box-shadow: inset 0 0 0 2px color-mix(in srgb, #4b7bec 62%, transparent);
+      }
+      #${MENU_ID} {
+        position: fixed;
+        z-index: 2147483646;
+        min-width: 148px;
+        padding: 5px;
+        border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+        border-radius: 10px;
+        color: var(--text-primary, inherit);
+        background: var(--main-surface-primary, Canvas);
+        box-shadow: 0 12px 34px rgba(0,0,0,.18);
+      }
+      #${MENU_ID}[hidden] {
+        display: none;
+      }
+      #${MENU_ID} button {
+        width: 100%;
+        padding: 8px 10px;
+        border: 0;
+        border-radius: 7px;
+        color: inherit;
+        background: transparent;
+        text-align: left;
+        font: inherit;
+        cursor: pointer;
+      }
+      #${MENU_ID} button:hover {
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+      }
+      #${MENU_ID} button.cgpt-danger {
+        color: #e5484d;
+      }
+      #${MENU_ID} .cgpt-menu-title {
+        padding: 6px 10px 5px;
+        color: var(--text-tertiary, #888);
+        font-size: 12px;
+      }
+      #${MENU_ID} .cgpt-menu-folder {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding-inline-start: calc(10px + var(--cgpt-menu-depth, 0) * 14px);
+      }
+      #${MENU_ID} .cgpt-menu-folder svg {
+        width: 16px;
+        height: 16px;
+        flex: 0 0 16px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.55;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      #${MENU_ID} .cgpt-menu-folder[disabled] {
+        opacity: .48;
+        cursor: default;
+      }
+      #${MENU_ID} .cgpt-menu-meta {
+        margin-inline-start: auto;
+        color: var(--text-tertiary, #888);
+        font-size: 11px;
+      }
+      #${MENU_ID} .cgpt-current-mark {
+        width: 15px;
+        flex: 0 0 15px;
+        color: #4b7bec;
+        text-align: center;
+      }
+      #${MENU_ID} .cgpt-menu-divider {
+        height: 1px;
+        margin: 4px 5px;
+        background: color-mix(in srgb, currentColor 12%, transparent);
+      }
+      .cgpt-native-menu-item {
+        cursor: pointer;
+      }
+      .cgpt-native-menu-item svg {
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.55;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      #${MENU_ID}.cgpt-batch-menu {
+        width: min(330px, calc(100vw - 20px));
+        max-width: 330px;
+      }
+      #${MENU_ID} .cgpt-batch-head,
+      #${MENU_ID} .cgpt-batch-foot {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 7px 8px;
+      }
+      #${MENU_ID} .cgpt-batch-head {
+        justify-content: space-between;
+        font-weight: 600;
+      }
+      #${MENU_ID} .cgpt-batch-list {
+        max-height: min(46vh, 420px);
+        overflow: auto;
+        padding: 2px 4px;
+        scrollbar-width: thin;
+      }
+      #${MENU_ID} label.cgpt-batch-row {
+        min-height: 36px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 7px;
+        border-radius: 7px;
+        cursor: pointer;
+      }
+      #${MENU_ID} label.cgpt-batch-row:hover {
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+      }
+      #${MENU_ID} .cgpt-batch-row input {
+        width: 16px;
+        height: 16px;
+        flex: 0 0 16px;
+        accent-color: #4b7bec;
+      }
+      #${MENU_ID} .cgpt-batch-row span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #${MENU_ID} .cgpt-batch-foot {
+        justify-content: flex-end;
+      }
+      #${MENU_ID} .cgpt-batch-primary {
+        width: auto;
+        padding-inline: 13px;
+        color: white;
+        background: #111;
+      }
+      #${MENU_ID} .cgpt-batch-primary:hover {
+        background: #2c2c2c;
+      }
+      #${MENU_ID} .cgpt-batch-primary[disabled] {
+        opacity: .38;
+        cursor: default;
+      }
+      #${RENAME_ID} {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: grid;
+        place-items: center;
+        padding: 16px;
+        color: var(--text-primary, #202123);
+        background: rgba(0, 0, 0, .38);
+        backdrop-filter: blur(2px);
+      }
+      #${RENAME_ID}[hidden] {
+        display: none;
+      }
+      #${RENAME_ID} .cgpt-rename-dialog {
+        width: min(820px, calc(100vw - 24px));
+        max-height: min(88vh, 860px);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+        border-radius: 16px;
+        background: var(--main-surface-primary, Canvas);
+        box-shadow: 0 24px 70px rgba(0, 0, 0, .28);
+      }
+      #${RENAME_ID} .cgpt-rename-head {
+        padding: 18px 20px 13px;
+        border-bottom: 1px solid color-mix(in srgb, currentColor 11%, transparent);
+      }
+      #${RENAME_ID} .cgpt-rename-head h2 {
+        margin: 0 0 5px;
+        font-size: 18px;
+      }
+      #${RENAME_ID} .cgpt-rename-head p {
+        margin: 0;
+        color: var(--text-secondary, #666);
+        font-size: 13px;
+      }
+      #${RENAME_ID} .cgpt-rename-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 20px;
+        border-bottom: 1px solid color-mix(in srgb, currentColor 9%, transparent);
+        color: var(--text-secondary, #666);
+        font-size: 12px;
+      }
+      #${RENAME_ID} .cgpt-rename-list {
+        min-height: 120px;
+        overflow: auto;
+        padding: 8px 12px 12px;
+        scrollbar-width: thin;
+      }
+      #${RENAME_ID} .cgpt-rename-row {
+        display: grid;
+        grid-template-columns: minmax(140px, 220px) minmax(260px, 1fr) 72px;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 8px;
+        border-radius: 9px;
+      }
+      #${RENAME_ID} .cgpt-rename-row:hover {
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.05));
+      }
+      #${RENAME_ID} .cgpt-rename-path {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--text-tertiary, #888);
+        font-size: 11px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #${RENAME_ID} .cgpt-rename-input {
+        width: 100%;
+        height: 34px;
+        padding: 5px 9px;
+        border: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+        border-radius: 8px;
+        outline: none;
+        color: inherit;
+        background: var(--main-surface-primary, Canvas);
+        font: inherit;
+      }
+      #${RENAME_ID} .cgpt-rename-input:focus {
+        border-color: #4b7bec;
+        box-shadow: 0 0 0 2px color-mix(in srgb, #4b7bec 18%, transparent);
+      }
+      #${RENAME_ID} .cgpt-rename-input.cgpt-changed {
+        border-color: #4b7bec;
+        background: color-mix(in srgb, #4b7bec 5%, Canvas);
+      }
+      #${RENAME_ID} .cgpt-rename-input[disabled] {
+        opacity: .65;
+      }
+      #${RENAME_ID} .cgpt-rename-status {
+        overflow: hidden;
+        color: var(--text-tertiary, #888);
+        font-size: 11px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #${RENAME_ID} .cgpt-rename-status[data-state="success"] { color: #1f8a4c; }
+      #${RENAME_ID} .cgpt-rename-status[data-state="error"] { color: #d14b4b; }
+      #${RENAME_ID} .cgpt-rename-status[data-state="running"] { color: #4b7bec; }
+      #${RENAME_ID} .cgpt-rename-foot {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        padding: 12px 20px;
+        border-top: 1px solid color-mix(in srgb, currentColor 11%, transparent);
+      }
+      #${RENAME_ID} .cgpt-rename-button {
+        min-width: 86px;
+        padding: 8px 14px;
+        border: 0;
+        border-radius: 9px;
+        color: inherit;
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.07));
+        font: inherit;
+        cursor: pointer;
+      }
+      #${RENAME_ID} .cgpt-rename-button:hover {
+        filter: brightness(.96);
+      }
+      #${RENAME_ID} .cgpt-rename-button.cgpt-primary {
+        color: white;
+        background: #111;
+      }
+      #${RENAME_ID} .cgpt-rename-button[disabled] {
+        opacity: .4;
+        cursor: default;
+      }
+      @media (max-width: 620px) {
+        #${RENAME_ID} .cgpt-rename-row {
+          grid-template-columns: 1fr 62px;
+        }
+        #${RENAME_ID} .cgpt-rename-path {
+          grid-column: 1 / -1;
+        }
+      }
+    `;
+    document.head.append(style);
+  }
+
+  function ensureMenu() {
+    let menu = document.getElementById(MENU_ID);
+    if (menu) return menu;
+    menu = document.createElement('div');
+    menu.id = MENU_ID;
+    menu.hidden = true;
+    document.body.append(menu);
+    return menu;
+  }
+
+  function ensureRenameStage() {
+    let stage = document.getElementById(RENAME_STAGE_ID);
+    if (stage) return stage;
+    stage = document.createElement('div');
+    stage.id = RENAME_STAGE_ID;
+    stage.setAttribute('aria-hidden', 'true');
+    document.body.append(stage);
+    return stage;
+  }
+
+  function ensureRenameModal() {
+    let modal = document.getElementById(RENAME_ID);
+    if (modal) return modal;
+    modal = document.createElement('section');
+    modal.id = RENAME_ID;
+    modal.hidden = true;
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', '批量重命名对话');
+    document.body.append(modal);
+    return modal;
+  }
+
+  function ensureMounted() {
+    const found = findRecentElements();
+    if (!found) return false;
+
+    if (nativeList !== found.list) {
+      document.getElementById(APP_ID)?.remove();
+      document.getElementById(HEADER_ID)?.remove();
+      host = null;
+      headerActions = null;
+      parkingLot = null;
+      nativeList = found.list;
+      historyRoot = found.history;
+    }
+    historyRoot = found.history;
+    recentHeader = found.header;
+
+    injectStyles();
+    ensureMenu();
+    ensureImportInput();
+    ensureRenameStage();
+    ensureRenameModal();
+    injectPageBridge();
+
+    if (!host?.isConnected) {
+      host = document.createElement('li');
+      host.id = APP_ID;
+      host.className = 'list-none';
+      host.setAttribute('aria-label', '最近对话分组');
+      host.dataset.cgptTreeVersion = '1.4.9';
+      nativeList.insertBefore(host, nativeList.firstChild);
+    }
+
+    if (!parkingLot?.isConnected) {
+      parkingLot = document.getElementById(PARKING_ID) || document.createElement('div');
+      parkingLot.id = PARKING_ID;
+      parkingLot.setAttribute('aria-hidden', 'true');
+      historyRoot.append(parkingLot);
+    }
+
+    if (!headerActions?.isConnected && found.header) {
+      headerActions = document.createElement('span');
+      headerActions.id = HEADER_ID;
+      headerActions.innerHTML = `
+        <button class="cgpt-tree-button" data-cgpt-action="add-folder"
+                title="新建分组" aria-label="新建分组">${icons.plus}</button>
+        <button class="cgpt-tree-button" data-cgpt-action="batch-group"
+                title="批量分组未分组对话" aria-label="批量分组未分组对话">${icons.batch}</button>
+        <button class="cgpt-tree-button" data-cgpt-action="collapse-all"
+                title="全部折叠或展开" aria-label="全部折叠或展开">${icons.fold}</button>
+        <button class="cgpt-tree-button" data-cgpt-action="data-menu"
+                title="导入或导出分组数据" aria-label="导入或导出分组数据">${icons.dots}</button>
+      `;
+      const actionArea = found.header.querySelector('.shrink-0') || found.header;
+      actionArea.append(headerActions);
+    }
+
+    bindEvents();
+    return true;
+  }
+
+  function injectPageBridge() {
+    if (document.getElementById(`${APP_ID}-page-bridge`)) return;
+    const source = `(() => {
+      const EVENT_NAME = ${JSON.stringify(PAGE_OPEN_EVENT)};
+      const APP_ID = ${JSON.stringify(APP_ID)};
+      if (window.__cgptConversationTreeBridge) return;
+      window.__cgptConversationTreeBridge = true;
+
+      function chatInfoFromHref(href) {
+        try {
+          const url = new URL(href, location.href);
+          const match = url.pathname.match(/\\/c\\/([^/?#]+)/);
+          return match ? decodeURIComponent(match[1]) : '';
+        } catch {
+          return '';
+        }
+      }
+
+      function nativeAnchorForChat(chatId) {
+        const anchors = [...document.querySelectorAll('#history a[href*="/c/"]')];
+        return anchors.find((anchor) => (
+          chatInfoFromHref(anchor.getAttribute('href')) === chatId
+          && !anchor.closest('.cgpt-fallback-chat')
+          && !anchor.closest('#' + CSS.escape(APP_ID))
+        )) || null;
+      }
+
+      function reactPropsFor(element) {
+        if (!element) return null;
+        const key = Object.getOwnPropertyNames(element)
+          .find((name) => name.startsWith('__reactProps$') || name.startsWith('__reactEventHandlers$'));
+        if (key && element[key]) return element[key];
+        const fiberKey = Object.getOwnPropertyNames(element)
+          .find((name) => name.startsWith('__reactFiber$') || name.startsWith('__reactInternalInstance$'));
+        const fiber = fiberKey ? element[fiberKey] : null;
+        return fiber?.memoizedProps || fiber?.return?.memoizedProps || null;
+      }
+
+      function fakeClickEvent(target, currentTarget) {
+        let defaultPrevented = false;
+        let propagationStopped = false;
+        return {
+          type: 'click',
+          target,
+          currentTarget,
+          nativeEvent: {
+            type: 'click',
+            target,
+            currentTarget,
+            button: 0,
+            metaKey: false,
+            ctrlKey: false,
+            shiftKey: false,
+            altKey: false,
+            defaultPrevented: false,
+          },
+          button: 0,
+          buttons: 0,
+          metaKey: false,
+          ctrlKey: false,
+          shiftKey: false,
+          altKey: false,
+          defaultPrevented: false,
+          preventDefault() {
+            defaultPrevented = true;
+            this.defaultPrevented = true;
+            this.nativeEvent.defaultPrevented = true;
+          },
+          stopPropagation() {
+            propagationStopped = true;
+          },
+          isDefaultPrevented() {
+            return defaultPrevented;
+          },
+          isPropagationStopped() {
+            return propagationStopped;
+          },
+          persist() {},
+        };
+      }
+
+      function invokeReactClick(anchor) {
+        for (let element = anchor; element && element !== document.body; element = element.parentElement) {
+          const props = reactPropsFor(element);
+          if (typeof props?.onClick === 'function') {
+            props.onClick(fakeClickEvent(anchor, element));
+            return true;
+          }
+          if (element.matches?.('li, a')) {
+            const parentProps = reactPropsFor(element.parentElement);
+            if (typeof parentProps?.onClick === 'function') {
+              parentProps.onClick(fakeClickEvent(anchor, element.parentElement));
+              return true;
+            }
+          }
+        }
+        return false;
+      }
+
+      function dispatchMouseClick(anchor) {
+        const rect = anchor.getBoundingClientRect();
+        const x = Math.max(1, Math.round(rect.left + Math.min(24, rect.width / 2 || 12)));
+        const y = Math.max(1, Math.round(rect.top + Math.min(14, rect.height / 2 || 10)));
+        ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach((type) => {
+          const EventClass = type.startsWith('pointer') && typeof PointerEvent === 'function'
+            ? PointerEvent
+            : MouseEvent;
+          anchor.dispatchEvent(new EventClass(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window,
+            button: 0,
+            buttons: type.endsWith('down') ? 1 : 0,
+            clientX: x,
+            clientY: y,
+          }));
+        });
+      }
+
+      window.addEventListener(EVENT_NAME, (event) => {
+        const chatId = event.detail?.chatId;
+        if (!chatId) return;
+        const before = location.href;
+        const anchor = nativeAnchorForChat(chatId);
+        if (!anchor) return;
+        const row = anchor.closest('li');
+        row?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+        const usedReact = invokeReactClick(anchor);
+        if (!usedReact) dispatchMouseClick(anchor);
+        window.setTimeout(() => {
+          const current = chatInfoFromHref(location.href);
+          if (current !== chatId && location.href === before) {
+            dispatchMouseClick(anchor);
+          }
+        }, 80);
+      }, true);
+    })();`;
+    try {
+      const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+      if (pageWindow.__cgptConversationTreeBridge) return;
+      pageWindow.Function(source)();
+      return;
+    } catch {
+      // Fall back to a script tag. Some pages block this through CSP, but
+      // Tampermonkey page-window execution above works on most Chromium setups.
+    }
+    const script = document.createElement('script');
+    script.id = `${APP_ID}-page-bridge`;
+    script.textContent = source;
+    (document.head || document.documentElement).append(script);
+    script.remove();
+  }
+
+  function ensureImportInput() {
+    let input = document.getElementById(IMPORT_INPUT_ID);
+    if (input) return input;
+    input = document.createElement('input');
+    input.id = IMPORT_INPUT_ID;
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.hidden = true;
+    document.body.append(input);
+    return input;
+  }
+
+  function findNode(nodeId, nodes = state.tree, parentArray = state.tree) {
+    for (let index = 0; index < nodes.length; index += 1) {
+      const node = nodes[index];
+      if (node.id === nodeId) return { node, parentArray, index };
+      if (node.type === 'folder') {
+        const nested = findNode(nodeId, node.children, node.children);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  }
+
+  function findChatNode(chatId, nodes = state.tree) {
+    for (const node of nodes) {
+      if (node.type === 'chat' && node.chatId === chatId) return node;
+      if (node.type === 'folder') {
+        const nested = findChatNode(chatId, node.children);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  }
+
+  function folderContains(folder, nodeId) {
+    if (folder.id === nodeId) return true;
+    return folder.children.some((child) => (
+      child.type === 'folder' && folderContains(child, nodeId)
+    ));
+  }
+
+  function removeNode(nodeId) {
+    const found = findNode(nodeId);
+    if (!found) return null;
+    return found.parentArray.splice(found.index, 1)[0];
+  }
+
+  function parentFolderOfNode(nodeId, nodes = state.tree, parentFolder = null) {
+    for (const node of nodes) {
+      if (node.id === nodeId) return parentFolder;
+      if (node.type === 'folder') {
+        const nested = parentFolderOfNode(nodeId, node.children, node);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  }
+
+  function classifiedChatIds(nodes = state.tree, result = new Set()) {
+    nodes.forEach((node) => {
+      if (node.type === 'chat') result.add(node.chatId);
+      else classifiedChatIds(node.children, result);
+    });
+    return result;
+  }
+
+  function countFolderChats(folder) {
+    return folder.children.reduce((total, child) => (
+      total + (child.type === 'chat' ? 1 : countFolderChats(child))
+    ), 0);
+  }
+
+  function chatActivity(chatId) {
+    const info = state.known[chatId] || {};
+    return Number(info.activity || info.lastSeen || 0);
+  }
+
+  function nodeActivity(node) {
+    if (node.type === 'chat') return chatActivity(node.chatId);
+    return node.children.reduce((latest, child) => (
+      Math.max(latest, nodeActivity(child))
+    ), 0);
+  }
+
+  function sortTreeByRecent(nodes = state.tree) {
+    nodes.forEach((node) => {
+      if (node.type === 'folder') sortTreeByRecent(node.children);
+    });
+    nodes.sort((a, b) => nodeActivity(b) - nodeActivity(a));
+  }
+
+  function addFolder(parentFolderId = null, chatIdToMove = '') {
+    const name = compactTitle(window.prompt('分组名称：', '新分组'));
+    if (!name) return;
+    const folder = {
+      type: 'folder',
+      id: uid('folder'),
+      title: name,
+      collapsed: false,
+      children: [],
+    };
+
+    const parent = parentFolderId ? findNode(parentFolderId)?.node : null;
+    if (parent?.type === 'folder') {
+      parent.collapsed = false;
+      parent.children.push(folder);
+    } else {
+      state.tree.push(folder);
+    }
+    if (chatIdToMove) {
+      const chatNode = getOrCreateChatNode(chatIdToMove);
+      if (findNode(chatNode.id)) removeNode(chatNode.id);
+      folder.children.push(chatNode);
+    }
+    persistAndRender(true);
+  }
+
+  function renameFolder(folderId) {
+    const folder = findNode(folderId)?.node;
+    if (!folder || folder.type !== 'folder') return;
+    const name = compactTitle(window.prompt('新的分组名称：', folder.title));
+    if (!name || name === folder.title) return;
+    folder.title = name;
+    persistAndRender(true);
+  }
+
+  function deleteFolder(folderId) {
+    const found = findNode(folderId);
+    if (!found || found.node.type !== 'folder') return;
+    const count = countFolderChats(found.node);
+    const message = count
+      ? `删除“${found.node.title}”？其中 ${count} 条对话会回到上一级，不会删除原对话。`
+      : `删除空分组“${found.node.title}”？`;
+    if (!window.confirm(message)) return;
+    found.parentArray.splice(found.index, 1, ...found.node.children);
+    persistAndRender(true, true);
+  }
+
+  function getOrCreateChatNode(chatId) {
+    return findChatNode(chatId) || {
+      type: 'chat',
+      id: uid('chat-node'),
+      chatId,
+    };
+  }
+
+  function unclassifyChatNode(nodeId) {
+    const node = findNode(nodeId)?.node;
+    if (!node || node.type !== 'chat') return;
+    removeNode(nodeId);
+    persistAndRender(true);
+  }
+
+  function moveChatsToFolder(chatIds, folderId) {
+    const folder = findNode(folderId)?.node;
+    if (!folder || folder.type !== 'folder') return;
+    const uniqueIds = [...new Set(chatIds)].filter(Boolean);
+    uniqueIds.forEach((chatId) => {
+      const existing = findChatNode(chatId);
+      if (existing) removeNode(existing.id);
+      folder.children.push(existing || {
+        type: 'chat',
+        id: uid('chat-node'),
+        chatId,
+      });
+    });
+    saveState(true);
+    queueRender();
+  }
+
+  function addFolderWithChats(chatIds) {
+    const name = compactTitle(window.prompt('新分组名称：', '新分组'));
+    if (!name) return;
+    const folder = {
+      type: 'folder',
+      id: uid('folder'),
+      title: name,
+      collapsed: false,
+      children: [...new Set(chatIds)].filter(Boolean).map((chatId) => ({
+        type: 'chat',
+        id: uid('chat-node'),
+        chatId,
+      })),
+    };
+    state.tree.push(folder);
+    saveState(true);
+    queueRender();
+  }
+
+  function movePayload(payload, target) {
+    if (!payload || !target) return;
+
+    let node = payload.nodeId ? findNode(payload.nodeId)?.node : null;
+    if (!node && payload.kind === 'chat' && payload.chatId) {
+      node = getOrCreateChatNode(payload.chatId);
+    }
+    if (!node) return;
+
+    if (target.kind === 'unclassified') {
+      if (node.type !== 'chat') return;
+      if (findNode(node.id)) removeNode(node.id);
+      persistAndRender(true);
+      return;
+    }
+
+    if (target.kind === 'folder') {
+      const folder = findNode(target.nodeId)?.node;
+      if (!folder || folder.type !== 'folder') return;
+      if (node.id === folder.id) return;
+      if (node.type === 'folder' && folderContains(node, folder.id)) return;
+      if (node.type === 'chat' && parentFolderOfNode(node.id)?.id === folder.id) return;
+
+      if (findNode(node.id)) removeNode(node.id);
+      if (node.type === 'chat') {
+        const duplicate = findChatNode(node.chatId);
+        if (duplicate && duplicate.id !== node.id) removeNode(duplicate.id);
+      }
+      folder.children.push(node);
+      persistAndRender(true);
+      return;
+    }
+
+    if (target.kind === 'before') {
+      if (node.id === target.nodeId) return;
+      const destination = findNode(target.nodeId);
+      if (!destination) return;
+      if (node.type === 'folder' && folderContains(node, target.nodeId)) return;
+      if (findNode(node.id)) removeNode(node.id);
+      const refreshed = findNode(target.nodeId);
+      if (!refreshed) return;
+      refreshed.parentArray.splice(refreshed.index, 0, node);
+      persistAndRender(true);
+      return;
+    }
+
+    if (target.kind === 'root') {
+      if (findNode(node.id)) removeNode(node.id);
+      state.tree.push(node);
+      persistAndRender(true);
+    }
+  }
+
+  function scanNativeChats() {
+    if (!ensureMounted() || rendering) return;
+
+    let changed = false;
+    const previousRows = nativeRows;
+    const now = Date.now();
+    const nextRows = new Map();
+    const anchors = [...historyRoot.querySelectorAll('a[href]')]
+      .filter((anchor) => !anchor.closest('.cgpt-fallback-chat'));
+
+    anchors.forEach((anchor) => {
+      const info = chatInfoFromHref(anchor.getAttribute('href'));
+      if (!info) return;
+      const row = anchor.closest('li');
+      if (!row || row === host) return;
+
+      nextRows.set(info.chatId, row);
+      row.dataset.cgptChatId = info.chatId;
+      anchor.draggable = true;
+      row.querySelectorAll('button').forEach((button) => { button.draggable = false; });
+
+      const title = titleFromAnchor(anchor);
+      const previous = state.known[info.chatId] || {};
+      if (previous.title !== title || previous.url !== info.url) {
+        state.known[info.chatId] = {
+          ...previous,
+          title,
+          url: info.url,
+          firstSeen: previous.firstSeen || previous.lastSeen || now,
+          lastSeen: now,
+        };
+        changed = true;
+      } else if (!previous.lastSeen) {
+        state.known[info.chatId] = {
+          ...previous,
+          lastSeen: now,
+        };
+        changed = true;
+      }
+    });
+
+    nativeRows = nextRows;
+    const rowsChanged = previousRows.size !== nextRows.size
+      || [...nextRows].some(([chatId, row]) => previousRows.get(chatId) !== row);
+
+    const classified = classifiedChatIds();
+    const directRows = [...nativeList.children].filter((row) => row !== host);
+    directRows.forEach((row, index) => {
+      const anchor = row.querySelector('a[href]');
+      const info = chatInfoFromHref(anchor?.getAttribute('href'));
+      if (!info) return;
+      const known = state.known[info.chatId] || {};
+      if (sortPendingOnLoad && classified.has(info.chatId)) {
+        known.activity = now - index * 10;
+        state.known[info.chatId] = known;
+        changed = true;
+      } else if (!known.activity) {
+        known.activity = now - index * 1000;
+        state.known[info.chatId] = known;
+        changed = true;
+      }
+    });
+
+    const activeId = chatInfoFromHref(location.href)?.chatId || '';
+    if (activeId && activeId !== lastActiveChatId) {
+      const known = state.known[activeId] || {
+        title: document.title || '未命名对话',
+        url: `/c/${encodeURIComponent(activeId)}`,
+      };
+      known.activity = now;
+      known.lastSeen = now;
+      state.known[activeId] = known;
+      lastActiveChatId = activeId;
+      changed = true;
+    }
+
+    if (sortPendingOnLoad) {
+      sortTreeByRecent();
+      sortPendingOnLoad = false;
+      changed = true;
+    }
+
+    if (changed) saveState();
+    if (changed || rowsChanged || !host.firstElementChild) queueRender();
+  }
+
+  function scheduleScan() {
+    clearTimeout(scanTimer);
+    scanTimer = window.setTimeout(scanNativeChats, 160);
+  }
+
+  function persistAndRender(immediate = false, allowEmpty = false) {
+    saveState(immediate, allowEmpty);
+    queueRender();
+  }
+
+  function queueRender() {
+    clearTimeout(renderTimer);
+    renderTimer = window.setTimeout(renderTree, 20);
+  }
+
+  function renderFolder(folder, depth = 0) {
+    const collapsed = Boolean(folder.collapsed);
+    const children = collapsed
+      ? ''
+      : folder.children.map((node) => {
+          if (node.type === 'folder') return renderFolder(node, depth + 1);
+          return `<li class="cgpt-chat-slot"
+                      data-chat-node-id="${escapeHtml(node.id)}"
+                      data-chat-id="${escapeHtml(node.chatId)}"
+                      data-depth="${depth + 1}"></li>`;
+        }).join('');
+
+    return `
+      <li class="cgpt-folder" data-folder-node-id="${escapeHtml(folder.id)}">
+        <div class="cgpt-folder-row"
+             style="--cgpt-depth:${depth}"
+             draggable="true"
+             data-folder-id="${escapeHtml(folder.id)}"
+             data-node-id="${escapeHtml(folder.id)}">
+          <button class="cgpt-tree-button cgpt-chevron"
+                  data-cgpt-action="toggle-folder"
+                  data-node-id="${escapeHtml(folder.id)}"
+                  title="${collapsed ? '展开分组' : '折叠分组'}">
+            ${icons.chevron(!collapsed)}
+          </button>
+          <span class="cgpt-folder-icon">${icons.folder}</span>
+          <button class="cgpt-folder-title"
+                  data-cgpt-action="toggle-folder"
+                  data-node-id="${escapeHtml(folder.id)}"
+                  title="${escapeHtml(folder.title)}">${escapeHtml(folder.title)}</button>
+          <span class="cgpt-folder-count">${countFolderChats(folder) || ''}</span>
+          <button class="cgpt-tree-button cgpt-folder-action"
+                  data-cgpt-action="add-child"
+                  data-node-id="${escapeHtml(folder.id)}"
+                  title="新建子分组">${icons.plus}</button>
+          <button class="cgpt-tree-button cgpt-folder-action"
+                  data-cgpt-action="folder-menu"
+                  data-node-id="${escapeHtml(folder.id)}"
+                  title="分组操作">${icons.dots}</button>
+        </div>
+        <ul class="cgpt-folder-children ${collapsed ? 'cgpt-collapsed' : ''}">${children}</ul>
+      </li>`;
+  }
+
+  function renderUngroupedFolder() {
+    const chats = unclassifiedChats();
+    const children = ungroupedCollapsed
+      ? ''
+      : chats.map(({ chatId, info }) => `
+          <li class="cgpt-fallback-chat cgpt-ungrouped-chat"
+              style="--cgpt-depth:1"
+              draggable="true"
+              data-chat-id="${escapeHtml(chatId)}"
+              data-cgpt-ungrouped-chat="${escapeHtml(chatId)}">
+            <a class="cgpt-fallback-link"
+               href="${escapeHtml(info.url || `/c/${encodeURIComponent(chatId)}`)}"
+               title="${escapeHtml(info.title || '未命名对话')}">${escapeHtml(info.title || '未命名对话')}</a>
+            <button class="cgpt-proxy-options"
+                    type="button"
+                    data-cgpt-proxy-options="${escapeHtml(chatId)}"
+                    title="对话操作"
+                    aria-label="打开“${escapeHtml(info.title || '未命名对话')}”的对话选项">
+              ${icons.dots}
+            </button>
+          </li>`).join('');
+    return `
+      <li class="cgpt-folder cgpt-system-folder"
+          data-cgpt-ungrouped-folder="true">
+        <div class="cgpt-folder-row"
+             style="--cgpt-depth:0"
+             data-cgpt-ungrouped-drop="true">
+          <button class="cgpt-tree-button cgpt-chevron"
+                  data-cgpt-action="toggle-ungrouped"
+                  title="${ungroupedCollapsed ? '展开未分组' : '折叠未分组'}">
+            ${icons.chevron(!ungroupedCollapsed)}
+          </button>
+          <span class="cgpt-folder-icon">${icons.folder}</span>
+          <button class="cgpt-folder-title"
+                  data-cgpt-action="toggle-ungrouped"
+                  title="未分组">未分组</button>
+          <span class="cgpt-folder-count">${chats.length || ''}</span>
+        </div>
+        <ul class="cgpt-folder-children ${ungroupedCollapsed ? 'cgpt-collapsed' : ''}">
+          ${children}
+        </ul>
+      </li>`;
+  }
+
+  function restoreManagedNativeRows() {
+    if (!nativeList) return;
+    const movedRows = [
+      ...(host?.querySelectorAll('li.cgpt-native-chat') || []),
+      ...(parkingLot?.querySelectorAll('li[data-cgpt-chat-id]') || []),
+    ];
+    movedRows.forEach((row) => {
+      resetNativeRow(row);
+      nativeList.append(row);
+    });
+  }
+
+  function resetNativeRow(row) {
+    row.classList.remove(
+      'cgpt-native-chat',
+      'cgpt-native-source-row',
+      'cgpt-native-unclassified-row',
+      'cgpt-dragging'
+    );
+    delete row.dataset.cgptTreeNodeId;
+    row.style.removeProperty('--cgpt-depth');
+  }
+
+  function insertUnclassifiedRow(row, chatId) {
+    resetNativeRow(row);
+    const activity = chatActivity(chatId);
+    const directRows = [...nativeList.children].filter((candidate) => (
+      candidate !== host && candidate !== row && candidate.querySelector('a[href]')
+    ));
+    const before = directRows.find((candidate) => {
+      const candidateInfo = chatInfoFromHref(
+        candidate.querySelector('a[href]')?.getAttribute('href')
+      );
+      return candidateInfo && chatActivity(candidateInfo.chatId) < activity;
+    });
+    nativeList.insertBefore(row, before || null);
+  }
+
+  function placeChatRows() {
+    const classified = classifiedChatIds();
+
+    host.querySelectorAll('.cgpt-chat-slot').forEach((slot) => {
+      const chatId = slot.dataset.chatId;
+      const nodeId = slot.dataset.chatNodeId;
+      const depth = Number(slot.dataset.depth || 1);
+      const info = state.known[chatId] || {};
+      slot.className = 'cgpt-fallback-chat';
+      slot.style.setProperty('--cgpt-depth', depth);
+      slot.draggable = true;
+      slot.dataset.cgptTreeNodeId = nodeId;
+      slot.innerHTML = `
+        <a class="cgpt-fallback-link"
+           data-cgpt-fallback="true"
+           href="${escapeHtml(info.url || `/c/${encodeURIComponent(chatId)}`)}"
+           title="${escapeHtml(info.title || '未命名对话')}">${escapeHtml(info.title || '未命名对话')}</a>`;
+      slot.insertAdjacentHTML('beforeend', `
+        <button class="cgpt-proxy-options"
+                type="button"
+                data-cgpt-proxy-options="${escapeHtml(chatId)}"
+                title="对话操作"
+                aria-label="打开“${escapeHtml(info.title || '未命名对话')}”的对话选项">
+          ${icons.dots}
+        </button>`);
+    });
+
+    nativeRows.forEach((row, chatId) => {
+      if (!row.isConnected || row.closest(`#${APP_ID}`) || row.parentElement === parkingLot) {
+        insertUnclassifiedRow(row, chatId);
+      }
+      const node = classified.has(chatId) ? findChatNode(chatId) : null;
+      row.classList.remove('cgpt-native-source-row', 'cgpt-native-unclassified-row');
+      if (node) {
+        row.dataset.cgptTreeNodeId = node.id || '';
+      } else {
+        row.classList.add('cgpt-native-unclassified-row');
+        row.dataset.cgptTreeNodeId = '';
+      }
+      row.draggable = true;
+    });
+  }
+
+  function renderTree() {
+    if (!ensureMounted() || rendering) return;
+    rendering = true;
+    ignoreMutationsUntil = Date.now() + 350;
+
+    restoreManagedNativeRows();
+    host.innerHTML = `<ul class="cgpt-tree-root" data-drop-root="true">${
+      state.tree.map((node) => node.type === 'folder' ? renderFolder(node) : '').join('')
+    }${renderUngroupedFolder()}</ul>`;
+    placeChatRows();
+
+    rendering = false;
+  }
+
+  function flattenFolders(nodes = state.tree, depth = 0, result = []) {
+    nodes.forEach((node) => {
+      if (node.type !== 'folder') return;
+      result.push({ folder: node, depth });
+      flattenFolders(node.children, depth + 1, result);
+    });
+    return result;
+  }
+
+  function folderContainingChat(chatId, nodes = state.tree) {
+    for (const node of nodes) {
+      if (node.type !== 'folder') continue;
+      if (node.children.some((child) => child.type === 'chat' && child.chatId === chatId)) {
+        return node;
+      }
+      const nested = folderContainingChat(chatId, node.children);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  function folderChatEntries(folder, path = [folder.title], result = []) {
+    folder.children.forEach((node) => {
+      if (node.type === 'chat') {
+        result.push({
+          chatId: node.chatId,
+          nodeId: node.id,
+          path: path.join(' / '),
+          title: state.known[node.chatId]?.title || '未命名对话',
+        });
+      } else {
+        folderChatEntries(node, [...path, node.title], result);
+      }
+    });
+    return result;
+  }
+
+  function updateRenameEditorState() {
+    const modal = document.getElementById(RENAME_ID);
+    if (!modal || modal.hidden) return;
+    let changed = 0;
+    modal.querySelectorAll('.cgpt-rename-input').forEach((input) => {
+      const isChanged = compactTitle(input.value) !== input.dataset.original;
+      input.classList.toggle('cgpt-changed', isChanged);
+      if (isChanged && compactTitle(input.value)) changed += 1;
+    });
+    const count = modal.querySelector('[data-cgpt-rename-count]');
+    if (count) count.textContent = `${changed} 条有修改`;
+    const save = modal.querySelector('[data-cgpt-rename-action="save"]');
+    if (save) save.disabled = changed === 0 || Boolean(renameRun?.running);
+  }
+
+  function showBatchRenameDialog(folderId) {
+    const folder = findNode(folderId)?.node;
+    if (!folder || folder.type !== 'folder') return;
+    const entries = folderChatEntries(folder);
+    const modal = ensureRenameModal();
+    closeMenu();
+    renameRun = null;
+    modal.innerHTML = `
+      <div class="cgpt-rename-dialog">
+        <header class="cgpt-rename-head">
+          <h2>批量重命名“${escapeHtml(folder.title)}”中的对话</h2>
+          <p>直接编辑名称。未修改的行会自动跳过；保存后将逐条调用 ChatGPT 原生重命名。</p>
+        </header>
+        <div class="cgpt-rename-toolbar">
+          <span>共 ${entries.length} 条（包含子分组）</span>
+          <span data-cgpt-rename-count>0 条有修改</span>
+        </div>
+        <div class="cgpt-rename-list">
+          ${entries.length ? entries.map((entry) => `
+            <label class="cgpt-rename-row" data-chat-id="${escapeHtml(entry.chatId)}">
+              <span class="cgpt-rename-path" title="${escapeHtml(entry.path)}">${escapeHtml(entry.path)}</span>
+              <input class="cgpt-rename-input"
+                     type="text"
+                     value="${escapeHtml(entry.title)}"
+                     data-original="${escapeHtml(entry.title)}"
+                     data-chat-id="${escapeHtml(entry.chatId)}"
+                     autocomplete="off"
+                     spellcheck="false">
+              <span class="cgpt-rename-status" data-cgpt-rename-status>未修改</span>
+            </label>`).join('') : `
+            <div class="cgpt-menu-title">该分组内没有对话</div>
+          `}
+        </div>
+        <footer class="cgpt-rename-foot">
+          <button class="cgpt-rename-button" data-cgpt-rename-action="close">取消</button>
+          <button class="cgpt-rename-button cgpt-primary"
+                  data-cgpt-rename-action="save"
+                  ${entries.length ? 'disabled' : 'disabled'}>保存并开始</button>
+        </footer>
+      </div>`;
+    modal.hidden = false;
+    modal.querySelector('.cgpt-rename-input')?.focus();
+    updateRenameEditorState();
+  }
+
+  function closeBatchRenameDialog() {
+    if (renameRun?.running) return;
+    const modal = document.getElementById(RENAME_ID);
+    if (modal) modal.hidden = true;
+    renameRun = null;
+  }
+
+  function setRenameStatus(chatId, text, stateName = '') {
+    const row = document.querySelector(
+      `#${RENAME_ID} .cgpt-rename-row[data-chat-id="${CSS.escape(chatId)}"]`
+    );
+    const status = row?.querySelector('[data-cgpt-rename-status]');
+    if (!status) return;
+    status.textContent = text;
+    status.dataset.state = stateName;
+  }
+
+  function waitForValue(getValue, timeout = 3500, interval = 70) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const check = () => {
+        const value = getValue();
+        if (value) {
+          resolve(value);
+          return;
+        }
+        if (Date.now() - started >= timeout) {
+          resolve(null);
+          return;
+        }
+        window.setTimeout(check, interval);
+      };
+      check();
+    });
+  }
+
+  function setNativeInputValue(input, value) {
+    const prototype = input instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    if (setter) setter.call(input, value);
+    else input.value = value;
+    input.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      inputType: 'insertText',
+      data: value,
+    }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function menuItemByText(menu, pattern) {
+    return [...menu.querySelectorAll('[role="menuitem"], button')]
+      .find((element) => pattern.test(compactTitle(element.innerText)));
+  }
+
+  function renameInputForRow(row, oldTitle) {
+    const rowInput = row.querySelector('input[type="text"], textarea');
+    if (rowInput) return rowInput;
+    const dialogs = [...document.querySelectorAll('[role="dialog"]')]
+      .filter((dialog) => dialog.id !== RENAME_ID);
+    for (const dialog of dialogs) {
+      const inputs = [...dialog.querySelectorAll('input[type="text"], textarea')];
+      const likely = inputs.find((input) => (
+        input.value === oldTitle
+        || /重命名|rename|标题|title/i.test(
+          `${input.getAttribute('aria-label') || ''} ${input.getAttribute('placeholder') || ''}`
+        )
+      ));
+      if (likely) return likely;
+    }
+    return null;
+  }
+
+  function saveRenameControl(input, row) {
+    const scope = input.closest('form, [role="dialog"]') || row;
+    return [...scope.querySelectorAll('button')]
+      .find((button) => /^(保存|Save|确定|Confirm)(?:\s|$)/i.test(
+        compactTitle(button.innerText || button.getAttribute('aria-label'))
+      ));
+  }
+
+  function clickWithoutAnchorNavigation(element) {
+    const anchor = element?.closest?.('a[href]');
+    const preventNavigation = (event) => {
+      if (event.target === element || element.contains?.(event.target)) {
+        event.preventDefault();
+      }
+    };
+    anchor?.addEventListener('click', preventNavigation, true);
+    element.click();
+    anchor?.removeEventListener('click', preventNavigation, true);
+  }
+
+  function nativeAnchorForChat(chatId) {
+    const row = nativeRows.get(chatId);
+    if (!row) return null;
+    return [...row.querySelectorAll('a[href]')]
+      .find((anchor) => chatInfoFromHref(anchor.getAttribute('href'))?.chatId === chatId)
+      || null;
+  }
+
+  function clickLoadedNativeChat(chatId) {
+    const anchor = nativeAnchorForChat(chatId);
+    if (!anchor) return false;
+    wakeNativeRow(anchor.closest('li'));
+    anchor.click();
+    return true;
+  }
+
+  function nativeOptionsButtonForChat(chatId) {
+    const row = nativeRows.get(chatId);
+    if (!row) return null;
+    const buttons = [...row.querySelectorAll('button')]
+      .filter((button) => !button.closest(`#${APP_ID}, #${MENU_ID}`));
+    if (!buttons.length) return null;
+    return buttons.find((button) => {
+      const label = compactTitle([
+        button.getAttribute('aria-label'),
+        button.getAttribute('title'),
+        button.innerText,
+      ].filter(Boolean).join(' '));
+      return /对话选项|conversation options|更多|more|选项|options/i.test(label);
+    }) || buttons.find((button) => (
+      button.querySelectorAll('svg circle').length >= 3
+    )) || buttons.at(-1);
+  }
+
+  function wakeNativeRow(row) {
+    if (!row) return;
+    ['pointerover', 'mouseover', 'mouseenter'].forEach((type) => {
+      row.dispatchEvent(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+      }));
+    });
+  }
+
+  function chatHref(chatId, fallbackHref = '') {
+    const fallbackInfo = chatInfoFromHref(fallbackHref);
+    if (fallbackInfo?.chatId === chatId) return fallbackHref;
+    const knownUrl = state.known[chatId]?.url;
+    if (knownUrl) return knownUrl;
+    return `/c/${encodeURIComponent(chatId)}`;
+  }
+
+  function isChatLocation(chatId) {
+    return chatInfoFromHref(location.href)?.chatId === chatId;
+  }
+
+  function dispatchNativeClick(element) {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect?.() || {};
+    const clientX = Math.max(1, Math.round((rect.left || 0) + Math.min(24, (rect.width || 40) / 2)));
+    const clientY = Math.max(1, Math.round((rect.top || 0) + Math.min(14, (rect.height || 28) / 2)));
+    ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach((type) => {
+      const EventClass = type.startsWith('pointer') && typeof PointerEvent === 'function'
+        ? PointerEvent
+        : MouseEvent;
+      element.dispatchEvent(new EventClass(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        button: 0,
+        buttons: type.endsWith('down') ? 1 : 0,
+        clientX,
+        clientY,
+      }));
+    });
+    return true;
+  }
+
+  function forceOpenChat(chatId, fallbackHref = '') {
+    const href = chatHref(chatId, fallbackHref);
+    const url = new URL(href, location.href);
+    if (url.href === location.href || isChatLocation(chatId)) return;
+    location.assign(url.href);
+  }
+
+  function openChatThroughNativeRow(chatId, fallbackHref = '') {
+    const anchor = nativeAnchorForChat(chatId);
+    const before = location.href;
+    if (anchor) {
+      wakeNativeRow(anchor.closest('li'));
+      dispatchNativeClick(anchor);
+      window.setTimeout(() => {
+        if (location.href === before && !isChatLocation(chatId)) {
+          forceOpenChat(chatId, fallbackHref);
+        }
+      }, 320);
+      return true;
+    }
+    if (fallbackHref) {
+      forceOpenChat(chatId, fallbackHref);
+      return true;
+    }
+    forceOpenChat(chatId);
+    return false;
+  }
+
+  async function openNativeOptionsForChat(chatId, anchorElement) {
+    const row = nativeRows.get(chatId);
+    wakeNativeRow(row);
+    const optionsButton = nativeOptionsButtonForChat(chatId)
+      || await waitForValue(() => {
+        wakeNativeRow(row);
+        return nativeOptionsButtonForChat(chatId);
+      }, 900, 60);
+
+    if (!optionsButton) {
+      showMoveToFolderMenu(chatId, anchorElement);
+      return;
+    }
+
+    pendingNativeMenuChatId = chatId;
+    pendingNativeMenuAnchor = anchorElement;
+    pendingNativeMenuUntil = Date.now() + 3000;
+    nativeMenuAugmented = false;
+    clickWithoutAnchorNavigation(optionsButton);
+    window.setTimeout(augmentNativeConversationMenu, 30);
+    window.setTimeout(augmentNativeConversationMenu, 120);
+    window.setTimeout(augmentNativeConversationMenu, 260);
+    window.setTimeout(() => {
+      if (!visibleNativeMenu()) {
+        showMoveToFolderMenu(chatId, anchorElement);
+      }
+    }, 720);
+  }
+
+  async function renameConversationNatively(chatId, newTitle) {
+    const row = nativeRows.get(chatId);
+    if (!row) throw new Error('原生对话尚未加载');
+
+    const originalParent = row.parentNode;
+    const originalNext = row.nextSibling;
+    const needsStage = row.parentElement === parkingLot || !row.getClientRects().length;
+    if (needsStage) ensureRenameStage().append(row);
+
+    try {
+      wakeNativeRow(row);
+      const optionsButton = nativeOptionsButtonForChat(chatId)
+        || await waitForValue(() => {
+          wakeNativeRow(row);
+          return nativeOptionsButtonForChat(chatId);
+        }, 900, 60);
+      if (!optionsButton) throw new Error('未找到原生省略号菜单');
+
+      pendingNativeMenuChatId = '';
+      nativeMenuAugmented = true;
+      clickWithoutAnchorNavigation(optionsButton);
+
+      const menu = await waitForValue(() => visibleNativeMenu(), 3000);
+      if (!menu) throw new Error('原生菜单未打开');
+      const renameItem = menuItemByText(menu, /^(重命名|Rename)(?:\s|$)/i);
+      if (!renameItem) throw new Error('未找到重命名操作');
+      renameItem.click();
+
+      const oldTitle = state.known[chatId]?.title || '';
+      const input = await waitForValue(() => renameInputForRow(row, oldTitle), 3000);
+      if (!input) throw new Error('未找到重命名输入框');
+
+      input.focus();
+      setNativeInputValue(input, newTitle);
+      const saveButton = saveRenameControl(input, row);
+      if (saveButton) {
+        clickWithoutAnchorNavigation(saveButton);
+      } else {
+        input.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter',
+          code: 'Enter',
+          bubbles: true,
+          cancelable: true,
+        }));
+        input.dispatchEvent(new KeyboardEvent('keyup', {
+          key: 'Enter',
+          code: 'Enter',
+          bubbles: true,
+          cancelable: true,
+        }));
+      }
+
+      const completed = await waitForValue(() => {
+        const currentAnchor = row.querySelector('a[href]');
+        const currentTitle = currentAnchor ? titleFromAnchor(currentAnchor) : '';
+        return currentTitle === newTitle || !input.isConnected;
+      }, 4500);
+      if (!completed) throw new Error('等待保存超时');
+
+      const known = state.known[chatId] || {};
+      known.title = newTitle;
+      state.known[chatId] = known;
+      saveState();
+    } finally {
+      if (needsStage && originalParent) {
+        originalParent.insertBefore(row, originalNext?.parentNode === originalParent ? originalNext : null);
+      }
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        code: 'Escape',
+        bubbles: true,
+      }));
+    }
+  }
+
+  async function startBatchRename() {
+    const modal = document.getElementById(RENAME_ID);
+    if (!modal || renameRun?.running) return;
+    const changes = [...modal.querySelectorAll('.cgpt-rename-input')]
+      .map((input) => ({
+        chatId: input.dataset.chatId,
+        oldTitle: input.dataset.original,
+        newTitle: compactTitle(input.value),
+      }))
+      .filter((item) => item.newTitle && item.newTitle !== item.oldTitle);
+    if (!changes.length) return;
+    if (!window.confirm(`将依次重命名 ${changes.length} 条 ChatGPT 对话。确定开始吗？`)) return;
+
+    renameRun = { running: true, stopped: false };
+    modal.querySelectorAll('.cgpt-rename-input').forEach((input) => { input.disabled = true; });
+    const saveButton = modal.querySelector('[data-cgpt-rename-action="save"]');
+    const closeButton = modal.querySelector('[data-cgpt-rename-action="close"]');
+    if (saveButton) {
+      saveButton.textContent = '停止';
+      saveButton.disabled = false;
+      saveButton.dataset.cgptRenameAction = 'stop';
+    }
+    if (closeButton) closeButton.disabled = true;
+
+    let succeeded = 0;
+    let failed = 0;
+    for (const change of changes) {
+      if (renameRun.stopped) {
+        setRenameStatus(change.chatId, '已停止', 'error');
+        continue;
+      }
+      setRenameStatus(change.chatId, '处理中…', 'running');
+      try {
+        await renameConversationNatively(change.chatId, change.newTitle);
+        setRenameStatus(change.chatId, '已完成', 'success');
+        succeeded += 1;
+      } catch (error) {
+        setRenameStatus(change.chatId, error.message || '失败', 'error');
+        failed += 1;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
+    }
+
+    renameRun.running = false;
+    modal.querySelectorAll('.cgpt-rename-input').forEach((input) => { input.disabled = false; });
+    const toolbar = modal.querySelector('[data-cgpt-rename-count]');
+    if (toolbar) toolbar.textContent = `完成 ${succeeded}，失败 ${failed}`;
+    if (saveButton) {
+      saveButton.textContent = '完成';
+      saveButton.dataset.cgptRenameAction = 'close';
+      saveButton.disabled = false;
+    }
+    if (closeButton) {
+      closeButton.hidden = true;
+      closeButton.disabled = false;
+    }
+    queueRender();
+  }
+
+  function showMoveToFolderMenu(chatId, anchorElement) {
+    const menu = ensureMenu();
+    menu.classList.remove('cgpt-batch-menu');
+    const folders = flattenFolders();
+    const currentFolder = folderContainingChat(chatId);
+    const rect = anchorElement?.getBoundingClientRect?.()
+      || pendingNativeMenuAnchor?.getBoundingClientRect?.()
+      || { left: 16, right: 180, bottom: 80 };
+
+    const folderButtons = folders.length
+      ? folders.map(({ folder, depth }) => `
+          <button class="cgpt-menu-folder"
+                  style="--cgpt-menu-depth:${depth}"
+                  data-cgpt-action="move-chat-to-folder"
+                  data-chat-id="${escapeHtml(chatId)}"
+                  data-folder-id="${escapeHtml(folder.id)}"
+                  ${currentFolder?.id === folder.id ? 'disabled' : ''}>
+            ${icons.folder}
+            <span>${escapeHtml(folder.title)}</span>
+            <span class="cgpt-menu-meta">${countFolderChats(folder) || ''}</span>
+            <span class="cgpt-current-mark">${currentFolder?.id === folder.id ? '✓' : ''}</span>
+          </button>`).join('')
+      : '<div class="cgpt-menu-title">还没有分组</div>';
+
+    menu.innerHTML = `
+      <div class="cgpt-menu-title">${currentFolder ? '移动到其他分组' : '移动到分组'}</div>
+      ${folderButtons}
+      <div class="cgpt-menu-divider"></div>
+      <button data-cgpt-action="new-folder-for-chat" data-chat-id="${escapeHtml(chatId)}">＋ 新建分组并移动</button>
+      ${currentFolder ? `
+        <button data-cgpt-action="remove-chat-from-folder" data-chat-id="${escapeHtml(chatId)}">移出分组</button>
+      ` : ''}`;
+    menu.style.left = `${Math.max(8, Math.min(innerWidth - 190, rect.left - 164))}px`;
+    menu.style.top = `${Math.max(8, Math.min(innerHeight - 280, rect.bottom - 24))}px`;
+    menu.hidden = false;
+  }
+
+  function visibleNativeMenu() {
+    const candidates = [...document.querySelectorAll(
+      '[role="menu"], [data-radix-menu-content], [data-radix-popper-content-wrapper]'
+    )];
+    return candidates
+      .filter((element) => !element.closest(`#${MENU_ID}`))
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 120 && rect.height > 50
+          && style.display !== 'none' && style.visibility !== 'hidden';
+      })
+      .sort((a, b) => {
+        const roleScore = (element) => element.getAttribute('role') === 'menu' ? 1000 : 0;
+        const itemScore = (element) => element.querySelectorAll('[role="menuitem"], button').length;
+        return roleScore(b) + itemScore(b) - roleScore(a) - itemScore(a);
+      })[0] || null;
+  }
+
+  function nativeMenuReferenceItem(menu) {
+    return menu.querySelector('[role="menuitem"]')
+      || menu.querySelector('button')
+      || menu.firstElementChild;
+  }
+
+  function buildNativeMenuItem(reference, label, action, icon) {
+    const tagName = ['BUTTON', 'DIV'].includes(reference?.tagName)
+      ? reference.tagName.toLowerCase()
+      : 'div';
+    const item = document.createElement(tagName);
+    item.className = `${reference?.className || ''} cgpt-native-menu-item`;
+    item.setAttribute('role', 'menuitem');
+    item.setAttribute('tabindex', '-1');
+    item.dataset.cgptNativeMenuAction = action;
+    item.innerHTML = `${icon}<span>${label}</span>`;
+    return item;
+  }
+
+  function augmentNativeConversationMenu() {
+    if (!pendingNativeMenuChatId || nativeMenuAugmented || Date.now() > pendingNativeMenuUntil) return;
+    const menu = visibleNativeMenu();
+    if (!menu || menu.querySelector('[data-cgpt-native-menu-action]')) return;
+    const reference = nativeMenuReferenceItem(menu);
+    if (!reference) return;
+
+    const chatId = pendingNativeMenuChatId;
+    const grouped = Boolean(findChatNode(chatId));
+    const divider = document.createElement('div');
+    divider.className = 'cgpt-menu-divider';
+    divider.dataset.cgptNativeMenuAction = 'divider';
+    const moveItem = buildNativeMenuItem(
+      reference,
+      grouped ? '移动到其他分组' : '移动到分组',
+      'open-folder-picker',
+      icons.move
+    );
+    const removeItem = grouped
+      ? buildNativeMenuItem(reference, '移出分组', 'remove-from-folder', icons.out)
+      : null;
+    const deleteItem = [...menu.querySelectorAll('[role="menuitem"], button')]
+      .find((element) => /^(删除|Delete)(?:\s|$)/i.test(compactTitle(element.innerText)));
+    let insertionPoint = deleteItem;
+    while (insertionPoint?.parentElement && insertionPoint.parentElement !== menu) {
+      insertionPoint = insertionPoint.parentElement;
+    }
+    const insert = (element) => {
+      if (insertionPoint?.parentElement === menu) menu.insertBefore(element, insertionPoint);
+      else menu.append(element);
+    };
+    insert(divider);
+    insert(moveItem);
+    if (grouped) {
+      insert(removeItem);
+    }
+    nativeMenuAugmented = true;
+  }
+
+  function buildRecentMenuItem(reference, label, action, icon) {
+    const item = buildNativeMenuItem(reference, label, `recent:${action}`, icon);
+    item.removeAttribute('data-cgpt-native-menu-action');
+    item.dataset.cgptAction = action;
+    item.dataset.cgptRecentMenuItem = 'true';
+    return item;
+  }
+
+  function augmentNativeRecentMenu() {
+    if (recentMenuAugmented || Date.now() > pendingRecentMenuUntil) return;
+    const menu = visibleNativeMenu();
+    if (!menu || menu.querySelector('[data-cgpt-recent-menu-item]')) return;
+    const text = compactTitle(menu.innerText);
+    if (!/整理聊天|在一个列表中|按项目|organize chats|in one list|by project/i.test(text)) return;
+    const reference = nativeMenuReferenceItem(menu);
+    if (!reference) return;
+
+    const divider = document.createElement('div');
+    divider.className = 'cgpt-menu-divider';
+    divider.dataset.cgptRecentMenuItem = 'true';
+    menu.append(divider);
+    menu.append(
+      buildRecentMenuItem(reference, '新建分组', 'add-folder', icons.plus),
+      buildRecentMenuItem(reference, '批量分组未分组对话', 'batch-group', icons.batch),
+      buildRecentMenuItem(reference, '按标题条件分组…', 'condition-group', icons.move),
+      buildRecentMenuItem(reference, '分组数据、导入与恢复', 'data-menu', icons.folder)
+    );
+    recentMenuAugmented = true;
+  }
+
+  function dismissNativeMenu() {
+    const menu = visibleNativeMenu();
+    if (!menu) return;
+    menu.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    }));
+  }
+
+  function showFolderMenu(button, folderId) {
+    const menu = ensureMenu();
+    menu.classList.remove('cgpt-batch-menu');
+    const folder = findNode(folderId)?.node;
+    if (!folder || folder.type !== 'folder') return;
+    const parentFolder = parentFolderOfNode(folderId);
+    const rect = button.getBoundingClientRect();
+    menu.innerHTML = `
+      <button data-cgpt-action="toggle-folder" data-node-id="${escapeHtml(folderId)}">
+        ${folder.collapsed ? '展开分组' : '折叠分组'}
+      </button>
+      <button data-cgpt-action="rename-folder" data-node-id="${escapeHtml(folderId)}">重命名分组</button>
+      <button data-cgpt-action="add-child" data-node-id="${escapeHtml(folderId)}">新建子分组</button>
+      <button data-cgpt-action="batch-rename-folder" data-node-id="${escapeHtml(folderId)}">批量重命名对话…</button>
+      <div class="cgpt-menu-divider"></div>
+      <button data-cgpt-action="open-folder-move-picker" data-node-id="${escapeHtml(folderId)}">移动分组…</button>
+      ${parentFolder ? `
+        <button data-cgpt-action="move-folder-root" data-node-id="${escapeHtml(folderId)}">移到顶层</button>
+      ` : ''}
+      <div class="cgpt-menu-divider"></div>
+      <button class="cgpt-danger" data-cgpt-action="delete-folder" data-node-id="${escapeHtml(folderId)}">删除分组</button>`;
+    menu.style.left = `${Math.max(8, Math.min(innerWidth - 176, rect.right - 168))}px`;
+    menu.style.top = `${Math.max(8, Math.min(innerHeight - 250, rect.bottom + 4))}px`;
+    menu.hidden = false;
+  }
+
+  function showMoveFolderMenu(folderId, anchorElement) {
+    const menu = ensureMenu();
+    menu.classList.remove('cgpt-batch-menu');
+    const movingFolder = findNode(folderId)?.node;
+    if (!movingFolder || movingFolder.type !== 'folder') return;
+    const currentParent = parentFolderOfNode(folderId);
+    const candidates = flattenFolders().filter(({ folder }) => (
+      folder.id !== movingFolder.id && !folderContains(movingFolder, folder.id)
+    ));
+    const rect = anchorElement.getBoundingClientRect();
+    const buttons = candidates.length
+      ? candidates.map(({ folder, depth }) => `
+          <button class="cgpt-menu-folder"
+                  style="--cgpt-menu-depth:${depth}"
+                  data-cgpt-action="move-folder-to-folder"
+                  data-node-id="${escapeHtml(folderId)}"
+                  data-folder-id="${escapeHtml(folder.id)}"
+                  ${currentParent?.id === folder.id ? 'disabled' : ''}>
+            ${icons.folder}
+            <span>${escapeHtml(folder.title)}</span>
+            <span class="cgpt-menu-meta">${countFolderChats(folder) || ''}</span>
+            <span class="cgpt-current-mark">${currentParent?.id === folder.id ? '✓' : ''}</span>
+          </button>`).join('')
+      : '<div class="cgpt-menu-title">没有可移动到的分组</div>';
+    menu.innerHTML = `
+      <div class="cgpt-menu-title">移动“${escapeHtml(movingFolder.title)}”</div>
+      <button class="cgpt-menu-folder"
+              data-cgpt-action="move-folder-root"
+              data-node-id="${escapeHtml(folderId)}"
+              ${currentParent ? '' : 'disabled'}>
+        ${icons.folder}<span>顶层</span>
+        <span class="cgpt-menu-meta"></span>
+        <span class="cgpt-current-mark">${currentParent ? '' : '✓'}</span>
+      </button>
+      ${buttons}`;
+    menu.style.left = `${Math.max(8, Math.min(innerWidth - 200, rect.left - 176))}px`;
+    menu.style.top = `${Math.max(8, Math.min(innerHeight - 320, rect.top - 6))}px`;
+    menu.hidden = false;
+  }
+
+  function unclassifiedChats() {
+    const classified = classifiedChatIds();
+    return Object.keys(state.known || {})
+      .filter((chatId) => !classified.has(chatId))
+      .map((chatId) => ({
+        chatId,
+        info: state.known[chatId] || {},
+      }))
+      .filter(({ info }) => info?.url || info?.title)
+      .sort((a, b) => chatActivity(b.chatId) - chatActivity(a.chatId));
+  }
+
+  function groupByTitleCondition() {
+    const rawKeywords = window.prompt(
+      '输入标题关键词；多个关键词可用逗号分隔，满足任意一个就会加入分组：',
+      '团建游戏'
+    );
+    const keywords = String(rawKeywords || '')
+      .split(/[,，]/)
+      .map((value) => compactTitle(value).toLocaleLowerCase())
+      .filter(Boolean);
+    if (!keywords.length) return;
+
+    const defaultName = compactTitle(String(rawKeywords).split(/[,，]/)[0]) || '条件分组';
+    const folderName = compactTitle(window.prompt('保存到哪个分组？', defaultName));
+    if (!folderName) return;
+
+    const matchedChatIds = Object.entries(state.known)
+      .filter(([, info]) => {
+        const title = compactTitle(info?.title).toLocaleLowerCase();
+        return title && keywords.some((keyword) => title.includes(keyword));
+      })
+      .map(([chatId]) => chatId);
+    if (!matchedChatIds.length) {
+      window.alert('当前已加载的最近聊天中，没有找到符合条件的标题。');
+      return;
+    }
+
+    let folder = flattenFolders()
+      .map((item) => item.folder)
+      .find((item) => item.title === folderName);
+    if (!folder) {
+      folder = {
+        type: 'folder',
+        id: uid('folder'),
+        title: folderName,
+        collapsed: false,
+        children: [],
+      };
+      state.tree.push(folder);
+    }
+    moveChatsToFolder(matchedChatIds, folder.id);
+    window.alert(`已将 ${matchedChatIds.length} 条匹配对话加入“${folderName}”。`);
+  }
+
+  function updateBatchMenuState() {
+    const menu = document.getElementById(MENU_ID);
+    if (!menu || !menu.classList.contains('cgpt-batch-menu')) return;
+    const checked = [...menu.querySelectorAll('.cgpt-batch-row input:checked')]
+      .map((input) => input.value);
+    batchSelectedChatIds = checked;
+    const total = menu.querySelectorAll('.cgpt-batch-row input').length;
+    const selectAll = menu.querySelector('[data-cgpt-batch-select-all]');
+    if (selectAll) {
+      selectAll.checked = total > 0 && checked.length === total;
+      selectAll.indeterminate = checked.length > 0 && checked.length < total;
+    }
+    const count = menu.querySelector('[data-cgpt-batch-count]');
+    if (count) count.textContent = `已选 ${checked.length} 条`;
+    const next = menu.querySelector('[data-cgpt-action="batch-next"]');
+    if (next) next.disabled = checked.length === 0;
+  }
+
+  function showBatchGroupingMenu(anchorElement) {
+    const menu = ensureMenu();
+    const chats = unclassifiedChats();
+    const rect = anchorElement.getBoundingClientRect();
+    batchSelectedChatIds = [];
+    menu.classList.add('cgpt-batch-menu');
+    menu.innerHTML = chats.length ? `
+      <div class="cgpt-batch-head">
+        <span>批量分组</span>
+        <label>
+          <input type="checkbox" data-cgpt-batch-select-all>
+          全选
+        </label>
+      </div>
+      <div class="cgpt-menu-divider"></div>
+      <div class="cgpt-batch-list">
+        ${chats.map(({ chatId, info }) => `
+          <label class="cgpt-batch-row">
+            <input type="checkbox" value="${escapeHtml(chatId)}">
+            <span title="${escapeHtml(info.title || '未命名对话')}">${escapeHtml(info.title || '未命名对话')}</span>
+          </label>`).join('')}
+      </div>
+      <div class="cgpt-menu-divider"></div>
+      <div class="cgpt-batch-foot">
+        <span data-cgpt-batch-count>已选 0 条</span>
+        <button class="cgpt-batch-primary" data-cgpt-action="batch-next" disabled>选择分组</button>
+      </div>
+    ` : `
+      <div class="cgpt-batch-head"><span>批量分组</span></div>
+      <div class="cgpt-menu-title">当前没有未分组对话</div>
+    `;
+    menu.style.left = `${Math.max(8, Math.min(innerWidth - 340, rect.right - 330))}px`;
+    menu.style.top = `${Math.max(8, Math.min(innerHeight - 500, rect.bottom + 4))}px`;
+    menu.hidden = false;
+  }
+
+  function showBatchFolderMenu(anchorElement) {
+    const menu = ensureMenu();
+    const folders = flattenFolders();
+    const rect = anchorElement.getBoundingClientRect();
+    menu.classList.remove('cgpt-batch-menu');
+    menu.innerHTML = `
+      <div class="cgpt-menu-title">将 ${batchSelectedChatIds.length} 条对话移动到</div>
+      ${folders.length ? folders.map(({ folder, depth }) => `
+        <button class="cgpt-menu-folder"
+                style="--cgpt-menu-depth:${depth}"
+                data-cgpt-action="batch-move-to-folder"
+                data-folder-id="${escapeHtml(folder.id)}">
+          ${icons.folder}
+          <span>${escapeHtml(folder.title)}</span>
+          <span class="cgpt-menu-meta">${countFolderChats(folder) || ''}</span>
+          <span class="cgpt-current-mark"></span>
+        </button>`).join('') : '<div class="cgpt-menu-title">还没有分组</div>'}
+      <div class="cgpt-menu-divider"></div>
+      <button data-cgpt-action="batch-new-folder">＋ 新建分组并移动</button>`;
+    menu.style.left = `${Math.max(8, Math.min(innerWidth - 220, rect.left - 190))}px`;
+    menu.style.top = `${Math.max(8, Math.min(innerHeight - 360, rect.top - 8))}px`;
+    menu.hidden = false;
+  }
+
+  function classifiedChatIdList(nodes = state.tree, result = []) {
+    nodes.forEach((node) => {
+      if (node.type === 'chat') result.push(node.chatId);
+      else classifiedChatIdList(node.children, result);
+    });
+    return result;
+  }
+
+  function exportGroupData() {
+    const chatIds = [...new Set(classifiedChatIdList())];
+    const ungroupedChatIds = unclassifiedChats().map(({ chatId }) => chatId);
+    const knownChatIds = [...new Set([
+      ...Object.keys(state.known || {}),
+      ...chatIds,
+      ...ungroupedChatIds,
+    ])];
+    const known = {};
+    knownChatIds.forEach((chatId) => {
+      if (state.known[chatId]) known[chatId] = { ...state.known[chatId] };
+    });
+    const payload = {
+      format: APP_ID,
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      sourceHost: location.host,
+      summary: {
+        folders: flattenFolders().length,
+        chats: chatIds.length,
+        ungroupedChats: ungroupedChatIds.length,
+        knownChats: knownChatIds.length,
+      },
+      state: {
+        version: 2,
+        tree: typeof structuredClone === 'function'
+          ? structuredClone(state.tree)
+          : JSON.parse(JSON.stringify(state.tree)),
+        known,
+      },
+    };
+    const json = JSON.stringify(payload, null, 2);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    anchor.href = url;
+    anchor.download = `chatgpt-conversation-groups-${stamp}.json`;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function sanitizeKnownRecord(record) {
+    if (!record || typeof record !== 'object') return {};
+    const clean = {};
+    if (typeof record.title === 'string') clean.title = compactTitle(record.title);
+    if (typeof record.url === 'string' && record.url.startsWith('/')) {
+      clean.url = record.url.slice(0, 500);
+    }
+    if (Number.isFinite(Number(record.activity))) clean.activity = Number(record.activity);
+    if (Number.isFinite(Number(record.firstSeen))) clean.firstSeen = Number(record.firstSeen);
+    if (Number.isFinite(Number(record.lastSeen))) clean.lastSeen = Number(record.lastSeen);
+    return clean;
+  }
+
+  function sanitizeImportedData(raw) {
+    const source = raw?.state && typeof raw.state === 'object' ? raw.state : raw;
+    if (!source || !Array.isArray(source.tree)) {
+      throw new Error('不是有效的分组备份文件');
+    }
+    if (raw?.format && raw.format !== APP_ID) {
+      throw new Error('该 JSON 不是本脚本导出的分组数据');
+    }
+
+    const seenChats = new Set();
+    let nodeCount = 0;
+    const sanitizeNodes = (nodes, depth = 0) => {
+      if (!Array.isArray(nodes) || depth > 20) return [];
+      const result = [];
+      nodes.forEach((node) => {
+        if (!node || typeof node !== 'object' || nodeCount >= 10000) return;
+        nodeCount += 1;
+        if (node.type === 'folder') {
+          const title = compactTitle(node.title) || '未命名分组';
+          result.push({
+            type: 'folder',
+            id: uid('folder'),
+            title,
+            collapsed: Boolean(node.collapsed),
+            children: sanitizeNodes(node.children, depth + 1),
+          });
+          return;
+        }
+        if (node.type === 'chat') {
+          const chatId = String(node.chatId || '').trim().slice(0, 256);
+          if (!chatId || seenChats.has(chatId)) return;
+          seenChats.add(chatId);
+          result.push({
+            type: 'chat',
+            id: uid('chat-node'),
+            chatId,
+          });
+        }
+      });
+      return result;
+    };
+
+    const tree = sanitizeNodes(source.tree);
+    const known = {};
+    if (source.known && typeof source.known === 'object') {
+      seenChats.forEach((chatId) => {
+        known[chatId] = sanitizeKnownRecord(source.known[chatId]);
+      });
+    }
+    return {
+      tree,
+      known,
+      folders: (() => {
+        const count = (nodes) => nodes.reduce((total, node) => (
+          total + (node.type === 'folder' ? 1 + count(node.children) : 0)
+        ), 0);
+        return count(tree);
+      })(),
+      chats: seenChats.size,
+    };
+  }
+
+  function pruneImportedDuplicates(nodes, blockedChatIds) {
+    return nodes.map((node) => {
+      if (node.type === 'chat') {
+        if (blockedChatIds.has(node.chatId)) return null;
+        blockedChatIds.add(node.chatId);
+        return node;
+      }
+      return {
+        ...node,
+        children: pruneImportedDuplicates(node.children, blockedChatIds),
+      };
+    }).filter(Boolean);
+  }
+
+  function importGroupData(imported, mode) {
+    if (mode === 'replace') {
+      if (!window.confirm(
+        `将用备份中的 ${imported.folders} 个分组、${imported.chats} 条对话替换本机分组数据。确定继续吗？`
+      )) return false;
+      state.tree = imported.tree;
+      state.known = {
+        ...state.known,
+        ...imported.known,
+      };
+    } else {
+      const existingChatIds = classifiedChatIds();
+      const importedTree = pruneImportedDuplicates(imported.tree, existingChatIds);
+      state.tree.push(...importedTree);
+      state.known = {
+        ...imported.known,
+        ...state.known,
+      };
+    }
+    saveState(true, mode === 'replace');
+    queueRender();
+    return true;
+  }
+
+  async function handleImportFile(file) {
+    if (!file) return;
+    try {
+      if (file.size > 5 * 1024 * 1024) {
+        throw new Error('备份文件超过 5MB，已拒绝导入');
+      }
+      const raw = JSON.parse(await file.text());
+      const imported = sanitizeImportedData(raw);
+      const completed = importGroupData(imported, pendingImportMode);
+      if (completed) {
+        window.alert(
+          `导入完成：${imported.folders} 个分组，${imported.chats} 条已分组对话。`
+        );
+      }
+    } catch (error) {
+      window.alert(`导入失败：${error.message || '文件格式错误'}`);
+    } finally {
+      const input = document.getElementById(IMPORT_INPUT_ID);
+      if (input) input.value = '';
+    }
+  }
+
+  function chooseImportFile(mode) {
+    pendingImportMode = mode;
+    const input = ensureImportInput();
+    input.value = '';
+    input.click();
+  }
+
+  function recoverySnapshots() {
+    const snapshots = [];
+    localStorageKeys()
+      .filter((key) => key.startsWith(BACKUP_PREFIX))
+      .forEach((key) => {
+        try {
+          const item = JSON.parse(localStorage.getItem(key) || 'null');
+          const candidate = item?.state && Array.isArray(item.state.tree) ? item.state : null;
+          if (!candidate) return;
+          snapshots.push({
+            key,
+            state: candidate,
+            savedAt: item.savedAt || key.slice(BACKUP_PREFIX.length),
+            reason: item.reason || '历史快照',
+            counts: item.counts || countStateItems(candidate),
+          });
+        } catch {
+          // 忽略损坏的单个快照。
+        }
+      });
+    try {
+      GM_listValues()
+        .filter((key) => key.startsWith(GM_BACKUP_PREFIX))
+        .forEach((key) => {
+          const item = GM_getValue(key, null);
+          const candidate = item?.state && Array.isArray(item.state.tree) ? item.state : null;
+          if (!candidate) return;
+          snapshots.push({
+            key: `gm:${key}`,
+            state: candidate,
+            savedAt: item.savedAt || key.slice(GM_BACKUP_PREFIX.length),
+            reason: item.reason || '油猴独立存储快照',
+            counts: item.counts || countStateItems(candidate),
+          });
+        });
+    } catch {
+      // localStorage 快照仍然会参与恢复。
+    }
+
+    const legacy = parseStateValue(localStorage.getItem(LEGACY_STORAGE_KEY));
+    if (legacy && JSON.stringify(legacy.tree) !== JSON.stringify(state.tree)) {
+      snapshots.push({
+        key: LEGACY_STORAGE_KEY,
+        state: legacy,
+        savedAt: '旧版脚本当前数据',
+        reason: '旧版兼容存储区',
+        counts: countStateItems(legacy),
+      });
+    }
+    return snapshots.sort((a, b) => (
+      (b.counts.chats - a.counts.chats)
+      || (b.counts.folders - a.counts.folders)
+      || String(b.savedAt).localeCompare(String(a.savedAt))
+    ));
+  }
+
+  function restoreBestSnapshot() {
+    captureLegacyCandidate();
+    const snapshots = recoverySnapshots();
+    if (!snapshots.length) {
+      window.alert('暂时没有发现可恢复的历史快照。请先不要关闭较早打开的 ChatGPT 标签页。');
+      return;
+    }
+    const best = snapshots[0];
+    const currentCounts = countStateItems(state);
+    const message = [
+      `发现历史快照：${best.counts.folders} 个分组 / ${best.counts.chats} 条已分组对话。`,
+      `当前：${currentCounts.folders} 个分组 / ${currentCounts.chats} 条已分组对话。`,
+      '',
+      `来源：${best.reason}（${best.savedAt}）`,
+      '恢复前会自动备份当前数据。是否恢复？',
+    ].join('\n');
+    if (!window.confirm(message)) return;
+    storeBackup(state, '恢复历史快照前的当前数据');
+    state = {
+      ...defaultState(),
+      ...best.state,
+      version: 3,
+      known: best.state.known && typeof best.state.known === 'object'
+        ? best.state.known
+        : {},
+    };
+    saveState(true);
+    queueRender();
+    window.alert('历史分组已恢复。');
+  }
+
+  function showDataMenu(anchorElement) {
+    const menu = ensureMenu();
+    menu.classList.remove('cgpt-batch-menu');
+    captureLegacyCandidate();
+    const rect = anchorElement.getBoundingClientRect();
+    const folderCount = flattenFolders().length;
+    const chatCount = classifiedChatIdList().length;
+    const snapshotCount = recoverySnapshots().length;
+    menu.innerHTML = `
+      <div class="cgpt-menu-title">分组数据 · ${folderCount} 个分组 / ${chatCount} 条对话</div>
+      <button data-cgpt-action="export-data">导出分组数据（JSON）</button>
+      <div class="cgpt-menu-divider"></div>
+      <button data-cgpt-action="import-data-merge">导入并合并…</button>
+      <button data-cgpt-action="import-data-replace">导入并替换…</button>
+      <div class="cgpt-menu-divider"></div>
+      <button data-cgpt-action="restore-snapshot">恢复历史分组${snapshotCount ? `（${snapshotCount}）` : ''}</button>`;
+    menu.style.left = `${Math.max(8, Math.min(innerWidth - 220, rect.right - 210))}px`;
+    menu.style.top = `${Math.max(8, Math.min(innerHeight - 190, rect.bottom + 4))}px`;
+    menu.hidden = false;
+  }
+
+  function closeMenu() {
+    const menu = document.getElementById(MENU_ID);
+    if (menu) {
+      menu.hidden = true;
+      menu.classList.remove('cgpt-batch-menu');
+    }
+  }
+
+  function setDragPayload(event, payload) {
+    activeDrag = { app: APP_ID, ...payload };
+    const raw = JSON.stringify(activeDrag);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData(DRAG_MIME, raw);
+    event.dataTransfer.setData('text/plain', raw);
+  }
+
+  function payloadFromEvent(event) {
+    if (activeDrag) return activeDrag;
+    for (const type of [DRAG_MIME, 'text/plain']) {
+      try {
+        const value = event.dataTransfer?.getData(type);
+        if (!value) continue;
+        const parsed = JSON.parse(value);
+        if (parsed?.app === APP_ID) return parsed;
+      } catch {
+        // Ignore ordinary text drags.
+      }
+    }
+    return null;
+  }
+
+  function clearDropIndicators() {
+    document.querySelectorAll(
+      '.cgpt-drop-folder, .cgpt-drop-folder-range, .cgpt-drop-before, .cgpt-drop-root'
+    )
+      .forEach((element) => element.classList.remove(
+        'cgpt-drop-folder',
+        'cgpt-drop-folder-range',
+        'cgpt-drop-before',
+        'cgpt-drop-root'
+      ));
+    recentHeader?.classList.remove('cgpt-recent-drop');
+  }
+
+  function isNativeRecentDropArea(target) {
+    return Boolean(
+      (target.closest?.('#history') && !target.closest?.(`#${APP_ID}`))
+      || recentHeader?.contains(target)
+    );
+  }
+
+  function treeDropTarget(event) {
+    const ungroupedFolder = event.target.closest?.('[data-cgpt-ungrouped-drop]');
+    if (ungroupedFolder) {
+      return { kind: 'unclassified', element: ungroupedFolder };
+    }
+    const folderRow = event.target.closest?.('.cgpt-folder-row[data-folder-id]');
+    if (folderRow) {
+      const rect = folderRow.getBoundingClientRect();
+      if (event.clientY <= rect.top + Math.min(9, rect.height * 0.28)) {
+        return { kind: 'before', nodeId: folderRow.dataset.folderId, element: folderRow };
+      }
+      return { kind: 'folder', nodeId: folderRow.dataset.folderId, element: folderRow };
+    }
+    const folderArea = event.target.closest?.('.cgpt-folder[data-folder-node-id]');
+    if (folderArea) {
+      return {
+        kind: 'folder',
+        nodeId: folderArea.dataset.folderNodeId,
+        element: folderArea,
+        area: true,
+      };
+    }
+    if (event.target.closest?.(`#${APP_ID}`)) {
+      return { kind: 'root', element: host };
+    }
+    return null;
+  }
+
+  function handleAction(actionElement) {
+    const action = actionElement.dataset.cgptAction;
+    const nodeId = actionElement.dataset.nodeId;
+
+    if (action === 'add-folder') addFolder();
+    else if (action === 'batch-group') showBatchGroupingMenu(actionElement);
+    else if (action === 'condition-group') groupByTitleCondition();
+    else if (action === 'data-menu') showDataMenu(actionElement);
+    else if (action === 'toggle-ungrouped') {
+      ungroupedCollapsed = !ungroupedCollapsed;
+      try {
+        GM_setValue(UNGROUPED_COLLAPSED_KEY, ungroupedCollapsed);
+      } catch {
+        // 折叠状态不是关键数据。
+      }
+      queueRender();
+    }
+    else if (action === 'export-data') {
+      exportGroupData();
+      closeMenu();
+    } else if (action === 'import-data-merge') {
+      chooseImportFile('merge');
+      closeMenu();
+    } else if (action === 'import-data-replace') {
+      chooseImportFile('replace');
+      closeMenu();
+    } else if (action === 'restore-snapshot') {
+      restoreBestSnapshot();
+      closeMenu();
+    }
+    else if (action === 'add-child') addFolder(nodeId);
+    else if (action === 'rename-folder') renameFolder(nodeId);
+    else if (action === 'delete-folder') deleteFolder(nodeId);
+    else if (action === 'folder-menu') showFolderMenu(actionElement, nodeId);
+    else if (action === 'batch-rename-folder') showBatchRenameDialog(nodeId);
+    else if (action === 'open-folder-move-picker') {
+      showMoveFolderMenu(nodeId, actionElement);
+    } else if (action === 'move-folder-to-folder') {
+      movePayload(
+        { kind: 'folder', nodeId },
+        { kind: 'folder', nodeId: actionElement.dataset.folderId }
+      );
+      closeMenu();
+    } else if (action === 'move-folder-root') {
+      movePayload({ kind: 'folder', nodeId }, { kind: 'root' });
+      closeMenu();
+    }
+    else if (action === 'move-chat-to-folder') {
+      movePayload(
+        { kind: 'chat', chatId: actionElement.dataset.chatId },
+        { kind: 'folder', nodeId: actionElement.dataset.folderId }
+      );
+      closeMenu();
+    } else if (action === 'remove-chat-from-folder') {
+      const chatNode = findChatNode(actionElement.dataset.chatId);
+      if (chatNode) unclassifyChatNode(chatNode.id);
+      closeMenu();
+    } else if (action === 'new-folder-for-chat') {
+      addFolder(null, actionElement.dataset.chatId);
+      closeMenu();
+    } else if (action === 'batch-next') {
+      showBatchFolderMenu(actionElement);
+    } else if (action === 'batch-move-to-folder') {
+      moveChatsToFolder(batchSelectedChatIds, actionElement.dataset.folderId);
+      batchSelectedChatIds = [];
+      closeMenu();
+    } else if (action === 'batch-new-folder') {
+      addFolderWithChats(batchSelectedChatIds);
+      batchSelectedChatIds = [];
+      closeMenu();
+    }
+    else if (action === 'toggle-folder') {
+      const folder = findNode(nodeId)?.node;
+      if (folder?.type === 'folder') {
+        folder.collapsed = !folder.collapsed;
+        persistAndRender(true);
+      }
+    } else if (action === 'collapse-all') {
+      const folders = [];
+      const collect = (nodes) => nodes.forEach((node) => {
+        if (node.type === 'folder') {
+          folders.push(node);
+          collect(node.children);
+        }
+      });
+      collect(state.tree);
+      const collapse = folders.some((folder) => !folder.collapsed);
+      folders.forEach((folder) => { folder.collapsed = collapse; });
+      persistAndRender(true);
+    }
+  }
+
+  function bindEvents() {
+    if (eventsBound) return;
+    eventsBound = true;
+
+    document.addEventListener('click', (event) => {
+      const proxyOptions = event.target.closest?.('[data-cgpt-proxy-options]');
+      if (proxyOptions) {
+        event.preventDefault();
+        event.stopPropagation();
+        const chatId = proxyOptions.dataset.cgptProxyOptions;
+        openNativeOptionsForChat(chatId, proxyOptions);
+        return;
+      }
+
+      const proxyLink = event.target.closest?.(`#${APP_ID} .cgpt-fallback-link[href]`);
+      if (proxyLink) {
+        const row = proxyLink.closest('[data-chat-id]');
+        const chatId = row?.dataset.chatId;
+        if (chatId && nativeAnchorForChat(chatId)) {
+          event.preventDefault();
+          event.stopPropagation();
+          const before = location.href;
+          window.dispatchEvent(new CustomEvent(PAGE_OPEN_EVENT, {
+            detail: { chatId, href: proxyLink.getAttribute('href') || '' },
+          }));
+          window.setTimeout(() => {
+            if (location.href === before && !isChatLocation(chatId)) {
+              forceOpenChat(chatId, proxyLink.getAttribute('href') || '');
+            }
+          }, 900);
+        }
+        return;
+      }
+
+      const proxyRow = event.target.closest?.(`#${APP_ID} .cgpt-fallback-chat[data-chat-id]`);
+      if (proxyRow) {
+        const chatId = proxyRow.dataset.chatId;
+        const fallbackLink = proxyRow.querySelector('.cgpt-fallback-link[href]');
+        if (chatId && nativeAnchorForChat(chatId)) {
+          event.preventDefault();
+          event.stopPropagation();
+          const before = location.href;
+          window.dispatchEvent(new CustomEvent(PAGE_OPEN_EVENT, {
+            detail: { chatId, href: fallbackLink?.getAttribute('href') || '' },
+          }));
+          window.setTimeout(() => {
+            if (location.href === before && !isChatLocation(chatId)) {
+              forceOpenChat(chatId, fallbackLink?.getAttribute('href') || '');
+            }
+          }, 900);
+          return;
+        }
+        if (fallbackLink && event.target === proxyRow) fallbackLink.click();
+        return;
+      }
+
+      const renameAction = event.target.closest?.('[data-cgpt-rename-action]');
+      if (renameAction) {
+        event.preventDefault();
+        event.stopPropagation();
+        const action = renameAction.dataset.cgptRenameAction;
+        if (action === 'close') closeBatchRenameDialog();
+        else if (action === 'save') startBatchRename();
+        else if (action === 'stop' && renameRun) renameRun.stopped = true;
+        return;
+      }
+
+      const nativeAction = event.target.closest?.('[data-cgpt-native-menu-action]');
+      if (nativeAction) {
+        event.preventDefault();
+        event.stopPropagation();
+        const chatId = pendingNativeMenuChatId;
+        const action = nativeAction.dataset.cgptNativeMenuAction;
+        if (action === 'open-folder-picker' && chatId) {
+          showMoveToFolderMenu(chatId, nativeAction);
+          window.setTimeout(dismissNativeMenu, 0);
+        } else if (action === 'remove-from-folder' && chatId) {
+          const chatNode = findChatNode(chatId);
+          if (chatNode) unclassifyChatNode(chatNode.id);
+          window.setTimeout(dismissNativeMenu, 0);
+        }
+        return;
+      }
+
+      const actionElement = event.target.closest?.('[data-cgpt-action]');
+      if (actionElement) {
+        event.preventDefault();
+        event.stopPropagation();
+        const fromRecentNativeMenu = Boolean(
+          actionElement.closest('[role="menu"], [data-radix-menu-content], [data-radix-popper-content-wrapper]')
+          && actionElement.dataset.cgptRecentMenuItem
+        );
+        handleAction(actionElement);
+        if (fromRecentNativeMenu) window.setTimeout(dismissNativeMenu, 0);
+        if (
+          actionElement.closest(`#${MENU_ID}`)
+          && !['open-folder-move-picker', 'batch-next'].includes(
+            actionElement.dataset.cgptAction
+          )
+        ) closeMenu();
+        return;
+      }
+      if (!event.target.closest?.(`#${MENU_ID}`)) closeMenu();
+    }, true);
+
+    document.addEventListener('change', (event) => {
+      if (event.target.id === IMPORT_INPUT_ID) {
+        handleImportFile(event.target.files?.[0]);
+        return;
+      }
+      const menu = event.target.closest?.(`#${MENU_ID}.cgpt-batch-menu`);
+      if (!menu) return;
+      if (event.target.matches('[data-cgpt-batch-select-all]')) {
+        menu.querySelectorAll('.cgpt-batch-row input')
+          .forEach((input) => { input.checked = event.target.checked; });
+      }
+      updateBatchMenuState();
+    }, true);
+
+    document.addEventListener('input', (event) => {
+      if (event.target.matches?.(`#${RENAME_ID} .cgpt-rename-input`)) {
+        updateRenameEditorState();
+      }
+    }, true);
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !document.getElementById(RENAME_ID)?.hidden) {
+        closeBatchRenameDialog();
+      }
+    }, true);
+
+    document.addEventListener('pointerdown', (event) => {
+      const button = event.target.closest?.('button');
+      const label = button?.getAttribute('aria-label') || '';
+      const visibleLabel = compactTitle(`${label} ${button?.innerText || ''}`);
+      if (
+        button
+        && (
+          /整理聊天|organize chats/i.test(visibleLabel)
+          || (recentHeader?.contains(button) && /更多|more|选项|options/i.test(visibleLabel))
+        )
+      ) {
+        pendingRecentMenuUntil = Date.now() + 3000;
+        recentMenuAugmented = false;
+        window.setTimeout(augmentNativeRecentMenu, 30);
+        window.setTimeout(augmentNativeRecentMenu, 120);
+      }
+      if (!button || !/对话选项|conversation options/i.test(label)) return;
+      const anchor = button.closest('a[href]');
+      const info = chatInfoFromHref(anchor?.getAttribute('href'));
+      if (!info) return;
+      pendingNativeMenuChatId = info.chatId;
+      pendingNativeMenuAnchor = button;
+      pendingNativeMenuUntil = Date.now() + 3000;
+      nativeMenuAugmented = false;
+      window.setTimeout(augmentNativeConversationMenu, 30);
+      window.setTimeout(augmentNativeConversationMenu, 120);
+    }, true);
+
+    document.addEventListener('dragstart', (event) => {
+      if (event.target.closest?.('button')) return;
+
+      const folderRow = event.target.closest?.('.cgpt-folder-row[data-folder-id]');
+      if (folderRow) {
+        folderRow.classList.add('cgpt-dragging');
+        setDragPayload(event, {
+          kind: 'folder',
+          nodeId: folderRow.dataset.folderId,
+          source: 'tree',
+        });
+        return;
+      }
+
+      const fallback = event.target.closest?.('.cgpt-fallback-chat[data-cgpt-tree-node-id]');
+      if (fallback) {
+        const node = findNode(fallback.dataset.cgptTreeNodeId)?.node;
+        if (!node || node.type !== 'chat') return;
+        fallback.classList.add('cgpt-dragging');
+        setDragPayload(event, {
+          kind: 'chat',
+          nodeId: node.id,
+          chatId: node.chatId,
+          source: 'tree',
+        });
+        return;
+      }
+
+      const ungrouped = event.target.closest?.('[data-cgpt-ungrouped-chat]');
+      if (ungrouped) {
+        const chatId = ungrouped.dataset.cgptUngroupedChat;
+        ungrouped.classList.add('cgpt-dragging');
+        setDragPayload(event, {
+          kind: 'chat',
+          chatId,
+          source: 'ungrouped',
+        });
+        return;
+      }
+
+      const row = event.target.closest?.('li[data-cgpt-chat-id]');
+      if (!row) return;
+      const chatId = row.dataset.cgptChatId;
+      const existing = findChatNode(chatId);
+      row.classList.add('cgpt-dragging');
+      setDragPayload(event, {
+        kind: 'chat',
+        nodeId: existing?.id,
+        chatId,
+        source: existing ? 'tree' : 'native',
+      });
+    }, true);
+
+    document.addEventListener('dragover', (event) => {
+      const payload = payloadFromEvent(event);
+      if (!payload) return;
+      clearDropIndicators();
+
+      const treeTarget = treeDropTarget(event);
+      if (treeTarget) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        if (treeTarget.kind === 'before') treeTarget.element.classList.add('cgpt-drop-before');
+        else if (treeTarget.kind === 'folder') {
+          treeTarget.element.classList.add(
+            treeTarget.area ? 'cgpt-drop-folder-range' : 'cgpt-drop-folder'
+          );
+        }
+        else host.classList.add('cgpt-drop-root');
+        return;
+      }
+
+      if (isNativeRecentDropArea(event.target)) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        recentHeader?.classList.add('cgpt-recent-drop');
+      }
+    }, true);
+
+    document.addEventListener('drop', (event) => {
+      const payload = payloadFromEvent(event);
+      if (!payload) return;
+      const treeTarget = treeDropTarget(event);
+      clearDropIndicators();
+
+      if (treeTarget) {
+        event.preventDefault();
+        movePayload(payload, treeTarget);
+      } else if (isNativeRecentDropArea(event.target)) {
+        event.preventDefault();
+        movePayload(payload, payload.kind === 'chat'
+          ? { kind: 'unclassified' }
+          : { kind: 'root' });
+      }
+      activeDrag = null;
+    }, true);
+
+    document.addEventListener('dragend', () => {
+      activeDrag = null;
+      clearDropIndicators();
+      document.querySelectorAll('.cgpt-dragging')
+        .forEach((element) => element.classList.remove('cgpt-dragging'));
+    }, true);
+
+    window.addEventListener('storage', (event) => {
+      if (event.key !== STORAGE_KEY) return;
+      state = loadState();
+      queueRender();
+    });
+  }
+
+  const observer = new MutationObserver((mutations) => {
+    if (pendingNativeMenuChatId) augmentNativeConversationMenu();
+    if (Date.now() <= pendingRecentMenuUntil) augmentNativeRecentMenu();
+    if (rendering || Date.now() < ignoreMutationsUntil) return;
+    const externalChange = mutations.some((mutation) => {
+      const target = mutation.target.nodeType === 1
+        ? mutation.target
+        : mutation.target.parentElement;
+      return !target?.closest?.(`#${APP_ID}, #${HEADER_ID}, #${MENU_ID}`);
+    });
+    if (externalChange) scheduleScan();
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+
+  let previousUrl = location.href;
+  window.setInterval(() => {
+    if (location.href !== previousUrl) {
+      previousUrl = location.href;
+      scheduleScan();
+    }
+  }, 600);
+  window.setInterval(() => {
+    syncLegacyChanges();
+    scheduleScan();
+  }, 2500);
+
+  if (!localStorage.getItem(STORAGE_KEY)) saveState(true);
+  scanNativeChats();
+})();
