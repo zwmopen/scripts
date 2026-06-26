@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.5.1
+// @version      1.5.2
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT“最近”列表，并给图片组增加外置下载全部快捷按钮。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -94,6 +94,7 @@
   let pendingRecentMenuUntil = 0;
   let recentMenuAugmented = false;
   let imageToolsTimer = 0;
+  let imageEventsBound = false;
   let ungroupedCollapsed = (() => {
     try {
       return Boolean(GM_getValue(UNGROUPED_COLLAPSED_KEY, false));
@@ -766,7 +767,7 @@
         display: inline-flex;
         align-items: center;
         gap: 4px;
-        margin-inline-start: 4px;
+        margin-inline-start: 2px;
         vertical-align: middle;
       }
       .${IMAGE_DOWNLOAD_SLOT_CLASS}.cgpt-image-download-fallback {
@@ -774,17 +775,20 @@
         margin: 7px 0 2px;
       }
       .${IMAGE_DOWNLOAD_CLASS} {
-        min-height: 30px;
+        position: relative;
+        min-width: 34px;
+        height: 34px;
         display: inline-flex;
         align-items: center;
+        justify-content: center;
         gap: 6px;
-        padding: 5px 10px;
+        padding: 0 7px;
         border: 0;
-        border-radius: 999px;
+        border-radius: 10px;
         color: var(--text-primary, currentColor);
         background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
         font: inherit;
-        font-size: 13px;
+        font-size: 12px;
         line-height: 1;
         cursor: pointer;
       }
@@ -804,6 +808,12 @@
         stroke-width: 1.65;
         stroke-linecap: round;
         stroke-linejoin: round;
+      }
+      .${IMAGE_DOWNLOAD_CLASS} .cgpt-image-download-count {
+        min-width: 8px;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1;
       }
       #${MENU_ID}.cgpt-batch-menu {
         width: min(330px, calc(100vw - 20px));
@@ -3015,6 +3025,20 @@
     });
   }
 
+  function broadImageElements(scope = document, minSize = 24) {
+    const root = scope === document ? (document.querySelector('main') || document.body) : scope;
+    return [...root.querySelectorAll('img')].filter((img) => {
+      if (img.closest?.(`#${APP_ID}, #${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return false;
+      if (img.closest?.('#history, nav, aside, [role="navigation"]')) return false;
+      if (img.closest?.('[data-radix-menu-content], [data-radix-popper-content-wrapper]')) return false;
+      const src = img.currentSrc || img.src || '';
+      if (!src || /^data:image\/svg/i.test(src)) return false;
+      const rect = img.getBoundingClientRect?.();
+      if (!rect || rect.width < minSize || rect.height < minSize) return false;
+      return isElementVisible(img);
+    });
+  }
+
   function imageTurnContainer(img) {
     return img.closest?.('[data-testid^="conversation-turn"], [data-message-author-role], article, [class*="group/conversation-turn"]')
       || img.closest?.('main > div > div > div')
@@ -3031,6 +3055,51 @@
       groups.set(container, images);
     });
     return [...groups.entries()].filter(([, images]) => images.length > 0);
+  }
+
+  function countFromText(text) {
+    const source = compactTitle(text || '');
+    const patterns = [
+      /\b\d+\s*\/\s*(\d+)\b/,
+      /(?:本组|共|全部|total|all|of)\D{0,8}(\d{1,3})\D{0,6}(?:张|图|image|images)/i,
+      /(?:下载|download)\D{0,8}(\d{1,3})\D{0,6}(?:张|图|image|images)/i,
+      /(?:第|image|图片)\D{0,4}\d{1,3}\D{0,5}(?:共|of|\/)\D{0,4}(\d{1,3})/i,
+    ];
+    for (const pattern of patterns) {
+      const match = source.match(pattern);
+      const value = Number(match?.[1]);
+      if (Number.isFinite(value) && value > 1 && value < 100) return value;
+    }
+    return 0;
+  }
+
+  function inferDeclaredImageCount(container, row) {
+    const bits = [];
+    const scopes = [container, row].filter(Boolean);
+    scopes.forEach((scope) => {
+      bits.push(elementText(scope));
+      scope.querySelectorAll?.('[aria-label], [title], [alt], button, [role="button"]')
+        .forEach((element) => {
+          bits.push(elementText(element));
+          bits.push(element.getAttribute?.('alt') || '');
+        });
+    });
+    const declared = countFromText(bits.join(' '));
+    if (declared) return declared;
+
+    const candidates = broadImageElements(container || document, 24);
+    let maxIndex = 0;
+    candidates.forEach((img) => {
+      const text = [
+        img.getAttribute('aria-label'),
+        img.getAttribute('title'),
+        img.getAttribute('alt'),
+        img.closest?.('button, [role="button"]')?.getAttribute?.('aria-label'),
+      ].filter(Boolean).join(' ');
+      const value = countFromText(text);
+      if (value > maxIndex) maxIndex = value;
+    });
+    return maxIndex;
   }
 
   function findImageActionRow(container) {
@@ -3096,7 +3165,11 @@
     const rowRect = row.getBoundingClientRect();
     const sameTurn = row.closest?.('[data-testid^="conversation-turn"], [data-message-author-role], article, [class*="group/conversation-turn"]');
     const sameTurnImages = sameTurn
-      ? contentImageElements(sameTurn).filter((img) => img.getBoundingClientRect().top < rowRect.bottom + 80)
+      ? contentImageElements(sameTurn).filter((img) => {
+        const rect = img.getBoundingClientRect();
+        const gap = rowRect.top - rect.bottom;
+        return gap > -8 && gap < Math.max(320, innerHeight * 0.36);
+      })
       : [];
     if (sameTurnImages.length) {
       return { container: sameTurn, images: sameTurnImages };
@@ -3108,7 +3181,11 @@
       const rect = ancestor.getBoundingClientRect?.();
       if (!rect || rect.height > Math.max(1400, innerHeight * 1.65)) continue;
       const images = contentImageElements(ancestor)
-        .filter((img) => img.getBoundingClientRect().top < rowRect.bottom + 80);
+        .filter((img) => {
+          const imgRect = img.getBoundingClientRect();
+          const gap = rowRect.top - imgRect.bottom;
+          return gap > -8 && gap < Math.max(360, innerHeight * 0.42);
+        });
       if (images.length) return { container: ancestor, images };
     }
 
@@ -3116,7 +3193,7 @@
       .map((img) => ({ img, rect: img.getBoundingClientRect() }))
       .filter(({ rect }) => {
         const verticalGap = rowRect.top - rect.bottom;
-        return verticalGap > -80
+        return verticalGap > -8
           && verticalGap < Math.max(860, innerHeight * 0.9)
           && overlapRatio(rect, rowRect) > 0.08;
       })
@@ -3137,7 +3214,7 @@
 
   function imageButtonLabel(count, busyText = '') {
     if (busyText) return busyText;
-    return count > 1 ? `\u4e0b\u8f7d\u5168\u90e8 ${count}` : '\u4e0b\u8f7d\u56fe\u7247';
+    return count > 1 ? String(count) : '';
   }
 
   function ensureImageDownloadButton(container, images, preferredActionRow = null) {
@@ -3168,15 +3245,21 @@
     }
     button.__cgptImageDownloadContainer = container;
     button.__cgptImageDownloadImages = images;
-    button.dataset.cgptImageCount = String(count);
-    button.title = count > 1 ? `\u4e0b\u8f7d\u672c\u7ec4\u4e2d\u7684 ${count} \u5f20\u56fe\u7247` : '\u4e0b\u8f7d\u56fe\u7247';
+    const declaredCount = Number(button.dataset.cgptExactCount || 0)
+      || inferDeclaredImageCount(container, preferredActionRow || slot.parentElement);
+    button.dataset.cgptImageCount = String(declaredCount || count || '');
+    button.title = declaredCount > 1
+      ? `\u4e0b\u8f7d\u672c\u7ec4\u4e2d\u7684 ${declaredCount} \u5f20\u56fe\u7247`
+      : '\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247';
     if (!button.disabled) {
-      button.innerHTML = `${icons.download}<span data-cgpt-image-download-label>${escapeHtml(imageButtonLabel(count))}</span>`;
+      const badge = declaredCount > 1
+        ? `<span class="cgpt-image-download-count" data-cgpt-image-download-label>${escapeHtml(imageButtonLabel(declaredCount))}</span>`
+        : '<span data-cgpt-image-download-label hidden></span>';
+      button.innerHTML = `${icons.download}${badge}`;
     }
   }
 
   function refreshImageDownloadButtons() {
-    imageGroupsOnPage().forEach(([container, images]) => ensureImageDownloadButton(container, images));
     actionRowsOnPage().forEach((row) => {
       if (row.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return;
       const group = nearbyImagesForActionRow(row);
@@ -3188,6 +3271,18 @@
   function scheduleImageDownloadButtons() {
     window.clearTimeout(imageToolsTimer);
     imageToolsTimer = window.setTimeout(refreshImageDownloadButtons, 180);
+  }
+
+  function bindImageDownloadEvents() {
+    if (imageEventsBound) return;
+    imageEventsBound = true;
+    document.addEventListener('click', (event) => {
+      const imageDownloadButton = event.target.closest?.(`.${IMAGE_DOWNLOAD_CLASS}`);
+      if (!imageDownloadButton) return;
+      event.preventDefault();
+      event.stopPropagation();
+      runImageDownloadShortcut(imageDownloadButton);
+    }, true);
   }
 
   function largestImage(images) {
@@ -3203,20 +3298,28 @@
   }
 
   function topPreviewDownloadButton() {
-    const buttons = [...document.querySelectorAll('button')]
-      .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(button));
+    const buttons = [...document.querySelectorAll('button, [role="button"], a')]
+      .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`));
     const topButtons = buttons.filter((button) => {
       const rect = button.getBoundingClientRect();
       return rect.top >= 0
         && rect.top < Math.max(170, innerHeight * 0.22)
-        && rect.right > innerWidth * 0.45;
+        && rect.right > innerWidth * 0.35
+        && rect.width > 5
+        && rect.height > 5;
     });
     return topButtons.find((button) => /\u4e0b\u8f7d|download/i.test(elementText(button)))
       || topButtons.find((button) => {
         const svgText = button.innerHTML || '';
         return /M9 3v|download|arrow|Down/i.test(svgText)
           && button.querySelector('svg');
-      });
+      })
+      || topButtons
+        .sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)
+        .find((button) => {
+          const html = button.innerHTML || '';
+          return /svg|path/i.test(html) && !/\u5206\u4eab|share|\u66f4\u591a|more/i.test(elementText(button));
+        });
   }
 
   function visibleNativeDownloadMenuItem() {
@@ -3274,6 +3377,7 @@
     const originalText = label?.textContent || imageButtonLabel(images.length);
     button.disabled = true;
     if (label) label.textContent = '\u51c6\u5907\u4e0b\u8f7d\u2026';
+    let exactCount = 0;
 
     try {
       const target = clickTargetForImage(largestImage(images));
@@ -3284,6 +3388,11 @@
       dispatchNativeClick(downloadButton);
       const menuItem = await waitForValue(() => visibleNativeDownloadMenuItem(), 2200, 70);
       if (!menuItem) throw new Error('\u6ca1\u6709\u627e\u5230\u201c\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247\u201d\u7684\u83dc\u5355\u9879');
+      exactCount = countFromText(elementText(menuItem));
+      if (exactCount) {
+        button.dataset.cgptExactCount = String(exactCount);
+        button.title = `\u4e0b\u8f7d\u672c\u7ec4\u4e2d\u7684 ${exactCount} \u5f20\u56fe\u7247`;
+      }
       if (label) label.textContent = '\u5f00\u59cb\u4e0b\u8f7d\u2026';
       dispatchNativeClick(menuItem);
       closeImagePreviewSoon();
@@ -3293,7 +3402,14 @@
     } finally {
       window.setTimeout(() => {
         button.disabled = false;
-        if (label) label.textContent = originalText;
+        if (label) {
+          if (exactCount) {
+            label.hidden = false;
+            label.textContent = String(exactCount);
+          } else {
+            label.textContent = originalText;
+          }
+        }
       }, 900);
     }
   }
@@ -3395,13 +3511,6 @@
     eventsBound = true;
 
     document.addEventListener('click', (event) => {
-      const imageDownloadButton = event.target.closest?.(`.${IMAGE_DOWNLOAD_CLASS}`);
-      if (imageDownloadButton) {
-        event.preventDefault();
-        event.stopPropagation();
-        runImageDownloadShortcut(imageDownloadButton);
-        return;
-      }
       const proxyOptions = event.target.closest?.('[data-cgpt-proxy-options]');
       if (proxyOptions) {
         event.preventDefault();
@@ -3698,6 +3807,7 @@
   }, 2500);
 
   if (!localStorage.getItem(STORAGE_KEY)) saveState(true);
+  bindImageDownloadEvents();
   scanNativeChats();
   scheduleImageDownloadButtons();
 })();
