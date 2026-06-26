@@ -916,60 +916,68 @@ namespace WindowLayoutLauncher
             AutoScaleMode = AutoScaleMode.None;
             Text = "窗口布局启动器";
             StartPosition = FormStartPosition.CenterScreen;
-            Size = UiTheme.DpiSize(760, 620);
-            MinimumSize = UiTheme.DpiSize(620, 560);
+            ClientSize = new Size(760, 560);
+            MinimumSize = new Size(620, 460);
             BackColor = UiTheme.WindowBottom;
             Font = new Font("Microsoft YaHei UI", 9F);
             DoubleBuffered = true;
             Shown += (s, e) => CenterOnPrimaryScreen();
 
+            var root = new TableLayoutPanel();
+            root.Dock = DockStyle.Fill;
+            root.BackColor = Color.Transparent;
+            root.Padding = new Padding(38, 28, 38, 26);
+            root.ColumnCount = 1;
+            root.RowCount = 5;
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+            Controls.Add(root);
+
             titleLabel = new Label();
             titleLabel.Text = "窗口布局中心";
-            titleLabel.Left = 40;
-            titleLabel.Top = 30;
-            titleLabel.Width = 520;
-            titleLabel.Height = 36;
-            titleLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
+            titleLabel.Dock = DockStyle.Fill;
             titleLabel.Font = new Font("Microsoft YaHei UI", 14.5F, FontStyle.Bold);
             titleLabel.ForeColor = UiTheme.Ink;
             titleLabel.BackColor = Color.Transparent;
             titleLabel.TextAlign = ContentAlignment.MiddleLeft;
-            Controls.Add(titleLabel);
+            root.Controls.Add(titleLabel, 0, 0);
 
             sectionLabel = new Label();
             sectionLabel.Text = "选择一个工作布局";
-            sectionLabel.Left = 40;
-            sectionLabel.Top = 78;
-            sectionLabel.Width = 420;
-            sectionLabel.Height = 24;
-            sectionLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
+            sectionLabel.Dock = DockStyle.Fill;
             sectionLabel.Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
             sectionLabel.ForeColor = UiTheme.Ink;
             sectionLabel.BackColor = Color.Transparent;
             sectionLabel.TextAlign = ContentAlignment.MiddleLeft;
-            Controls.Add(sectionLabel);
+            root.Controls.Add(sectionLabel, 0, 1);
 
             hintLabel = new Label();
             hintLabel.Text = "保存不同工作流的窗口位置和大小，下次一键恢复。";
-            hintLabel.Left = 40;
-            hintLabel.Top = 104;
-            hintLabel.Width = 520;
-            hintLabel.Height = 24;
-            hintLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
+            hintLabel.Dock = DockStyle.Fill;
             hintLabel.ForeColor = UiTheme.Muted;
             hintLabel.BackColor = Color.Transparent;
             hintLabel.TextAlign = ContentAlignment.TopLeft;
-            Controls.Add(hintLabel);
+            root.Controls.Add(hintLabel, 0, 2);
+
+            var body = new TableLayoutPanel();
+            body.Dock = DockStyle.Fill;
+            body.BackColor = Color.Transparent;
+            body.ColumnCount = 2;
+            body.RowCount = 1;
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190F));
+            body.Margin = new Padding(0, 8, 0, 10);
+            root.Controls.Add(body, 0, 3);
 
             card = new GlassPanel();
-            card.Left = 34;
-            card.Top = 142;
-            card.Width = 430;
-            card.Height = 250;
-            card.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right | AnchorStyles.Bottom;
+            card.Dock = DockStyle.Fill;
+            card.Margin = new Padding(0, 0, 28, 0);
             card.Padding = new Padding(22);
             card.FillColor = UiTheme.Panel;
-            Controls.Add(card);
+            body.Controls.Add(card, 0, 0);
 
             listBox = new ListBox();
             listBox.Dock = DockStyle.Fill;
@@ -984,31 +992,54 @@ namespace WindowLayoutLauncher
             listBox.DoubleClick += (s, e) => RestoreSelected();
             card.Controls.Add(listBox);
 
-            openButton = AddButton(this, "打开布局", 536, 148, true, (s, e) => RestoreSelected());
+            var actions = new TableLayoutPanel();
+            actions.Dock = DockStyle.Fill;
+            actions.BackColor = Color.Transparent;
+            actions.AutoScroll = true;
+            actions.ColumnCount = 1;
+            actions.RowCount = 7;
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 14F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 164F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 14F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 92F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 14F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 92F));
+            body.Controls.Add(actions, 1, 0);
 
-            AddActionGroup(512, 184,
+            openButton = AddButton(actions, "打开布局", 0, 0, true, (s, e) => RestoreSelected());
+            openButton.Dock = DockStyle.Top;
+            openButton.Margin = new Padding(18, 0, 18, 0);
+            actions.Controls.Add(openButton, 0, 0);
+
+            var manageGroup = AddActionGroup(
                 new[] { "保存为新布局", "覆盖所选布局", "重命名布局", "删除布局" },
                 new EventHandler[] { (s, e) => SaveNew(), (s, e) => OverwriteSelected(), (s, e) => RenameSelected(), (s, e) => DeleteSelected() });
+            manageGroup.Dock = DockStyle.Fill;
+            manageGroup.Margin = new Padding(0);
+            actions.Controls.Add(manageGroup, 0, 2);
 
-            AddActionGroup(512, 362,
+            var shareGroup = AddActionGroup(
                 new[] { "导出 JSON", "导入 JSON" },
                 new EventHandler[] { (s, e) => ExportSelected(), (s, e) => ImportLayout() });
+            shareGroup.Dock = DockStyle.Fill;
+            shareGroup.Margin = new Padding(0);
+            actions.Controls.Add(shareGroup, 0, 4);
 
-            AddActionGroup(512, 462,
+            var fileGroup = AddActionGroup(
                 new[] { "布局文件夹", "刷新" },
                 new EventHandler[] { (s, e) => Process.Start("explorer.exe", manager.LayoutDir), (s, e) => RefreshLayouts() });
+            fileGroup.Dock = DockStyle.Fill;
+            fileGroup.Margin = new Padding(0);
+            actions.Controls.Add(fileGroup, 0, 6);
 
             statusLabel = new Label();
-            statusLabel.Left = 46;
-            statusLabel.Top = 414;
-            statusLabel.Width = 410;
-            statusLabel.Height = 24;
-            statusLabel.Anchor = AnchorStyles.Left | AnchorStyles.Bottom | AnchorStyles.Right;
+            statusLabel.Dock = DockStyle.Fill;
             statusLabel.ForeColor = UiTheme.Muted;
             statusLabel.BackColor = Color.Transparent;
             statusLabel.AutoEllipsis = true;
             statusLabel.TextAlign = ContentAlignment.MiddleLeft;
-            Controls.Add(statusLabel);
+            root.Controls.Add(statusLabel, 0, 4);
         }
 
         private void CenterOnPrimaryScreen()
@@ -1059,21 +1090,20 @@ namespace WindowLayoutLauncher
             button.BackColor = surface;
             button.Font = new Font("Microsoft YaHei UI", 9F, primary ? FontStyle.Bold : FontStyle.Regular);
             button.Click += handler;
-            parent.Controls.Add(button);
+            if (!(parent is TableLayoutPanel))
+            {
+                parent.Controls.Add(button);
+            }
             return button;
         }
 
-        private GlassPanel AddActionGroup(int left, int top, string[] labels, EventHandler[] handlers)
+        private GlassPanel AddActionGroup(string[] labels, EventHandler[] handlers)
         {
             var group = new GlassPanel();
-            group.Left = left;
-            group.Top = top;
             group.Width = 172;
             group.Height = 20 + labels.Length * 36;
             group.Radius = 18;
             group.FillColor = UiTheme.Panel;
-            group.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            Controls.Add(group);
 
             for (int i = 0; i < labels.Length; i++)
             {
