@@ -22,6 +22,7 @@ namespace WindowLayoutLauncher
         {
             try
             {
+                TrySetDpiAwareness();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
 
@@ -62,6 +63,26 @@ namespace WindowLayoutLauncher
                     lines.Add(ex.InnerException.StackTrace);
                 }
                 File.WriteAllLines(path, lines.ToArray(), Encoding.UTF8);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void TrySetDpiAwareness()
+        {
+            try
+            {
+                Native.SetProcessDpiAwareness(1);
+                return;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                Native.SetProcessDPIAware();
             }
             catch
             {
@@ -638,29 +659,65 @@ namespace WindowLayoutLauncher
 
         [DllImport("dwmapi.dll")]
         public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+        [DllImport("user32.dll")]
+        public static extern bool SetProcessDPIAware();
+
+        [DllImport("shcore.dll")]
+        public static extern int SetProcessDpiAwareness(int awareness);
     }
 
     public static class UiTheme
     {
-        public static readonly Color Ink = Color.FromArgb(34, 49, 44);
-        public static readonly Color Muted = Color.FromArgb(100, 116, 112);
-        public static readonly Color Green = Color.FromArgb(54, 143, 101);
-        public static readonly Color GreenDeep = Color.FromArgb(24, 98, 68);
-        public static readonly Color Glass = Color.FromArgb(218, 255, 255, 255);
-        public static readonly Color GlassSoft = Color.FromArgb(168, 255, 255, 255);
-        public static readonly Color Border = Color.FromArgb(150, 217, 229, 224);
-        public static readonly Color Selection = Color.FromArgb(232, 246, 240);
+        public static readonly Color WindowTop = Color.FromArgb(229, 237, 243);
+        public static readonly Color WindowBottom = Color.FromArgb(209, 220, 229);
+        public static readonly Color Panel = Color.FromArgb(226, 235, 241);
+        public static readonly Color PanelLight = Color.FromArgb(238, 244, 248);
+        public static readonly Color Sidebar = Color.FromArgb(218, 228, 236);
+        public static readonly Color Ink = Color.FromArgb(28, 41, 56);
+        public static readonly Color Muted = Color.FromArgb(96, 111, 128);
+        public static readonly Color Blue = Color.FromArgb(48, 126, 255);
+        public static readonly Color BlueDark = Color.FromArgb(25, 93, 222);
+        public static readonly Color Cyan = Color.FromArgb(65, 213, 207);
+        public static readonly Color Amber = Color.FromArgb(236, 170, 28);
+        public static readonly Color Border = Color.FromArgb(195, 208, 220);
+        public static readonly Color Selection = Color.FromArgb(215, 226, 237);
 
         public static GraphicsPath RoundedRect(Rectangle rect, int radius)
         {
-            int d = radius * 2;
             var path = new GraphicsPath();
+            if (rect.Width <= 0 || rect.Height <= 0)
+            {
+                return path;
+            }
+            radius = Math.Max(1, Math.Min(radius, Math.Min(rect.Width, rect.Height) / 2));
+            int d = radius * 2;
             path.AddArc(rect.X, rect.Y, d, d, 180, 90);
             path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
             path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
             path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
             path.CloseFigure();
             return path;
+        }
+
+        public static int Dpi(int value)
+        {
+            try
+            {
+                using (var g = Graphics.FromHwnd(IntPtr.Zero))
+                {
+                    return (int)Math.Round(value * g.DpiX / 96F);
+                }
+            }
+            catch
+            {
+                return value;
+            }
+        }
+
+        public static Size DpiSize(int width, int height)
+        {
+            return new Size(Dpi(width), Dpi(height));
         }
     }
 
@@ -670,27 +727,32 @@ namespace WindowLayoutLauncher
 
         public GlassPanel()
         {
-            Radius = 24;
-            DoubleBuffered = true;
+            Radius = 22;
+            FillColor = UiTheme.Panel;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
             BackColor = Color.Transparent;
         }
+
+        public Color FillColor { get; set; }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            var rect = new Rectangle(9, 9, Width - 18, Height - 18);
             using (var path = UiTheme.RoundedRect(rect, Radius))
-            using (var shadow = new SolidBrush(Color.FromArgb(20, 40, 82, 60)))
-            using (var fill = new SolidBrush(UiTheme.Glass))
-            using (var pen = new Pen(UiTheme.Border))
+            using (var lightPath = UiTheme.RoundedRect(new Rectangle(rect.X - 3, rect.Y - 3, rect.Width, rect.Height), Radius))
+            using (var darkPath = UiTheme.RoundedRect(new Rectangle(rect.X + 6, rect.Y + 7, rect.Width, rect.Height), Radius))
+            using (var light = new SolidBrush(Color.FromArgb(120, 255, 255, 255)))
+            using (var shadow = new SolidBrush(Color.FromArgb(35, 118, 135, 155)))
+            using (var fill = new SolidBrush(FillColor))
+            using (var pen = new Pen(Color.FromArgb(150, 255, 255, 255)))
+            using (var edge = new Pen(Color.FromArgb(80, 164, 181, 198)))
             {
-                var shadowRect = new Rectangle(rect.X + 2, rect.Y + 4, rect.Width - 2, rect.Height - 2);
-                using (var shadowPath = UiTheme.RoundedRect(shadowRect, Radius))
-                {
-                    e.Graphics.FillPath(shadow, shadowPath);
-                }
+                e.Graphics.FillPath(light, lightPath);
+                e.Graphics.FillPath(shadow, darkPath);
                 e.Graphics.FillPath(fill, path);
                 e.Graphics.DrawPath(pen, path);
+                e.Graphics.DrawPath(edge, path);
             }
             base.OnPaint(e);
         }
@@ -702,15 +764,18 @@ namespace WindowLayoutLauncher
         private bool down;
 
         public bool Primary { get; set; }
+        public Color SurfaceColor { get; set; }
 
         public GlassButton()
         {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
             FlatStyle = FlatStyle.Flat;
             FlatAppearance.BorderSize = 0;
-            BackColor = Color.Transparent;
+            UseVisualStyleBackColor = false;
+            SurfaceColor = UiTheme.Panel;
+            BackColor = SurfaceColor;
             Cursor = Cursors.Hand;
-            Height = 38;
-            DoubleBuffered = true;
+            Height = 36;
         }
 
         protected override void OnMouseEnter(EventArgs e)
@@ -745,25 +810,37 @@ namespace WindowLayoutLauncher
         protected override void OnPaint(PaintEventArgs pevent)
         {
             pevent.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            pevent.Graphics.Clear(SurfaceColor);
+            var rect = new Rectangle(4, 4, Width - 9, Height - 9);
             Color fill;
             Color text;
+            Color border;
             if (Primary)
             {
-                fill = down ? Color.FromArgb(35, 121, 83) : hover ? Color.FromArgb(63, 158, 113) : UiTheme.Green;
+                fill = down ? UiTheme.BlueDark : hover ? Color.FromArgb(66, 142, 255) : UiTheme.Blue;
                 text = Color.White;
+                border = Color.FromArgb(100, 255, 255, 255);
             }
             else
             {
-                fill = down ? Color.FromArgb(226, 241, 235) : hover ? Color.FromArgb(238, 248, 244) : Color.FromArgb(232, 255, 255, 255);
-                text = UiTheme.GreenDeep;
+                fill = down ? Color.FromArgb(214, 225, 234) : hover ? Color.FromArgb(232, 240, 246) : UiTheme.PanelLight;
+                text = UiTheme.Ink;
+                border = Color.FromArgb(130, 255, 255, 255);
             }
 
             using (var path = UiTheme.RoundedRect(rect, 16))
+            using (var lightPath = UiTheme.RoundedRect(new Rectangle(rect.X - 2, rect.Y - 2, rect.Width, rect.Height), 16))
+            using (var darkPath = UiTheme.RoundedRect(new Rectangle(rect.X + 3, rect.Y + 4, rect.Width, rect.Height), 16))
+            using (var light = new SolidBrush(Color.FromArgb(Primary ? 50 : 115, 255, 255, 255)))
+            using (var shadow = new SolidBrush(Color.FromArgb(Primary ? 30 : 42, 112, 130, 150)))
             using (var brush = new SolidBrush(fill))
-            using (var pen = new Pen(Primary ? Color.FromArgb(70, 255, 255, 255) : UiTheme.Border))
-            using (var textBrush = new SolidBrush(text))
+            using (var pen = new Pen(border))
             {
+                if (!down)
+                {
+                    pevent.Graphics.FillPath(light, lightPath);
+                    pevent.Graphics.FillPath(shadow, darkPath);
+                }
                 pevent.Graphics.FillPath(brush, path);
                 pevent.Graphics.DrawPath(pen, path);
                 TextRenderer.DrawText(pevent.Graphics, Text, Font, rect, text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
@@ -787,91 +864,196 @@ namespace WindowLayoutLauncher
 
         private void Initialize()
         {
+            AutoScaleMode = AutoScaleMode.None;
             Text = "窗口布局启动器";
             StartPosition = FormStartPosition.CenterScreen;
-            Size = new Size(640, 480);
-            MinimumSize = new Size(600, 440);
-            BackColor = Color.White;
+            Size = UiTheme.DpiSize(790, 545);
+            MinimumSize = UiTheme.DpiSize(760, 520);
+            BackColor = UiTheme.WindowBottom;
             Font = new Font("Microsoft YaHei UI", 9F);
             DoubleBuffered = true;
-            Load += (s, e) => TryEnableBackdrop();
+            Shown += (s, e) => CenterOnPrimaryScreen();
+
+            var sidebar = new GlassPanel();
+            sidebar.Left = 14;
+            sidebar.Top = 14;
+            sidebar.Width = 220;
+            sidebar.Height = 492;
+            sidebar.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Bottom;
+            sidebar.Radius = 30;
+            sidebar.FillColor = UiTheme.Sidebar;
+            Controls.Add(sidebar);
+
+            var brand = new Label();
+            brand.Text = "窗口布局启动器";
+            brand.Left = 24;
+            brand.Top = 24;
+            brand.Width = 178;
+            brand.Height = 30;
+            brand.Font = new Font("Microsoft YaHei UI", 11.5F, FontStyle.Bold);
+            brand.ForeColor = UiTheme.Blue;
+            brand.BackColor = Color.Transparent;
+            sidebar.Controls.Add(brand);
+
+            var role = new Label();
+            role.Text = "保存和恢复工作窗口";
+            role.Left = 24;
+            role.Top = 55;
+            role.Width = 160;
+            role.Height = 20;
+            role.ForeColor = UiTheme.Muted;
+            role.BackColor = Color.Transparent;
+            sidebar.Controls.Add(role);
+
+            AddSidebarLine(sidebar, "已保存布局", 110, true);
+            AddSidebarLine(sidebar, "保存当前窗口", 162, false);
+            AddSidebarLine(sidebar, "导出分享包", 214, false);
+            AddSidebarLine(sidebar, "打开布局文件夹", 266, false);
+
+            var sidebarTip = new Label();
+            sidebarTip.Text = "已经打开或最小化的窗口会直接复用；没打开的窗口才会重新打开。";
+            sidebarTip.Left = 24;
+            sidebarTip.Top = 378;
+            sidebarTip.Width = 162;
+            sidebarTip.Height = 54;
+            sidebarTip.ForeColor = UiTheme.Muted;
+            sidebarTip.BackColor = Color.Transparent;
+            sidebarTip.Font = new Font("Microsoft YaHei UI", 8.5F);
+            sidebarTip.TextAlign = ContentAlignment.TopLeft;
+            sidebar.Controls.Add(sidebarTip);
+
+            var version = new Label();
+            version.Text = "V 1.1  悬浮拟态版";
+            version.Left = 24;
+            version.Top = 444;
+            version.Width = 162;
+            version.Height = 24;
+            version.ForeColor = Color.FromArgb(122, 139, 158);
+            version.BackColor = Color.Transparent;
+            version.Font = new Font("Microsoft YaHei UI", 8F);
+            sidebar.Controls.Add(version);
 
             var title = new Label();
-            title.Text = "Window Layout";
-            title.Left = 34;
-            title.Top = 26;
-            title.Width = 520;
-            title.Height = 32;
-            title.Font = new Font("Segoe UI Variable Display", 18F, FontStyle.Bold);
+            title.Text = "窗口布局中心";
+            title.Left = 262;
+            title.Top = 30;
+            title.Width = 390;
+            title.Height = 36;
+            title.Font = new Font("Microsoft YaHei UI", 14.5F, FontStyle.Bold);
             title.ForeColor = UiTheme.Ink;
             title.BackColor = Color.Transparent;
             Controls.Add(title);
 
             var hint = new Label();
-            hint.Text = "保存不同工作流的窗口位置，下次一键恢复。";
-            hint.Left = 36;
-            hint.Top = 60;
-            hint.Width = 520;
+            hint.Text = "保存不同工作的窗口位置，需要时一键恢复到对应位置。";
+            hint.Left = 264;
+            hint.Top = 64;
+            hint.Width = 460;
             hint.Height = 24;
             hint.ForeColor = UiTheme.Muted;
             hint.BackColor = Color.Transparent;
             Controls.Add(hint);
 
             card = new GlassPanel();
-            card.Left = 28;
-            card.Top = 98;
-            card.Width = 568;
-            card.Height = 282;
+            card.Left = 246;
+            card.Top = 92;
+            card.Width = 514;
+            card.Height = 336;
             card.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right | AnchorStyles.Bottom;
+            card.FillColor = UiTheme.Panel;
             Controls.Add(card);
 
+            var cardTitle = new Label();
+            cardTitle.Text = "已保存布局";
+            cardTitle.Left = 28;
+            cardTitle.Top = 24;
+            cardTitle.Width = 180;
+            cardTitle.Height = 22;
+            cardTitle.Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold);
+            cardTitle.ForeColor = UiTheme.Ink;
+            cardTitle.BackColor = Color.Transparent;
+            card.Controls.Add(cardTitle);
+
+            var cardHint = new Label();
+            cardHint.Text = "选择后操作";
+            cardHint.Left = 360;
+            cardHint.Top = 24;
+            cardHint.Width = 140;
+            cardHint.Height = 22;
+            cardHint.Font = new Font("Microsoft YaHei UI", 8F);
+            cardHint.ForeColor = UiTheme.Muted;
+            cardHint.BackColor = Color.Transparent;
+            cardHint.TextAlign = ContentAlignment.MiddleRight;
+            cardHint.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            card.Controls.Add(cardHint);
+
             listBox = new ListBox();
-            listBox.Left = 24;
-            listBox.Top = 26;
-            listBox.Width = 340;
-            listBox.Height = 216;
+            listBox.Left = 28;
+            listBox.Top = 58;
+            listBox.Width = 302;
+            listBox.Height = 238;
             listBox.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Bottom;
             listBox.DisplayMember = "Display";
-            listBox.BackColor = Color.FromArgb(248, 252, 249);
+            listBox.BackColor = UiTheme.Panel;
             listBox.ForeColor = UiTheme.Ink;
             listBox.BorderStyle = BorderStyle.None;
             listBox.DrawMode = DrawMode.OwnerDrawFixed;
-            listBox.ItemHeight = 46;
+            listBox.ItemHeight = 54;
             listBox.IntegralHeight = false;
             listBox.DrawItem += DrawLayoutItem;
             listBox.DoubleClick += (s, e) => RestoreSelected();
             card.Controls.Add(listBox);
 
-            AddButton(card, "打开布局", 394, 26, true, (s, e) => RestoreSelected());
-            AddButton(card, "保存为新布局", 394, 66, false, (s, e) => SaveNew());
-            AddButton(card, "覆盖所选布局", 394, 106, false, (s, e) => OverwriteSelected());
-            AddButton(card, "导出分享包", 394, 146, false, (s, e) => ExportSelected());
-            AddButton(card, "删除所选布局", 394, 186, false, (s, e) => DeleteSelected());
-            AddButton(card, "打开布局文件夹", 394, 226, false, (s, e) => Process.Start("explorer.exe", manager.LayoutDir));
+            AddButton(card, "打开布局", 354, 58, true, (s, e) => RestoreSelected());
+            AddButton(card, "保存为新布局", 354, 99, false, (s, e) => SaveNew());
+            AddButton(card, "覆盖所选布局", 354, 140, false, (s, e) => OverwriteSelected());
+            AddButton(card, "导出分享包", 354, 181, false, (s, e) => ExportSelected());
+            AddButton(card, "删除所选布局", 354, 222, false, (s, e) => DeleteSelected());
+            AddButton(card, "布局文件夹", 354, 263, false, (s, e) => Process.Start("explorer.exe", manager.LayoutDir));
+
+            var statusCard = new GlassPanel();
+            statusCard.Left = 246;
+            statusCard.Top = 442;
+            statusCard.Width = 514;
+            statusCard.Height = 64;
+            statusCard.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
+            statusCard.Radius = 20;
+            statusCard.FillColor = UiTheme.Panel;
+            Controls.Add(statusCard);
 
             statusLabel = new Label();
-            statusLabel.Left = 38;
-            statusLabel.Top = 400;
-            statusLabel.Width = 540;
-            statusLabel.Height = 28;
-            statusLabel.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
+            statusLabel.Left = 24;
+            statusLabel.Top = 22;
+            statusLabel.Width = 456;
+            statusLabel.Height = 24;
+            statusLabel.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
             statusLabel.ForeColor = UiTheme.Muted;
             statusLabel.BackColor = Color.Transparent;
-            Controls.Add(statusLabel);
+            statusCard.Controls.Add(statusLabel);
+        }
+
+        private void CenterOnPrimaryScreen()
+        {
+            var area = Screen.PrimaryScreen.WorkingArea;
+            int x = area.Left + Math.Max(0, (area.Width - Width) / 2);
+            int y = area.Top + Math.Max(0, (area.Height - Height) / 2);
+            Location = new Point(x, y);
         }
 
         protected override void OnPaintBackground(PaintEventArgs e)
         {
-            using (var brush = new LinearGradientBrush(ClientRectangle, Color.FromArgb(244, 250, 247), Color.FromArgb(224, 239, 232), 45F))
+            using (var brush = new LinearGradientBrush(ClientRectangle, UiTheme.WindowTop, UiTheme.WindowBottom, 90F))
             {
                 e.Graphics.FillRectangle(brush, ClientRectangle);
             }
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var b1 = new SolidBrush(Color.FromArgb(72, 196, 232, 210)))
-            using (var b2 = new SolidBrush(Color.FromArgb(58, 255, 255, 255)))
+            using (var b1 = new SolidBrush(Color.FromArgb(34, 48, 126, 255)))
+            using (var b2 = new SolidBrush(Color.FromArgb(52, 255, 255, 255)))
+            using (var b3 = new SolidBrush(Color.FromArgb(24, 65, 213, 207)))
             {
-                e.Graphics.FillEllipse(b1, new Rectangle(Width - 220, -80, 260, 220));
-                e.Graphics.FillEllipse(b2, new Rectangle(-80, Height - 190, 260, 220));
+                e.Graphics.FillEllipse(b1, new Rectangle(Width - 250, -110, 320, 260));
+                e.Graphics.FillEllipse(b2, new Rectangle(-130, Height - 220, 280, 260));
+                e.Graphics.FillEllipse(b3, new Rectangle(Width - 260, Height - 170, 180, 150));
             }
         }
 
@@ -893,35 +1075,97 @@ namespace WindowLayoutLauncher
             button.Text = text;
             button.Left = left;
             button.Top = top;
-            button.Width = 140;
+            button.Width = 136;
             button.Height = 34;
             button.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             button.Primary = primary;
+            button.SurfaceColor = UiTheme.Panel;
+            button.BackColor = UiTheme.Panel;
             button.Font = new Font("Microsoft YaHei UI", 9F, primary ? FontStyle.Bold : FontStyle.Regular);
             button.Click += handler;
             parent.Controls.Add(button);
         }
 
+        private void AddSidebarLine(Control parent, string text, int top, bool active)
+        {
+            Control host = parent;
+            int labelLeft = 26;
+            int labelTop = top;
+            if (active)
+            {
+                var nav = new GlassPanel();
+                nav.Left = 10;
+                nav.Top = top - 12;
+                nav.Width = 194;
+                nav.Height = 48;
+                nav.Radius = 16;
+                nav.FillColor = UiTheme.PanelLight;
+                parent.Controls.Add(nav);
+                host = nav;
+                labelLeft = 24;
+                labelTop = 13;
+            }
+
+            var label = new Label();
+            label.Text = text;
+            label.Left = labelLeft;
+            label.Top = labelTop;
+            label.Width = active ? 148 : 160;
+            label.Height = 24;
+            label.Font = new Font("Microsoft YaHei UI", 9F, active ? FontStyle.Bold : FontStyle.Regular);
+            label.ForeColor = active ? UiTheme.Ink : Color.FromArgb(66, 78, 92);
+            label.BackColor = Color.Transparent;
+            label.TextAlign = ContentAlignment.MiddleLeft;
+            host.Controls.Add(label);
+        }
+
         private void DrawLayoutItem(object sender, DrawItemEventArgs e)
         {
             if (e.Index < 0) return;
-            e.DrawBackground();
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var back = new SolidBrush(listBox.BackColor))
+            {
+                e.Graphics.FillRectangle(back, e.Bounds);
+            }
+
             var item = listBox.Items[e.Index] as LayoutSummary;
-            var rect = new Rectangle(e.Bounds.Left + 4, e.Bounds.Top + 4, e.Bounds.Width - 8, e.Bounds.Height - 8);
+            var rect = new Rectangle(e.Bounds.Left + 4, e.Bounds.Top + 5, e.Bounds.Width - 8, e.Bounds.Height - 10);
             bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
             using (var path = UiTheme.RoundedRect(rect, 14))
-            using (var fill = new SolidBrush(selected ? UiTheme.Selection : Color.FromArgb(0, 255, 255, 255)))
-            using (var border = new Pen(selected ? Color.FromArgb(130, 84, 159, 119) : Color.FromArgb(0, 255, 255, 255)))
+            using (var lightPath = UiTheme.RoundedRect(new Rectangle(rect.X - 2, rect.Y - 2, rect.Width, rect.Height), 14))
+            using (var darkPath = UiTheme.RoundedRect(new Rectangle(rect.X + 3, rect.Y + 4, rect.Width, rect.Height), 14))
+            using (var light = new SolidBrush(Color.FromArgb(selected ? 128 : 50, 255, 255, 255)))
+            using (var shadow = new SolidBrush(Color.FromArgb(selected ? 36 : 0, 112, 130, 150)))
+            using (var fill = new SolidBrush(selected ? UiTheme.Selection : UiTheme.Panel))
+            using (var border = new Pen(selected ? Color.FromArgb(150, 255, 255, 255) : Color.FromArgb(0, 255, 255, 255)))
             {
+                if (selected)
+                {
+                    e.Graphics.FillPath(light, lightPath);
+                    e.Graphics.FillPath(shadow, darkPath);
+                }
                 e.Graphics.FillPath(fill, path);
                 if (selected) e.Graphics.DrawPath(border, path);
             }
 
+            if (selected)
+            {
+                using (var accent = new SolidBrush(UiTheme.Blue))
+                using (var accentPath = UiTheme.RoundedRect(new Rectangle(rect.Left + 9, rect.Top + 13, 4, rect.Height - 26), 2))
+                {
+                    e.Graphics.FillPath(accent, accentPath);
+                }
+            }
+
             var name = item == null ? listBox.Items[e.Index].ToString() : item.Name;
             var meta = item == null ? "" : (item.Count + " 个窗口  " + item.SavedAt);
-            TextRenderer.DrawText(e.Graphics, name, new Font("Microsoft YaHei UI", 10F, FontStyle.Bold), new Rectangle(rect.Left + 12, rect.Top + 5, rect.Width - 24, 18), UiTheme.Ink, TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
-            TextRenderer.DrawText(e.Graphics, meta, new Font("Microsoft YaHei UI", 8F), new Rectangle(rect.Left + 12, rect.Top + 25, rect.Width - 24, 16), UiTheme.Muted, TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+            int textLeft = rect.Left + (selected ? 22 : 14);
+            using (var nameFont = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold))
+            using (var metaFont = new Font("Microsoft YaHei UI", 8F))
+            {
+                TextRenderer.DrawText(e.Graphics, name, nameFont, new Rectangle(textLeft, rect.Top + 7, rect.Width - 28, 18), UiTheme.Ink, TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+                TextRenderer.DrawText(e.Graphics, meta, metaFont, new Rectangle(textLeft, rect.Top + 29, rect.Width - 28, 16), UiTheme.Muted, TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+            }
         }
 
         private void RefreshLayouts()
@@ -1034,14 +1278,15 @@ namespace WindowLayoutLauncher
 
         private PromptForm(string title, string message, string defaultValue)
         {
+            AutoScaleMode = AutoScaleMode.None;
             Text = title;
             StartPosition = FormStartPosition.CenterParent;
-            Size = new Size(420, 178);
+            Size = UiTheme.DpiSize(420, 178);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
             Font = new Font("Microsoft YaHei UI", 9F);
-            BackColor = Color.FromArgb(244, 250, 247);
+            BackColor = UiTheme.WindowTop;
 
             var label = new Label();
             label.Text = message;
@@ -1067,7 +1312,10 @@ namespace WindowLayoutLauncher
             ok.Left = 212;
             ok.Top = 100;
             ok.Width = 78;
+            ok.Height = 34;
             ok.Primary = true;
+            ok.SurfaceColor = UiTheme.WindowTop;
+            ok.BackColor = UiTheme.WindowTop;
             ok.DialogResult = DialogResult.OK;
             Controls.Add(ok);
 
@@ -1076,6 +1324,9 @@ namespace WindowLayoutLauncher
             cancel.Left = 300;
             cancel.Top = 100;
             cancel.Width = 78;
+            cancel.Height = 34;
+            cancel.SurfaceColor = UiTheme.WindowTop;
+            cancel.BackColor = UiTheme.WindowTop;
             cancel.DialogResult = DialogResult.Cancel;
             Controls.Add(cancel);
 
