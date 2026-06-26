@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.5.0
+// @version      1.5.1
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT“最近”列表，并给图片组增加外置下载全部快捷按钮。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -3053,18 +3053,104 @@
     return null;
   }
 
+  function isLikelyImageActionRow(row) {
+    if (!row || !row.isConnected) return false;
+    if (row.closest?.(`#${APP_ID}, #${MENU_ID}, #history, nav, aside, [role="navigation"]`)) return false;
+    if (row.querySelector?.('img')) return false;
+    const rect = row.getBoundingClientRect?.();
+    if (!rect || rect.width < 34 || rect.height < 18 || rect.height > 72) return false;
+    const buttons = [...row.querySelectorAll('button')]
+      .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(button));
+    if (buttons.length < 1 || buttons.length > 8) return false;
+    const rowText = elementText(row);
+    const hasKnownAction = buttons.some((button) => {
+      const text = elementText(button);
+      return /\u590d\u5236|copy|\u66f4\u591a|more|\u9009\u9879|options|\u6765\u6e90|source|\u5206\u652f|branch/i.test(text)
+        || button.querySelectorAll('svg circle').length >= 2;
+    });
+    return hasKnownAction || /\u67e5\u770b\u6765\u6e90|\u5206\u652f|source|branch/i.test(rowText);
+  }
+
+  function actionRowsOnPage() {
+    const main = document.querySelector('main') || document.body;
+    const rows = new Set();
+    [...main.querySelectorAll('button')].forEach((button) => {
+      if (!isElementVisible(button) || button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return;
+      let row = button.parentElement;
+      for (let depth = 0; row && depth < 5; depth += 1, row = row.parentElement) {
+        if (isLikelyImageActionRow(row)) {
+          rows.add(row);
+          break;
+        }
+      }
+    });
+    return [...rows];
+  }
+
+  function overlapRatio(a, b) {
+    const overlap = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+    return overlap / Math.max(1, Math.min(a.width, b.width));
+  }
+
+  function nearbyImagesForActionRow(row) {
+    const rowRect = row.getBoundingClientRect();
+    const sameTurn = row.closest?.('[data-testid^="conversation-turn"], [data-message-author-role], article, [class*="group/conversation-turn"]');
+    const sameTurnImages = sameTurn
+      ? contentImageElements(sameTurn).filter((img) => img.getBoundingClientRect().top < rowRect.bottom + 80)
+      : [];
+    if (sameTurnImages.length) {
+      return { container: sameTurn, images: sameTurnImages };
+    }
+
+    let ancestor = row.parentElement;
+    for (let depth = 0; ancestor && depth < 8; depth += 1, ancestor = ancestor.parentElement) {
+      if (ancestor === document.body || ancestor === document.documentElement || ancestor.matches?.('main')) break;
+      const rect = ancestor.getBoundingClientRect?.();
+      if (!rect || rect.height > Math.max(1400, innerHeight * 1.65)) continue;
+      const images = contentImageElements(ancestor)
+        .filter((img) => img.getBoundingClientRect().top < rowRect.bottom + 80);
+      if (images.length) return { container: ancestor, images };
+    }
+
+    const candidates = contentImageElements(document)
+      .map((img) => ({ img, rect: img.getBoundingClientRect() }))
+      .filter(({ rect }) => {
+        const verticalGap = rowRect.top - rect.bottom;
+        return verticalGap > -80
+          && verticalGap < Math.max(860, innerHeight * 0.9)
+          && overlapRatio(rect, rowRect) > 0.08;
+      })
+      .sort((a, b) => {
+        const gapA = Math.abs(rowRect.top - a.rect.bottom);
+        const gapB = Math.abs(rowRect.top - b.rect.bottom);
+        return gapA - gapB;
+      });
+    if (!candidates.length) return null;
+
+    const nearestBottom = candidates[0].rect.bottom;
+    const images = candidates
+      .filter(({ rect }) => Math.abs(rect.bottom - nearestBottom) < Math.max(260, innerHeight * 0.32))
+      .map(({ img }) => img);
+    const container = imageTurnContainer(images[0]) || row.parentElement;
+    return { container, images };
+  }
+
   function imageButtonLabel(count, busyText = '') {
     if (busyText) return busyText;
     return count > 1 ? `\u4e0b\u8f7d\u5168\u90e8 ${count}` : '\u4e0b\u8f7d\u56fe\u7247';
   }
 
-  function ensureImageDownloadButton(container, images) {
+  function ensureImageDownloadButton(container, images, preferredActionRow = null) {
     container.setAttribute('data-cgpt-image-download-container', 'true');
     let slot = container.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
+    if (preferredActionRow && slot && slot.parentElement !== preferredActionRow) {
+      slot.remove();
+      slot = null;
+    }
     if (!slot) {
       slot = document.createElement('span');
       slot.className = IMAGE_DOWNLOAD_SLOT_CLASS;
-      const actionRow = findImageActionRow(container);
+      const actionRow = preferredActionRow || findImageActionRow(container);
       if (actionRow) actionRow.append(slot);
       else {
         slot.classList.add('cgpt-image-download-fallback');
@@ -3080,6 +3166,8 @@
       button.setAttribute('aria-label', '\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247');
       slot.append(button);
     }
+    button.__cgptImageDownloadContainer = container;
+    button.__cgptImageDownloadImages = images;
     button.dataset.cgptImageCount = String(count);
     button.title = count > 1 ? `\u4e0b\u8f7d\u672c\u7ec4\u4e2d\u7684 ${count} \u5f20\u56fe\u7247` : '\u4e0b\u8f7d\u56fe\u7247';
     if (!button.disabled) {
@@ -3089,6 +3177,12 @@
 
   function refreshImageDownloadButtons() {
     imageGroupsOnPage().forEach(([container, images]) => ensureImageDownloadButton(container, images));
+    actionRowsOnPage().forEach((row) => {
+      if (row.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return;
+      const group = nearbyImagesForActionRow(row);
+      if (!group?.images?.length) return;
+      ensureImageDownloadButton(group.container, group.images, row);
+    });
   }
 
   function scheduleImageDownloadButtons() {
@@ -3164,8 +3258,13 @@
 
   async function runImageDownloadShortcut(button) {
     if (button.disabled) return;
-    const container = button.closest('[data-cgpt-image-download-container]') || document;
-    const images = contentImageElements(container);
+    const container = button.__cgptImageDownloadContainer
+      || button.closest('[data-cgpt-image-download-container]')
+      || document;
+    let images = contentImageElements(container);
+    if (!images.length && Array.isArray(button.__cgptImageDownloadImages)) {
+      images = button.__cgptImageDownloadImages.filter((img) => img?.isConnected);
+    }
     if (!images.length) {
       window.alert('\u8fd9\u4e2a\u56de\u590d\u91cc\u6682\u65f6\u6ca1\u6709\u627e\u5230\u53ef\u4e0b\u8f7d\u7684\u56fe\u7247\u3002');
       return;
