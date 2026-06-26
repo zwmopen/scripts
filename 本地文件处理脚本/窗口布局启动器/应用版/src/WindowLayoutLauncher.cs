@@ -11,7 +11,6 @@ using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
-using System.IO.Compression;
 
 namespace WindowLayoutLauncher
 {
@@ -319,7 +318,32 @@ namespace WindowLayoutLauncher
             if (File.Exists(summary.Path)) File.Delete(summary.Path);
         }
 
-        public string ExportSharePackage(LayoutSummary summary)
+        public LayoutConfig RenameLayout(LayoutSummary summary, string newName)
+        {
+            if (summary == null || string.IsNullOrWhiteSpace(summary.Path) || !File.Exists(summary.Path))
+            {
+                throw new InvalidOperationException("先选择一个布局。");
+            }
+
+            var safeName = SafeName(newName);
+            var newPath = GetLayoutPath(safeName);
+            var oldPath = summary.Path;
+            if (!EqualsIgnoreCase(oldPath, newPath) && File.Exists(newPath))
+            {
+                throw new InvalidOperationException("已经有同名布局。");
+            }
+
+            var layout = ReadLayout(oldPath);
+            layout.Name = safeName;
+            WriteLayout(newPath, layout);
+            if (!EqualsIgnoreCase(oldPath, newPath) && File.Exists(oldPath))
+            {
+                File.Delete(oldPath);
+            }
+            return layout;
+        }
+
+        public string ExportLayoutJson(LayoutSummary summary)
         {
             if (summary == null || !File.Exists(summary.Path))
             {
@@ -330,32 +354,54 @@ namespace WindowLayoutLauncher
             Directory.CreateDirectory(exportRoot);
             var safeName = SafeName(summary.Name);
             var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var tempRoot = System.IO.Path.Combine(Path.GetTempPath(), "WindowLayoutShare_" + stamp);
-            var packageRoot = System.IO.Path.Combine(tempRoot, "窗口布局启动器-" + safeName);
-            var packageLayoutDir = System.IO.Path.Combine(packageRoot, "layouts");
-            Directory.CreateDirectory(packageLayoutDir);
+            var jsonPath = System.IO.Path.Combine(exportRoot, safeName + "-" + stamp + ".json");
+            File.Copy(summary.Path, jsonPath, false);
+            return jsonPath;
+        }
 
-            var exePath = Application.ExecutablePath;
-            File.Copy(exePath, System.IO.Path.Combine(packageRoot, System.IO.Path.GetFileName(exePath)), true);
-            File.Copy(summary.Path, System.IO.Path.Combine(packageLayoutDir, safeName + ".json"), true);
-            File.WriteAllText(System.IO.Path.Combine(packageRoot, "使用说明.txt"),
-                "1. 双击“窗口布局启动器.exe”。\r\n" +
-                "2. 选择布局后点击“打开布局”。\r\n" +
-                "3. 如果文件夹路径和你的电脑不一样，请先摆好窗口，再点“保存为新布局”。\r\n" +
-                "4. 浏览器窗口主要按浏览器类型和标题关键字匹配，例如 ChatGPT。\r\n",
-                Encoding.UTF8);
+        public LayoutConfig ImportLayoutJson(string sourcePath)
+        {
+            if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            {
+                throw new InvalidOperationException("没有找到要导入的布局文件。");
+            }
 
-            var zipPath = System.IO.Path.Combine(exportRoot, "窗口布局启动器-" + safeName + "-" + stamp + ".zip");
-            if (File.Exists(zipPath)) File.Delete(zipPath);
-            ZipFile.CreateFromDirectory(packageRoot, zipPath);
-
-            try { Directory.Delete(tempRoot, true); } catch { }
-            return zipPath;
+            var imported = ReadLayout(sourcePath);
+            var baseName = string.IsNullOrWhiteSpace(imported.Name)
+                ? System.IO.Path.GetFileNameWithoutExtension(sourcePath)
+                : imported.Name;
+            var safeName = SafeName(baseName);
+            var targetPath = GetUniqueLayoutPath(safeName, out safeName);
+            imported.Name = safeName;
+            if (string.IsNullOrWhiteSpace(imported.SavedAt))
+            {
+                imported.SavedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            }
+            WriteLayout(targetPath, imported);
+            return imported;
         }
 
         public string GetLayoutPath(string name)
         {
             return System.IO.Path.Combine(layoutDir, SafeName(name) + ".json");
+        }
+
+        private string GetUniqueLayoutPath(string name, out string finalName)
+        {
+            var baseName = SafeName(name);
+            finalName = baseName;
+            var path = GetLayoutPath(finalName);
+            if (!File.Exists(path)) return path;
+
+            for (int i = 2; i < 1000; i++)
+            {
+                finalName = baseName + "-" + i.ToString("00");
+                path = GetLayoutPath(finalName);
+                if (!File.Exists(path)) return path;
+            }
+
+            finalName = baseName + "-" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            return GetLayoutPath(finalName);
         }
 
         private IntPtr FindOrOpenExplorer(string path, List<ExplorerInfo> existing)
@@ -673,7 +719,6 @@ namespace WindowLayoutLauncher
         public static readonly Color WindowBottom = Color.FromArgb(209, 220, 229);
         public static readonly Color Panel = Color.FromArgb(226, 235, 241);
         public static readonly Color PanelLight = Color.FromArgb(238, 244, 248);
-        public static readonly Color Sidebar = Color.FromArgb(218, 228, 236);
         public static readonly Color Ink = Color.FromArgb(28, 41, 56);
         public static readonly Color Muted = Color.FromArgb(96, 111, 128);
         public static readonly Color Blue = Color.FromArgb(48, 126, 255);
@@ -867,169 +912,92 @@ namespace WindowLayoutLauncher
             AutoScaleMode = AutoScaleMode.None;
             Text = "窗口布局启动器";
             StartPosition = FormStartPosition.CenterScreen;
-            Size = UiTheme.DpiSize(790, 545);
-            MinimumSize = UiTheme.DpiSize(760, 520);
+            Size = UiTheme.DpiSize(720, 560);
+            MinimumSize = UiTheme.DpiSize(700, 540);
             BackColor = UiTheme.WindowBottom;
             Font = new Font("Microsoft YaHei UI", 9F);
             DoubleBuffered = true;
             Shown += (s, e) => CenterOnPrimaryScreen();
 
-            var sidebar = new GlassPanel();
-            sidebar.Left = 14;
-            sidebar.Top = 14;
-            sidebar.Width = 220;
-            sidebar.Height = 492;
-            sidebar.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Bottom;
-            sidebar.Radius = 30;
-            sidebar.FillColor = UiTheme.Sidebar;
-            Controls.Add(sidebar);
-
-            var brand = new Label();
-            brand.Text = "窗口布局启动器";
-            brand.Left = 24;
-            brand.Top = 24;
-            brand.Width = 178;
-            brand.Height = 30;
-            brand.Font = new Font("Microsoft YaHei UI", 11.5F, FontStyle.Bold);
-            brand.ForeColor = UiTheme.Blue;
-            brand.BackColor = Color.Transparent;
-            sidebar.Controls.Add(brand);
-
-            var role = new Label();
-            role.Text = "保存和恢复工作窗口";
-            role.Left = 24;
-            role.Top = 55;
-            role.Width = 160;
-            role.Height = 20;
-            role.ForeColor = UiTheme.Muted;
-            role.BackColor = Color.Transparent;
-            sidebar.Controls.Add(role);
-
-            AddSidebarLine(sidebar, "已保存布局", 110, true);
-            AddSidebarLine(sidebar, "保存当前窗口", 162, false);
-            AddSidebarLine(sidebar, "导出分享包", 214, false);
-            AddSidebarLine(sidebar, "打开布局文件夹", 266, false);
-
-            var sidebarTip = new Label();
-            sidebarTip.Text = "已经打开或最小化的窗口会直接复用；没打开的窗口才会重新打开。";
-            sidebarTip.Left = 24;
-            sidebarTip.Top = 378;
-            sidebarTip.Width = 162;
-            sidebarTip.Height = 54;
-            sidebarTip.ForeColor = UiTheme.Muted;
-            sidebarTip.BackColor = Color.Transparent;
-            sidebarTip.Font = new Font("Microsoft YaHei UI", 8.5F);
-            sidebarTip.TextAlign = ContentAlignment.TopLeft;
-            sidebar.Controls.Add(sidebarTip);
-
-            var version = new Label();
-            version.Text = "V 1.1  悬浮拟态版";
-            version.Left = 24;
-            version.Top = 444;
-            version.Width = 162;
-            version.Height = 24;
-            version.ForeColor = Color.FromArgb(122, 139, 158);
-            version.BackColor = Color.Transparent;
-            version.Font = new Font("Microsoft YaHei UI", 8F);
-            sidebar.Controls.Add(version);
-
             var title = new Label();
             title.Text = "窗口布局中心";
-            title.Left = 262;
+            title.Left = 38;
             title.Top = 30;
-            title.Width = 390;
+            title.Width = 520;
             title.Height = 36;
             title.Font = new Font("Microsoft YaHei UI", 14.5F, FontStyle.Bold);
             title.ForeColor = UiTheme.Ink;
             title.BackColor = Color.Transparent;
             Controls.Add(title);
 
+            var section = new Label();
+            section.Text = "选择一个工作布局";
+            section.Left = 40;
+            section.Top = 78;
+            section.Width = 420;
+            section.Height = 24;
+            section.Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
+            section.ForeColor = UiTheme.Ink;
+            section.BackColor = Color.Transparent;
+            Controls.Add(section);
+
             var hint = new Label();
-            hint.Text = "保存不同工作的窗口位置，需要时一键恢复到对应位置。";
-            hint.Left = 264;
-            hint.Top = 64;
-            hint.Width = 460;
+            hint.Text = "保存不同工作流的窗口位置和大小，下次一键恢复。";
+            hint.Left = 40;
+            hint.Top = 104;
+            hint.Width = 520;
             hint.Height = 24;
             hint.ForeColor = UiTheme.Muted;
             hint.BackColor = Color.Transparent;
             Controls.Add(hint);
 
             card = new GlassPanel();
-            card.Left = 246;
-            card.Top = 92;
-            card.Width = 514;
-            card.Height = 336;
-            card.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right | AnchorStyles.Bottom;
+            card.Left = 34;
+            card.Top = 142;
+            card.Width = 420;
+            card.Height = 250;
+            card.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Bottom;
             card.FillColor = UiTheme.Panel;
             Controls.Add(card);
 
-            var cardTitle = new Label();
-            cardTitle.Text = "已保存布局";
-            cardTitle.Left = 28;
-            cardTitle.Top = 24;
-            cardTitle.Width = 180;
-            cardTitle.Height = 22;
-            cardTitle.Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold);
-            cardTitle.ForeColor = UiTheme.Ink;
-            cardTitle.BackColor = Color.Transparent;
-            card.Controls.Add(cardTitle);
-
-            var cardHint = new Label();
-            cardHint.Text = "选择后操作";
-            cardHint.Left = 360;
-            cardHint.Top = 24;
-            cardHint.Width = 140;
-            cardHint.Height = 22;
-            cardHint.Font = new Font("Microsoft YaHei UI", 8F);
-            cardHint.ForeColor = UiTheme.Muted;
-            cardHint.BackColor = Color.Transparent;
-            cardHint.TextAlign = ContentAlignment.MiddleRight;
-            cardHint.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            card.Controls.Add(cardHint);
-
             listBox = new ListBox();
-            listBox.Left = 28;
-            listBox.Top = 58;
-            listBox.Width = 302;
-            listBox.Height = 238;
-            listBox.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Bottom;
+            listBox.Left = 22;
+            listBox.Top = 22;
+            listBox.Width = 376;
+            listBox.Height = 206;
+            listBox.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right | AnchorStyles.Bottom;
             listBox.DisplayMember = "Display";
             listBox.BackColor = UiTheme.Panel;
             listBox.ForeColor = UiTheme.Ink;
             listBox.BorderStyle = BorderStyle.None;
             listBox.DrawMode = DrawMode.OwnerDrawFixed;
-            listBox.ItemHeight = 54;
+            listBox.ItemHeight = 66;
             listBox.IntegralHeight = false;
             listBox.DrawItem += DrawLayoutItem;
             listBox.DoubleClick += (s, e) => RestoreSelected();
             card.Controls.Add(listBox);
 
-            AddButton(card, "打开布局", 354, 58, true, (s, e) => RestoreSelected());
-            AddButton(card, "保存为新布局", 354, 99, false, (s, e) => SaveNew());
-            AddButton(card, "覆盖所选布局", 354, 140, false, (s, e) => OverwriteSelected());
-            AddButton(card, "导出分享包", 354, 181, false, (s, e) => ExportSelected());
-            AddButton(card, "删除所选布局", 354, 222, false, (s, e) => DeleteSelected());
-            AddButton(card, "布局文件夹", 354, 263, false, (s, e) => Process.Start("explorer.exe", manager.LayoutDir));
-
-            var statusCard = new GlassPanel();
-            statusCard.Left = 246;
-            statusCard.Top = 442;
-            statusCard.Width = 514;
-            statusCard.Height = 64;
-            statusCard.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
-            statusCard.Radius = 20;
-            statusCard.FillColor = UiTheme.Panel;
-            Controls.Add(statusCard);
+            AddButton(this, "打开布局", 516, 148, true, (s, e) => RestoreSelected());
+            AddActionGroup(492, 194,
+                new[] { "保存为新布局", "覆盖所选布局", "重命名布局" },
+                new EventHandler[] { (s, e) => SaveNew(), (s, e) => OverwriteSelected(), (s, e) => RenameSelected() });
+            AddActionGroup(492, 330,
+                new[] { "导出 JSON", "导入 JSON" },
+                new EventHandler[] { (s, e) => ExportSelected(), (s, e) => ImportLayout() });
+            AddActionGroup(492, 422,
+                new[] { "布局文件夹", "刷新" },
+                new EventHandler[] { (s, e) => Process.Start("explorer.exe", manager.LayoutDir), (s, e) => RefreshLayouts() });
 
             statusLabel = new Label();
-            statusLabel.Left = 24;
-            statusLabel.Top = 22;
-            statusLabel.Width = 456;
+            statusLabel.Left = 46;
+            statusLabel.Top = 414;
+            statusLabel.Width = 400;
             statusLabel.Height = 24;
-            statusLabel.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
+            statusLabel.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;
             statusLabel.ForeColor = UiTheme.Muted;
             statusLabel.BackColor = Color.Transparent;
-            statusCard.Controls.Add(statusLabel);
+            statusLabel.AutoEllipsis = true;
+            Controls.Add(statusLabel);
         }
 
         private void CenterOnPrimaryScreen()
@@ -1057,18 +1025,6 @@ namespace WindowLayoutLauncher
             }
         }
 
-        private void TryEnableBackdrop()
-        {
-            try
-            {
-                int backdrop = 2;
-                Native.DwmSetWindowAttribute(Handle, 38, ref backdrop, sizeof(int));
-            }
-            catch
-            {
-            }
-        }
-
         private void AddButton(Control parent, string text, int left, int top, bool primary, EventHandler handler)
         {
             var button = new GlassButton();
@@ -1079,44 +1035,35 @@ namespace WindowLayoutLauncher
             button.Height = 34;
             button.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             button.Primary = primary;
-            button.SurfaceColor = UiTheme.Panel;
-            button.BackColor = UiTheme.Panel;
+            var panel = parent as GlassPanel;
+            var surface = panel == null ? parent.BackColor : panel.FillColor;
+            if (surface == Color.Transparent || surface.A == 0)
+            {
+                surface = UiTheme.WindowBottom;
+            }
+            button.SurfaceColor = surface;
+            button.BackColor = surface;
             button.Font = new Font("Microsoft YaHei UI", 9F, primary ? FontStyle.Bold : FontStyle.Regular);
             button.Click += handler;
             parent.Controls.Add(button);
         }
 
-        private void AddSidebarLine(Control parent, string text, int top, bool active)
+        private void AddActionGroup(int left, int top, string[] labels, EventHandler[] handlers)
         {
-            Control host = parent;
-            int labelLeft = 26;
-            int labelTop = top;
-            if (active)
-            {
-                var nav = new GlassPanel();
-                nav.Left = 10;
-                nav.Top = top - 12;
-                nav.Width = 194;
-                nav.Height = 48;
-                nav.Radius = 16;
-                nav.FillColor = UiTheme.PanelLight;
-                parent.Controls.Add(nav);
-                host = nav;
-                labelLeft = 24;
-                labelTop = 13;
-            }
+            var group = new GlassPanel();
+            group.Left = left;
+            group.Top = top;
+            group.Width = 172;
+            group.Height = 20 + labels.Length * 36;
+            group.Radius = 18;
+            group.FillColor = UiTheme.Panel;
+            group.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            Controls.Add(group);
 
-            var label = new Label();
-            label.Text = text;
-            label.Left = labelLeft;
-            label.Top = labelTop;
-            label.Width = active ? 148 : 160;
-            label.Height = 24;
-            label.Font = new Font("Microsoft YaHei UI", 9F, active ? FontStyle.Bold : FontStyle.Regular);
-            label.ForeColor = active ? UiTheme.Ink : Color.FromArgb(66, 78, 92);
-            label.BackColor = Color.Transparent;
-            label.TextAlign = ContentAlignment.MiddleLeft;
-            host.Controls.Add(label);
+            for (int i = 0; i < labels.Length; i++)
+            {
+                AddButton(group, labels[i], 18, 10 + i * 36, false, handlers[i]);
+            }
         }
 
         private void DrawLayoutItem(object sender, DrawItemEventArgs e)
@@ -1158,24 +1105,51 @@ namespace WindowLayoutLauncher
             }
 
             var name = item == null ? listBox.Items[e.Index].ToString() : item.Name;
-            var meta = item == null ? "" : (item.Count + " 个窗口  " + item.SavedAt);
+            var meta = item == null ? "" : (item.Count + " 个窗口｜" + FormatSavedAt(item.SavedAt));
             int textLeft = rect.Left + (selected ? 22 : 14);
             using (var nameFont = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold))
             using (var metaFont = new Font("Microsoft YaHei UI", 8F))
             {
-                TextRenderer.DrawText(e.Graphics, name, nameFont, new Rectangle(textLeft, rect.Top + 7, rect.Width - 28, 18), UiTheme.Ink, TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
-                TextRenderer.DrawText(e.Graphics, meta, metaFont, new Rectangle(textLeft, rect.Top + 29, rect.Width - 28, 16), UiTheme.Muted, TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+                TextRenderer.DrawText(e.Graphics, name, nameFont, new Rectangle(textLeft, rect.Top + 10, rect.Width - 28, 20), UiTheme.Ink, TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+                TextRenderer.DrawText(e.Graphics, meta, metaFont, new Rectangle(textLeft, rect.Top + 35, rect.Width - 28, 18), UiTheme.Muted, TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
             }
         }
 
-        private void RefreshLayouts()
+        private static string FormatSavedAt(string value)
+        {
+            DateTime parsed;
+            if (DateTime.TryParse(value, out parsed))
+            {
+                return parsed.ToString("yyyy-MM-dd HH:mm");
+            }
+            return value ?? "";
+        }
+
+        private void RefreshLayouts(string selectName = null)
         {
             listBox.Items.Clear();
             foreach (var layout in manager.GetLayouts())
             {
                 listBox.Items.Add(layout);
             }
-            if (listBox.Items.Count > 0) listBox.SelectedIndex = 0;
+
+            if (listBox.Items.Count > 0)
+            {
+                var selectedIndex = 0;
+                if (!string.IsNullOrWhiteSpace(selectName))
+                {
+                    for (int i = 0; i < listBox.Items.Count; i++)
+                    {
+                        var item = listBox.Items[i] as LayoutSummary;
+                        if (item != null && string.Equals(item.Name, selectName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            selectedIndex = i;
+                            break;
+                        }
+                    }
+                }
+                listBox.SelectedIndex = selectedIndex;
+            }
             statusLabel.Text = listBox.Items.Count > 0 ? "已加载 " + listBox.Items.Count + " 个布局。" : "还没有布局。先摆好窗口，然后点“保存为新布局”。";
         }
 
@@ -1210,7 +1184,7 @@ namespace WindowLayoutLauncher
                 return;
             }
             var layout = manager.SaveCurrent(name);
-            RefreshLayouts();
+            RefreshLayouts(layout.Name);
             statusLabel.Text = "已保存：" + layout.Name + "（" + layout.Items.Count + " 个窗口）。";
         }
 
@@ -1223,8 +1197,36 @@ namespace WindowLayoutLauncher
                 return;
             }
             var layout = manager.SaveCurrent(selected.Name);
-            RefreshLayouts();
+            RefreshLayouts(layout.Name);
             statusLabel.Text = "已覆盖：" + layout.Name + "（" + layout.Items.Count + " 个窗口）。";
+        }
+
+        private void RenameSelected()
+        {
+            var selected = SelectedLayout();
+            if (selected == null)
+            {
+                statusLabel.Text = "先选一个要重命名的布局。";
+                return;
+            }
+
+            var name = PromptForm.Ask("重命名布局", "新的布局名称：", selected.Name);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                statusLabel.Text = "已取消。";
+                return;
+            }
+
+            try
+            {
+                var layout = manager.RenameLayout(selected, name);
+                RefreshLayouts(layout.Name);
+                statusLabel.Text = "已重命名：" + layout.Name;
+            }
+            catch (Exception ex)
+            {
+                statusLabel.Text = "重命名失败：" + ex.Message;
+            }
         }
 
         private void DeleteSelected()
@@ -1252,13 +1254,40 @@ namespace WindowLayoutLauncher
             }
             try
             {
-                var zip = manager.ExportSharePackage(selected);
-                statusLabel.Text = "已导出分享包：" + zip;
-                Process.Start("explorer.exe", "/select,\"" + zip + "\"");
+                var json = manager.ExportLayoutJson(selected);
+                statusLabel.Text = "已导出 JSON：" + json;
             }
             catch (Exception ex)
             {
                 statusLabel.Text = "导出失败：" + ex.Message;
+            }
+        }
+
+        private void ImportLayout()
+        {
+            using (var dialog = new OpenFileDialog())
+            {
+                dialog.Title = "导入布局 JSON";
+                dialog.Filter = "布局 JSON (*.json)|*.json|所有文件 (*.*)|*.*";
+                dialog.Multiselect = false;
+                dialog.CheckFileExists = true;
+                dialog.InitialDirectory = Directory.Exists(manager.LayoutDir) ? manager.LayoutDir : AppDomain.CurrentDomain.BaseDirectory;
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    statusLabel.Text = "已取消。";
+                    return;
+                }
+
+                try
+                {
+                    var layout = manager.ImportLayoutJson(dialog.FileName);
+                    RefreshLayouts(layout.Name);
+                    statusLabel.Text = "已导入：" + layout.Name;
+                }
+                catch (Exception ex)
+                {
+                    statusLabel.Text = "导入失败：" + ex.Message;
+                }
             }
         }
     }
