@@ -1,0 +1,44 @@
+﻿{
+    "name":  "素材处理布局",
+    "saved_at":  "2026-06-26 08:34:56",
+    "items":  [
+                  {
+                      "kind":  "explorer",
+                      "path":  "D:\\AICode\\AI\\data\\01-团建策划-江湖有旅人\\01-素材库\\1.团建攻略素材\\5.素材：团建游戏素材（拉泛流量）",
+                      "x":  -226,
+                      "y":  530,
+                      "w":  583,
+                      "h":  588
+                  },
+                  {
+                      "kind":  "explorer",
+                      "path":  "D:\\Download\\素材下载\\团建高转化素材",
+                      "x":  -125,
+                      "y":  19,
+                      "w":  483,
+                      "h":  530
+                  },
+                  {
+                      "kind":  "browser",
+                      "browser":  "edge",
+                      "exe_path":  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+                      "url":  "https://chatgpt.com/",
+                      "title_keyword":  "ChatGPT",
+                      "x":  349,
+                      "y":  19,
+                      "w":  555,
+                      "h":  593
+                  },
+                  {
+                      "kind":  "browser",
+                      "browser":  "chrome",
+                      "exe_path":  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+                      "url":  "https://chatgpt.com/",
+                      "title_keyword":  "ChatGPT",
+                      "x":  894,
+                      "y":  20,
+                      "w":  545,
+                      "h":  607
+                  }
+              ]
+}
