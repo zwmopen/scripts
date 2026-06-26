@@ -15,7 +15,7 @@ function New-TextFromCodePoints {
     return -join ($CodePoints | ForEach-Object { [char]$_ })
 }
 
-$nativeAssemblyPath = Join-Path $PSScriptRoot "WindowLayoutNative.dll"
+$nativeAssemblyPath = Join-Path $PSScriptRoot "WindowLayoutNative.v2.dll"
 $nativeTypeDefinition = @'
 using System;
 using System.Text;
@@ -37,6 +37,9 @@ public class WindowLayoutNative {
 
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
@@ -229,6 +232,7 @@ function Get-TopLevelWindows {
         if (-not [WindowLayoutNative]::IsWindowVisible($hWnd)) {
             return $true
         }
+        $isMinimized = [WindowLayoutNative]::IsIconic($hWnd)
 
         $length = [WindowLayoutNative]::GetWindowTextLength($hWnd)
         if ($length -le 0) {
@@ -249,7 +253,7 @@ function Get-TopLevelWindows {
 
         $width = $rect.Right - $rect.Left
         $height = $rect.Bottom - $rect.Top
-        if ($width -lt 100 -or $height -lt 80) {
+        if (-not $isMinimized -and ($width -lt 100 -or $height -lt 80)) {
             return $true
         }
 
@@ -270,6 +274,7 @@ function Get-TopLevelWindows {
             W = $width
             H = $height
             ExePath = $process.Path
+            IsMinimized = $isMinimized
         })
 
         return $true
@@ -279,7 +284,10 @@ function Get-TopLevelWindows {
 }
 
 function Get-ExplorerWindows {
-    param($TopWindows = $null)
+    param(
+        $TopWindows = $null,
+        [switch]$IncludeMinimized
+    )
 
     $result = @()
     try {
@@ -289,7 +297,7 @@ function Get-ExplorerWindows {
 
         $visibleExplorerHwnds = @(
             $TopWindows |
-                Where-Object { $_.Process -ieq "explorer" -and $_.Title -ne "Program Manager" } |
+                Where-Object { $_.Process -ieq "explorer" -and $_.Title -ne "Program Manager" -and ($IncludeMinimized -or -not $_.IsMinimized) } |
                 ForEach-Object { [int64]$_.Hwnd }
         )
         $shell = New-Object -ComObject Shell.Application
@@ -345,7 +353,11 @@ function Move-WindowToRect {
         return $false
     }
 
+    $wasMinimized = [WindowLayoutNative]::IsIconic($Hwnd)
     [void][WindowLayoutNative]::ShowWindowAsync($Hwnd, 9)
+    if ($wasMinimized) {
+        Start-Sleep -Milliseconds 60
+    }
     return [WindowLayoutNative]::MoveWindow($Hwnd, $X, $Y, $W, $H, $true)
 }
 
@@ -383,7 +395,7 @@ function Find-ExplorerInWindows {
 function Find-ExplorerByPath {
     param([string]$Path)
 
-    return Find-ExplorerInWindows -Windows (Get-ExplorerWindows) -Path $Path
+    return Find-ExplorerInWindows -Windows (Get-ExplorerWindows -IncludeMinimized) -Path $Path
 }
 
 function Start-OrFindExplorer {
@@ -506,7 +518,8 @@ function Save-CurrentLayout {
     $browserWindows = Get-TopLevelWindows |
         Where-Object {
             ($_.Process -ieq "msedge" -or $_.Process -ieq "chrome") -and
-            ($_.Title -like "*ChatGPT*")
+            ($_.Title -like "*ChatGPT*") -and
+            (-not $_.IsMinimized)
         } |
         Sort-Object X, Y
 
@@ -563,7 +576,7 @@ function Restore-Layout {
     $ok = 0
     $failed = 0
     $topWindows = Get-TopLevelWindows
-    $explorerWindows = Get-ExplorerWindows -TopWindows $topWindows
+    $explorerWindows = Get-ExplorerWindows -TopWindows $topWindows -IncludeMinimized
     $usedHwnd = @()
 
     foreach ($item in @($config.items)) {

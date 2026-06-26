@@ -19,6 +19,8 @@ New-Item -ItemType Directory -Force -Path $release | Out-Null
 & $csc /nologo /target:winexe /platform:anycpu /optimize+ /out:$out `
     /reference:System.Windows.Forms.dll `
     /reference:System.Drawing.dll `
+    /reference:System.IO.Compression.dll `
+    /reference:System.IO.Compression.FileSystem.dll `
     /reference:System.Runtime.Serialization.dll `
     /reference:Microsoft.CSharp.dll `
     $src

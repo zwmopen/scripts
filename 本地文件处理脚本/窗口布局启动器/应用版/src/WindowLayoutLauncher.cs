@@ -4,12 +4,14 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using System.IO.Compression;
 
 namespace WindowLayoutLauncher
 {
@@ -122,7 +124,7 @@ namespace WindowLayoutLauncher
         public int Count { get; set; }
         public string Display
         {
-            get { return Name + "  (" + Count + " 个窗口)"; }
+            get { return Name + "    " + Count + " 个窗口"; }
         }
     }
 
@@ -133,6 +135,7 @@ namespace WindowLayoutLauncher
         public string ProcessName { get; set; }
         public string Title { get; set; }
         public string ExePath { get; set; }
+        public bool IsMinimized { get; set; }
         public int X { get; set; }
         public int Y { get; set; }
         public int W { get; set; }
@@ -193,7 +196,7 @@ namespace WindowLayoutLauncher
             var topWindows = WindowTools.GetTopLevelWindows();
             var items = new List<LayoutItem>();
 
-            foreach (var explorer in WindowTools.GetExplorerWindows(topWindows).OrderBy(w => w.X).ThenBy(w => w.Y))
+            foreach (var explorer in WindowTools.GetExplorerWindows(topWindows, false).OrderBy(w => w.X).ThenBy(w => w.Y))
             {
                 items.Add(new LayoutItem
                 {
@@ -208,7 +211,8 @@ namespace WindowLayoutLauncher
 
             foreach (var browser in topWindows
                 .Where(w => (EqualsIgnoreCase(w.ProcessName, "msedge") || EqualsIgnoreCase(w.ProcessName, "chrome")) &&
-                            ContainsIgnoreCase(w.Title, "ChatGPT"))
+                            ContainsIgnoreCase(w.Title, "ChatGPT") &&
+                            !w.IsMinimized)
                 .OrderBy(w => w.X).ThenBy(w => w.Y))
             {
                 items.Add(new LayoutItem
@@ -246,7 +250,7 @@ namespace WindowLayoutLauncher
 
             var layout = ReadLayout(path);
             var topWindows = WindowTools.GetTopLevelWindows();
-            var explorerWindows = WindowTools.GetExplorerWindows(topWindows);
+            var explorerWindows = WindowTools.GetExplorerWindows(topWindows, true);
             var used = new HashSet<IntPtr>();
             int ok = 0;
             int failed = 0;
@@ -294,6 +298,40 @@ namespace WindowLayoutLauncher
             if (File.Exists(summary.Path)) File.Delete(summary.Path);
         }
 
+        public string ExportSharePackage(LayoutSummary summary)
+        {
+            if (summary == null || !File.Exists(summary.Path))
+            {
+                throw new InvalidOperationException("先选择一个布局。");
+            }
+
+            var exportRoot = System.IO.Path.Combine(baseDir, "exports");
+            Directory.CreateDirectory(exportRoot);
+            var safeName = SafeName(summary.Name);
+            var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            var tempRoot = System.IO.Path.Combine(Path.GetTempPath(), "WindowLayoutShare_" + stamp);
+            var packageRoot = System.IO.Path.Combine(tempRoot, "窗口布局启动器-" + safeName);
+            var packageLayoutDir = System.IO.Path.Combine(packageRoot, "layouts");
+            Directory.CreateDirectory(packageLayoutDir);
+
+            var exePath = Application.ExecutablePath;
+            File.Copy(exePath, System.IO.Path.Combine(packageRoot, System.IO.Path.GetFileName(exePath)), true);
+            File.Copy(summary.Path, System.IO.Path.Combine(packageLayoutDir, safeName + ".json"), true);
+            File.WriteAllText(System.IO.Path.Combine(packageRoot, "使用说明.txt"),
+                "1. 双击“窗口布局启动器.exe”。\r\n" +
+                "2. 选择布局后点击“打开布局”。\r\n" +
+                "3. 如果文件夹路径和你的电脑不一样，请先摆好窗口，再点“保存为新布局”。\r\n" +
+                "4. 浏览器窗口主要按浏览器类型和标题关键字匹配，例如 ChatGPT。\r\n",
+                Encoding.UTF8);
+
+            var zipPath = System.IO.Path.Combine(exportRoot, "窗口布局启动器-" + safeName + "-" + stamp + ".zip");
+            if (File.Exists(zipPath)) File.Delete(zipPath);
+            ZipFile.CreateFromDirectory(packageRoot, zipPath);
+
+            try { Directory.Delete(tempRoot, true); } catch { }
+            return zipPath;
+        }
+
         public string GetLayoutPath(string name)
         {
             return System.IO.Path.Combine(layoutDir, SafeName(name) + ".json");
@@ -310,7 +348,7 @@ namespace WindowLayoutLauncher
             Process.Start("explorer.exe", "\"" + path + "\"");
             var created = WaitFor(() =>
             {
-                return WindowTools.GetExplorerWindows(WindowTools.GetTopLevelWindows())
+                return WindowTools.GetExplorerWindows(WindowTools.GetTopLevelWindows(), true)
                     .FirstOrDefault(w => EqualsIgnoreCase(FullPathTrim(w.Path), target));
             }, 3500);
             return created == null ? IntPtr.Zero : created.Hwnd;
@@ -446,6 +484,7 @@ namespace WindowLayoutLauncher
             Native.EnumWindows((hWnd, lParam) =>
             {
                 if (!Native.IsWindowVisible(hWnd)) return true;
+                bool isMinimized = Native.IsIconic(hWnd);
                 int length = Native.GetWindowTextLength(hWnd);
                 if (length <= 0) return true;
 
@@ -458,7 +497,7 @@ namespace WindowLayoutLauncher
                 if (!Native.GetWindowRect(hWnd, out rect)) return true;
                 int width = rect.Right - rect.Left;
                 int height = rect.Bottom - rect.Top;
-                if (width < 100 || height < 80) return true;
+                if (!isMinimized && (width < 100 || height < 80)) return true;
 
                 uint pid;
                 Native.GetWindowThreadProcessId(hWnd, out pid);
@@ -473,6 +512,7 @@ namespace WindowLayoutLauncher
                     ProcessName = process.ProcessName,
                     Title = title,
                     ExePath = "",
+                    IsMinimized = isMinimized,
                     X = rect.Left,
                     Y = rect.Top,
                     W = width,
@@ -495,12 +535,13 @@ namespace WindowLayoutLauncher
             }
         }
 
-        public static List<ExplorerInfo> GetExplorerWindows(List<WindowInfo> topWindows)
+        public static List<ExplorerInfo> GetExplorerWindows(List<WindowInfo> topWindows, bool includeMinimized)
         {
             var result = new List<ExplorerInfo>();
             var visible = new HashSet<IntPtr>(topWindows
                 .Where(w => string.Equals(w.ProcessName, "explorer", StringComparison.OrdinalIgnoreCase) &&
-                            !string.Equals(w.Title, "Program Manager", StringComparison.OrdinalIgnoreCase))
+                            !string.Equals(w.Title, "Program Manager", StringComparison.OrdinalIgnoreCase) &&
+                            (includeMinimized || !w.IsMinimized))
                 .Select(w => w.Hwnd));
 
             try
@@ -548,7 +589,9 @@ namespace WindowLayoutLauncher
         public static bool MoveWindow(IntPtr hwnd, int x, int y, int width, int height)
         {
             if (hwnd == IntPtr.Zero || width <= 0 || height <= 0) return false;
+            bool wasMinimized = Native.IsIconic(hwnd);
             Native.ShowWindowAsync(hwnd, 9);
+            if (wasMinimized) Thread.Sleep(60);
             return Native.MoveWindow(hwnd, x, y, width, height, true);
         }
     }
@@ -573,6 +616,9 @@ namespace WindowLayoutLauncher
         public static extern bool IsWindowVisible(IntPtr hWnd);
 
         [DllImport("user32.dll")]
+        public static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
         public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 
         [DllImport("user32.dll")]
@@ -589,6 +635,140 @@ namespace WindowLayoutLauncher
 
         [DllImport("user32.dll")]
         public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("dwmapi.dll")]
+        public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+    }
+
+    public static class UiTheme
+    {
+        public static readonly Color Ink = Color.FromArgb(34, 49, 44);
+        public static readonly Color Muted = Color.FromArgb(100, 116, 112);
+        public static readonly Color Green = Color.FromArgb(54, 143, 101);
+        public static readonly Color GreenDeep = Color.FromArgb(24, 98, 68);
+        public static readonly Color Glass = Color.FromArgb(218, 255, 255, 255);
+        public static readonly Color GlassSoft = Color.FromArgb(168, 255, 255, 255);
+        public static readonly Color Border = Color.FromArgb(150, 217, 229, 224);
+        public static readonly Color Selection = Color.FromArgb(232, 246, 240);
+
+        public static GraphicsPath RoundedRect(Rectangle rect, int radius)
+        {
+            int d = radius * 2;
+            var path = new GraphicsPath();
+            path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+            path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+            path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+            path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+    }
+
+    public class GlassPanel : Panel
+    {
+        public int Radius { get; set; }
+
+        public GlassPanel()
+        {
+            Radius = 24;
+            DoubleBuffered = true;
+            BackColor = Color.Transparent;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (var path = UiTheme.RoundedRect(rect, Radius))
+            using (var shadow = new SolidBrush(Color.FromArgb(20, 40, 82, 60)))
+            using (var fill = new SolidBrush(UiTheme.Glass))
+            using (var pen = new Pen(UiTheme.Border))
+            {
+                var shadowRect = new Rectangle(rect.X + 2, rect.Y + 4, rect.Width - 2, rect.Height - 2);
+                using (var shadowPath = UiTheme.RoundedRect(shadowRect, Radius))
+                {
+                    e.Graphics.FillPath(shadow, shadowPath);
+                }
+                e.Graphics.FillPath(fill, path);
+                e.Graphics.DrawPath(pen, path);
+            }
+            base.OnPaint(e);
+        }
+    }
+
+    public class GlassButton : Button
+    {
+        private bool hover;
+        private bool down;
+
+        public bool Primary { get; set; }
+
+        public GlassButton()
+        {
+            FlatStyle = FlatStyle.Flat;
+            FlatAppearance.BorderSize = 0;
+            BackColor = Color.Transparent;
+            Cursor = Cursors.Hand;
+            Height = 38;
+            DoubleBuffered = true;
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            hover = true;
+            Invalidate();
+            base.OnMouseEnter(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            hover = false;
+            down = false;
+            Invalidate();
+            base.OnMouseLeave(e);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            down = true;
+            Invalidate();
+            base.OnMouseDown(e);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            down = false;
+            Invalidate();
+            base.OnMouseUp(e);
+        }
+
+        protected override void OnPaint(PaintEventArgs pevent)
+        {
+            pevent.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            Color fill;
+            Color text;
+            if (Primary)
+            {
+                fill = down ? Color.FromArgb(35, 121, 83) : hover ? Color.FromArgb(63, 158, 113) : UiTheme.Green;
+                text = Color.White;
+            }
+            else
+            {
+                fill = down ? Color.FromArgb(226, 241, 235) : hover ? Color.FromArgb(238, 248, 244) : Color.FromArgb(232, 255, 255, 255);
+                text = UiTheme.GreenDeep;
+            }
+
+            using (var path = UiTheme.RoundedRect(rect, 16))
+            using (var brush = new SolidBrush(fill))
+            using (var pen = new Pen(Primary ? Color.FromArgb(70, 255, 255, 255) : UiTheme.Border))
+            using (var textBrush = new SolidBrush(text))
+            {
+                pevent.Graphics.FillPath(brush, path);
+                pevent.Graphics.DrawPath(pen, path);
+                TextRenderer.DrawText(pevent.Graphics, Text, Font, rect, text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            }
+        }
     }
 
     public class MainForm : Form
@@ -596,6 +776,7 @@ namespace WindowLayoutLauncher
         private readonly LayoutManager manager;
         private ListBox listBox;
         private Label statusLabel;
+        private GlassPanel card;
 
         public MainForm(LayoutManager manager)
         {
@@ -608,66 +789,139 @@ namespace WindowLayoutLauncher
         {
             Text = "窗口布局启动器";
             StartPosition = FormStartPosition.CenterScreen;
-            Size = new Size(560, 430);
-            MinimumSize = new Size(520, 390);
-            BackColor = Color.FromArgb(248, 252, 249);
+            Size = new Size(640, 480);
+            MinimumSize = new Size(600, 440);
+            BackColor = Color.White;
             Font = new Font("Microsoft YaHei UI", 9F);
+            DoubleBuffered = true;
+            Load += (s, e) => TryEnableBackdrop();
 
             var title = new Label();
-            title.Text = "窗口布局启动器";
-            title.Left = 24;
-            title.Top = 18;
-            title.Width = 450;
-            title.Height = 30;
-            title.Font = new Font("Microsoft YaHei UI", 14F, FontStyle.Bold);
-            title.ForeColor = Color.FromArgb(24, 82, 57);
+            title.Text = "Window Layout";
+            title.Left = 34;
+            title.Top = 26;
+            title.Width = 520;
+            title.Height = 32;
+            title.Font = new Font("Segoe UI Variable Display", 18F, FontStyle.Bold);
+            title.ForeColor = UiTheme.Ink;
+            title.BackColor = Color.Transparent;
             Controls.Add(title);
 
             var hint = new Label();
-            hint.Text = "保存不同工作流的窗口位置，下次双击即可恢复。";
-            hint.Left = 26;
-            hint.Top = 50;
-            hint.Width = 470;
+            hint.Text = "保存不同工作流的窗口位置，下次一键恢复。";
+            hint.Left = 36;
+            hint.Top = 60;
+            hint.Width = 520;
             hint.Height = 24;
-            hint.ForeColor = Color.FromArgb(86, 110, 96);
+            hint.ForeColor = UiTheme.Muted;
+            hint.BackColor = Color.Transparent;
             Controls.Add(hint);
 
-            listBox = new ListBox();
-            listBox.Left = 26;
-            listBox.Top = 86;
-            listBox.Width = 320;
-            listBox.Height = 240;
-            listBox.DisplayMember = "Display";
-            listBox.BackColor = Color.White;
-            listBox.BorderStyle = BorderStyle.FixedSingle;
-            listBox.DoubleClick += (s, e) => RestoreSelected();
-            Controls.Add(listBox);
+            card = new GlassPanel();
+            card.Left = 28;
+            card.Top = 98;
+            card.Width = 568;
+            card.Height = 282;
+            card.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right | AnchorStyles.Bottom;
+            Controls.Add(card);
 
-            AddButton("打开布局", 374, 88, (s, e) => RestoreSelected());
-            AddButton("保存为新布局", 374, 136, (s, e) => SaveNew());
-            AddButton("覆盖所选布局", 374, 184, (s, e) => OverwriteSelected());
-            AddButton("删除所选布局", 374, 232, (s, e) => DeleteSelected());
-            AddButton("打开布局文件夹", 374, 280, (s, e) => Process.Start("explorer.exe", manager.LayoutDir));
+            listBox = new ListBox();
+            listBox.Left = 24;
+            listBox.Top = 26;
+            listBox.Width = 340;
+            listBox.Height = 216;
+            listBox.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Bottom;
+            listBox.DisplayMember = "Display";
+            listBox.BackColor = Color.FromArgb(248, 252, 249);
+            listBox.ForeColor = UiTheme.Ink;
+            listBox.BorderStyle = BorderStyle.None;
+            listBox.DrawMode = DrawMode.OwnerDrawFixed;
+            listBox.ItemHeight = 46;
+            listBox.IntegralHeight = false;
+            listBox.DrawItem += DrawLayoutItem;
+            listBox.DoubleClick += (s, e) => RestoreSelected();
+            card.Controls.Add(listBox);
+
+            AddButton(card, "打开布局", 394, 26, true, (s, e) => RestoreSelected());
+            AddButton(card, "保存为新布局", 394, 66, false, (s, e) => SaveNew());
+            AddButton(card, "覆盖所选布局", 394, 106, false, (s, e) => OverwriteSelected());
+            AddButton(card, "导出分享包", 394, 146, false, (s, e) => ExportSelected());
+            AddButton(card, "删除所选布局", 394, 186, false, (s, e) => DeleteSelected());
+            AddButton(card, "打开布局文件夹", 394, 226, false, (s, e) => Process.Start("explorer.exe", manager.LayoutDir));
 
             statusLabel = new Label();
-            statusLabel.Left = 26;
-            statusLabel.Top = 340;
-            statusLabel.Width = 485;
-            statusLabel.Height = 26;
-            statusLabel.ForeColor = Color.FromArgb(86, 110, 96);
+            statusLabel.Left = 38;
+            statusLabel.Top = 400;
+            statusLabel.Width = 540;
+            statusLabel.Height = 28;
+            statusLabel.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
+            statusLabel.ForeColor = UiTheme.Muted;
+            statusLabel.BackColor = Color.Transparent;
             Controls.Add(statusLabel);
         }
 
-        private void AddButton(string text, int left, int top, EventHandler handler)
+        protected override void OnPaintBackground(PaintEventArgs e)
         {
-            var button = new Button();
+            using (var brush = new LinearGradientBrush(ClientRectangle, Color.FromArgb(244, 250, 247), Color.FromArgb(224, 239, 232), 45F))
+            {
+                e.Graphics.FillRectangle(brush, ClientRectangle);
+            }
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var b1 = new SolidBrush(Color.FromArgb(72, 196, 232, 210)))
+            using (var b2 = new SolidBrush(Color.FromArgb(58, 255, 255, 255)))
+            {
+                e.Graphics.FillEllipse(b1, new Rectangle(Width - 220, -80, 260, 220));
+                e.Graphics.FillEllipse(b2, new Rectangle(-80, Height - 190, 260, 220));
+            }
+        }
+
+        private void TryEnableBackdrop()
+        {
+            try
+            {
+                int backdrop = 2;
+                Native.DwmSetWindowAttribute(Handle, 38, ref backdrop, sizeof(int));
+            }
+            catch
+            {
+            }
+        }
+
+        private void AddButton(Control parent, string text, int left, int top, bool primary, EventHandler handler)
+        {
+            var button = new GlassButton();
             button.Text = text;
             button.Left = left;
             button.Top = top;
             button.Width = 140;
-            button.Height = 36;
+            button.Height = 34;
+            button.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            button.Primary = primary;
+            button.Font = new Font("Microsoft YaHei UI", 9F, primary ? FontStyle.Bold : FontStyle.Regular);
             button.Click += handler;
-            Controls.Add(button);
+            parent.Controls.Add(button);
+        }
+
+        private void DrawLayoutItem(object sender, DrawItemEventArgs e)
+        {
+            if (e.Index < 0) return;
+            e.DrawBackground();
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            var item = listBox.Items[e.Index] as LayoutSummary;
+            var rect = new Rectangle(e.Bounds.Left + 4, e.Bounds.Top + 4, e.Bounds.Width - 8, e.Bounds.Height - 8);
+            bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+            using (var path = UiTheme.RoundedRect(rect, 14))
+            using (var fill = new SolidBrush(selected ? UiTheme.Selection : Color.FromArgb(0, 255, 255, 255)))
+            using (var border = new Pen(selected ? Color.FromArgb(130, 84, 159, 119) : Color.FromArgb(0, 255, 255, 255)))
+            {
+                e.Graphics.FillPath(fill, path);
+                if (selected) e.Graphics.DrawPath(border, path);
+            }
+
+            var name = item == null ? listBox.Items[e.Index].ToString() : item.Name;
+            var meta = item == null ? "" : (item.Count + " 个窗口  " + item.SavedAt);
+            TextRenderer.DrawText(e.Graphics, name, new Font("Microsoft YaHei UI", 10F, FontStyle.Bold), new Rectangle(rect.Left + 12, rect.Top + 5, rect.Width - 24, 18), UiTheme.Ink, TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+            TextRenderer.DrawText(e.Graphics, meta, new Font("Microsoft YaHei UI", 8F), new Rectangle(rect.Left + 12, rect.Top + 25, rect.Width - 24, 16), UiTheme.Muted, TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
         }
 
         private void RefreshLayouts()
@@ -743,6 +997,26 @@ namespace WindowLayoutLauncher
             RefreshLayouts();
             statusLabel.Text = "已删除：" + selected.Name;
         }
+
+        private void ExportSelected()
+        {
+            var selected = SelectedLayout();
+            if (selected == null)
+            {
+                statusLabel.Text = "先选一个要导出的布局。";
+                return;
+            }
+            try
+            {
+                var zip = manager.ExportSharePackage(selected);
+                statusLabel.Text = "已导出分享包：" + zip;
+                Process.Start("explorer.exe", "/select,\"" + zip + "\"");
+            }
+            catch (Exception ex)
+            {
+                statusLabel.Text = "导出失败：" + ex.Message;
+            }
+        }
     }
 
     public class PromptForm : Form
@@ -762,40 +1036,46 @@ namespace WindowLayoutLauncher
         {
             Text = title;
             StartPosition = FormStartPosition.CenterParent;
-            Size = new Size(390, 165);
+            Size = new Size(420, 178);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
             Font = new Font("Microsoft YaHei UI", 9F);
+            BackColor = Color.FromArgb(244, 250, 247);
 
             var label = new Label();
             label.Text = message;
-            label.Left = 18;
-            label.Top = 18;
-            label.Width = 330;
+            label.Left = 24;
+            label.Top = 22;
+            label.Width = 350;
             label.Height = 24;
+            label.ForeColor = UiTheme.Ink;
+            label.BackColor = Color.Transparent;
             Controls.Add(label);
 
             textBox = new TextBox();
-            textBox.Left = 18;
-            textBox.Top = 48;
-            textBox.Width = 335;
+            textBox.Left = 24;
+            textBox.Top = 54;
+            textBox.Width = 354;
+            textBox.Height = 26;
+            textBox.BorderStyle = BorderStyle.FixedSingle;
             textBox.Text = defaultValue;
             Controls.Add(textBox);
 
-            var ok = new Button();
+            var ok = new GlassButton();
             ok.Text = "确定";
-            ok.Left = 196;
-            ok.Top = 88;
-            ok.Width = 75;
+            ok.Left = 212;
+            ok.Top = 100;
+            ok.Width = 78;
+            ok.Primary = true;
             ok.DialogResult = DialogResult.OK;
             Controls.Add(ok);
 
-            var cancel = new Button();
+            var cancel = new GlassButton();
             cancel.Text = "取消";
-            cancel.Left = 278;
-            cancel.Top = 88;
-            cancel.Width = 75;
+            cancel.Left = 300;
+            cancel.Top = 100;
+            cancel.Width = 78;
             cancel.DialogResult = DialogResult.Cancel;
             Controls.Add(cancel);
 
