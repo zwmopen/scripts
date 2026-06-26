@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.4.9
-// @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT“最近”列表，并保留原对话菜单。
+// @version      1.5.0
+// @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT“最近”列表，并给图片组增加外置下载全部快捷按钮。
 // @author       Codex
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/zwmopen/scripts/master/chatgpt-conversation-tree.user.js
+// @downloadURL  https://raw.githubusercontent.com/zwmopen/scripts/master/chatgpt-conversation-tree.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
@@ -26,6 +28,8 @@
   const RENAME_STAGE_ID = `${APP_ID}-rename-stage`;
   const IMPORT_INPUT_ID = `${APP_ID}-import-input`;
   const PAGE_OPEN_EVENT = `${APP_ID}:page-open-chat`;
+  const IMAGE_DOWNLOAD_CLASS = `${APP_ID}-image-download-all`;
+  const IMAGE_DOWNLOAD_SLOT_CLASS = `${APP_ID}-image-download-slot`;
   // v1 曾被多个同名/改名后的脚本版本同时读写。1.0 起改用独立存储区，
   // 旧脚本即使仍在运行，也不能再覆盖新版数据。
   const STORAGE_KEY = `${APP_ID}:state:v3`;
@@ -50,6 +54,7 @@
     out: '<svg viewBox="0 0 18 18"><path d="M3 4.5h7v9H3z"/><path d="M8 9h7m-2-2 2 2-2 2"/></svg>',
     batch: '<svg viewBox="0 0 18 18"><path d="M7 4h8M7 9h8M7 14h8"/><path d="m2.5 4 1 1 2-2M2.5 9l1 1 2-2M2.5 14l1 1 2-2"/></svg>',
     pencil: '<svg viewBox="0 0 18 18"><path d="m4 13 1-4 7-7 3 3-7 7z"/><path d="m10.5 3.5 3 3M4 13l3.7-.8"/></svg>',
+    download: '<svg viewBox="0 0 18 18"><path d="M9 3v8"/><path d="m5.5 8 3.5 3.5L12.5 8"/><path d="M4 14.5h10"/></svg>',
   };
 
   const defaultState = () => ({
@@ -88,6 +93,7 @@
   let pendingImportMode = 'merge';
   let pendingRecentMenuUntil = 0;
   let recentMenuAugmented = false;
+  let imageToolsTimer = 0;
   let ungroupedCollapsed = (() => {
     try {
       return Boolean(GM_getValue(UNGROUPED_COLLAPSED_KEY, false));
@@ -752,6 +758,50 @@
         fill: none;
         stroke: currentColor;
         stroke-width: 1.55;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .${IMAGE_DOWNLOAD_SLOT_CLASS} {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin-inline-start: 4px;
+        vertical-align: middle;
+      }
+      .${IMAGE_DOWNLOAD_SLOT_CLASS}.cgpt-image-download-fallback {
+        display: flex;
+        margin: 7px 0 2px;
+      }
+      .${IMAGE_DOWNLOAD_CLASS} {
+        min-height: 30px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 10px;
+        border: 0;
+        border-radius: 999px;
+        color: var(--text-primary, currentColor);
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+        font: inherit;
+        font-size: 13px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .${IMAGE_DOWNLOAD_CLASS}:hover {
+        background: var(--sidebar-surface-tertiary, rgba(0,0,0,.1));
+      }
+      .${IMAGE_DOWNLOAD_CLASS}[disabled] {
+        opacity: .58;
+        cursor: progress;
+      }
+      .${IMAGE_DOWNLOAD_CLASS} svg {
+        width: 16px;
+        height: 16px;
+        flex: 0 0 16px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.65;
         stroke-linecap: round;
         stroke-linejoin: round;
       }
@@ -2933,6 +2983,222 @@
     return null;
   }
 
+
+  function isElementVisible(element) {
+    if (!element || !element.isConnected) return false;
+    const rect = element.getBoundingClientRect?.();
+    if (!rect || rect.width < 1 || rect.height < 1) return false;
+    const style = getComputedStyle(element);
+    return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity || 1) > 0;
+  }
+
+  function elementText(element) {
+    return compactTitle([
+      element?.innerText,
+      element?.getAttribute?.('aria-label'),
+      element?.getAttribute?.('title'),
+      element?.getAttribute?.('data-testid'),
+    ].filter(Boolean).join(' '));
+  }
+
+  function contentImageElements(scope = document) {
+    const root = scope === document ? (document.querySelector('main') || document.body) : scope;
+    return [...root.querySelectorAll('img')].filter((img) => {
+      if (img.closest?.(`#${APP_ID}, #${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return false;
+      if (img.closest?.('#history, nav, aside, [role="navigation"]')) return false;
+      if (img.closest?.('[data-radix-menu-content], [data-radix-popper-content-wrapper]')) return false;
+      const src = img.currentSrc || img.src || '';
+      if (!src || /^data:image\/svg/i.test(src)) return false;
+      const rect = img.getBoundingClientRect?.();
+      if (!rect || rect.width < 105 || rect.height < 105) return false;
+      return isElementVisible(img);
+    });
+  }
+
+  function imageTurnContainer(img) {
+    return img.closest?.('[data-testid^="conversation-turn"], [data-message-author-role], article, [class*="group/conversation-turn"]')
+      || img.closest?.('main > div > div > div')
+      || img.parentElement;
+  }
+
+  function imageGroupsOnPage() {
+    const groups = new Map();
+    contentImageElements(document).forEach((img) => {
+      const container = imageTurnContainer(img);
+      if (!container || container === document.body || container === document.documentElement) return;
+      const images = groups.get(container) || [];
+      images.push(img);
+      groups.set(container, images);
+    });
+    return [...groups.entries()].filter(([, images]) => images.length > 0);
+  }
+
+  function findImageActionRow(container) {
+    const buttons = [...container.querySelectorAll('button')]
+      .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`));
+    const scored = buttons.map((button) => {
+      const text = elementText(button);
+      const score = /\u590d\u5236|copy|\u66f4\u591a|more|\u9009\u9879|options|\u5206\u4eab|share/i.test(text) ? 10 : 0;
+      return { button, score };
+    }).sort((a, b) => b.score - a.score);
+
+    for (const { button } of scored) {
+      let row = button.parentElement;
+      for (let depth = 0; row && depth < 4; depth += 1, row = row.parentElement) {
+        if (row === container || row.querySelector?.('img')) continue;
+        const rowButtons = row.querySelectorAll?.('button') || [];
+        if (rowButtons.length >= 1 && rowButtons.length <= 8) return row;
+      }
+    }
+    return null;
+  }
+
+  function imageButtonLabel(count, busyText = '') {
+    if (busyText) return busyText;
+    return count > 1 ? `\u4e0b\u8f7d\u5168\u90e8 ${count}` : '\u4e0b\u8f7d\u56fe\u7247';
+  }
+
+  function ensureImageDownloadButton(container, images) {
+    container.setAttribute('data-cgpt-image-download-container', 'true');
+    let slot = container.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
+    if (!slot) {
+      slot = document.createElement('span');
+      slot.className = IMAGE_DOWNLOAD_SLOT_CLASS;
+      const actionRow = findImageActionRow(container);
+      if (actionRow) actionRow.append(slot);
+      else {
+        slot.classList.add('cgpt-image-download-fallback');
+        container.append(slot);
+      }
+    }
+    const count = images.length;
+    let button = slot.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
+    if (!button) {
+      button = document.createElement('button');
+      button.type = 'button';
+      button.className = IMAGE_DOWNLOAD_CLASS;
+      button.setAttribute('aria-label', '\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247');
+      slot.append(button);
+    }
+    button.dataset.cgptImageCount = String(count);
+    button.title = count > 1 ? `\u4e0b\u8f7d\u672c\u7ec4\u4e2d\u7684 ${count} \u5f20\u56fe\u7247` : '\u4e0b\u8f7d\u56fe\u7247';
+    if (!button.disabled) {
+      button.innerHTML = `${icons.download}<span data-cgpt-image-download-label>${escapeHtml(imageButtonLabel(count))}</span>`;
+    }
+  }
+
+  function refreshImageDownloadButtons() {
+    imageGroupsOnPage().forEach(([container, images]) => ensureImageDownloadButton(container, images));
+  }
+
+  function scheduleImageDownloadButtons() {
+    window.clearTimeout(imageToolsTimer);
+    imageToolsTimer = window.setTimeout(refreshImageDownloadButtons, 180);
+  }
+
+  function largestImage(images) {
+    return [...images].sort((a, b) => {
+      const ar = a.getBoundingClientRect();
+      const br = b.getBoundingClientRect();
+      return (br.width * br.height) - (ar.width * ar.height);
+    })[0];
+  }
+
+  function clickTargetForImage(img) {
+    return img.closest?.('button, a, [role="button"]') || img;
+  }
+
+  function topPreviewDownloadButton() {
+    const buttons = [...document.querySelectorAll('button')]
+      .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(button));
+    const topButtons = buttons.filter((button) => {
+      const rect = button.getBoundingClientRect();
+      return rect.top >= 0
+        && rect.top < Math.max(170, innerHeight * 0.22)
+        && rect.right > innerWidth * 0.45;
+    });
+    return topButtons.find((button) => /\u4e0b\u8f7d|download/i.test(elementText(button)))
+      || topButtons.find((button) => {
+        const svgText = button.innerHTML || '';
+        return /M9 3v|download|arrow|Down/i.test(svgText)
+          && button.querySelector('svg');
+      });
+  }
+
+  function visibleNativeDownloadMenuItem() {
+    const menuScopes = [...document.querySelectorAll(
+      '[role="menu"], [data-radix-menu-content], [data-radix-popper-content-wrapper]'
+    )].filter(isElementVisible);
+    const scopes = menuScopes.length ? menuScopes : [document.body];
+    const candidates = scopes.flatMap((scope) => [
+      ...scope.querySelectorAll('[role="menuitem"], button, a')
+    ]).filter((element) => (
+      !element.closest?.(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)
+      && isElementVisible(element)
+      && /\u4e0b\u8f7d|download/i.test(elementText(element))
+    ));
+    return candidates.find((element) => /\u4e0b\u8f7d\u672c\u7ec4|\u672c\u7ec4.*\d+.*\u5f20|download all|download.*all|download.*\d+.*image/i.test(elementText(element)))
+      || candidates.find((element) => /\u4e0b\u8f7d\u56fe\u7247|download image/i.test(elementText(element)))
+      || candidates[0];
+  }
+
+  function closeImagePreviewSoon() {
+    window.setTimeout(() => {
+      const closeButton = [...document.querySelectorAll('button')]
+        .filter(isElementVisible)
+        .find((button) => {
+          const rect = button.getBoundingClientRect();
+          return rect.left < 120
+            && rect.top < Math.max(170, innerHeight * 0.22)
+            && /\u5173\u95ed|close|\u8fd4\u56de|back/i.test(elementText(button));
+        });
+      if (closeButton) dispatchNativeClick(closeButton);
+      else document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        code: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+    }, 850);
+  }
+
+  async function runImageDownloadShortcut(button) {
+    if (button.disabled) return;
+    const container = button.closest('[data-cgpt-image-download-container]') || document;
+    const images = contentImageElements(container);
+    if (!images.length) {
+      window.alert('\u8fd9\u4e2a\u56de\u590d\u91cc\u6682\u65f6\u6ca1\u6709\u627e\u5230\u53ef\u4e0b\u8f7d\u7684\u56fe\u7247\u3002');
+      return;
+    }
+
+    const label = button.querySelector('[data-cgpt-image-download-label]');
+    const originalText = label?.textContent || imageButtonLabel(images.length);
+    button.disabled = true;
+    if (label) label.textContent = '\u51c6\u5907\u4e0b\u8f7d\u2026';
+
+    try {
+      const target = clickTargetForImage(largestImage(images));
+      dispatchNativeClick(target);
+      const downloadButton = await waitForValue(() => topPreviewDownloadButton(), 2600, 70);
+      if (!downloadButton) throw new Error('\u6ca1\u6709\u627e\u5230\u9884\u89c8\u9875\u53f3\u4e0a\u89d2\u7684\u4e0b\u8f7d\u6309\u94ae');
+      if (label) label.textContent = '\u6253\u5f00\u83dc\u5355\u2026';
+      dispatchNativeClick(downloadButton);
+      const menuItem = await waitForValue(() => visibleNativeDownloadMenuItem(), 2200, 70);
+      if (!menuItem) throw new Error('\u6ca1\u6709\u627e\u5230\u201c\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247\u201d\u7684\u83dc\u5355\u9879');
+      if (label) label.textContent = '\u5f00\u59cb\u4e0b\u8f7d\u2026';
+      dispatchNativeClick(menuItem);
+      closeImagePreviewSoon();
+    } catch (error) {
+      console.warn('[ChatGPT \u56fe\u7247\u4e0b\u8f7d\u5feb\u6377\u6309\u94ae] \u89e6\u53d1\u5931\u8d25\uff1a', error);
+      window.alert('\u6ca1\u6709\u6210\u529f\u89e6\u53d1 ChatGPT \u539f\u751f\u4e0b\u8f7d\u6309\u94ae\u3002\u4f60\u53ef\u4ee5\u5148\u70b9\u5f00\u56fe\u7247\u786e\u8ba4\u53f3\u4e0a\u89d2\u662f\u5426\u8fd8\u80fd\u770b\u5230\u201c\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247\u201d\u3002');
+    } finally {
+      window.setTimeout(() => {
+        button.disabled = false;
+        if (label) label.textContent = originalText;
+      }, 900);
+    }
+  }
+
   function handleAction(actionElement) {
     const action = actionElement.dataset.cgptAction;
     const nodeId = actionElement.dataset.nodeId;
@@ -3030,6 +3296,13 @@
     eventsBound = true;
 
     document.addEventListener('click', (event) => {
+      const imageDownloadButton = event.target.closest?.(`.${IMAGE_DOWNLOAD_CLASS}`);
+      if (imageDownloadButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        runImageDownloadShortcut(imageDownloadButton);
+        return;
+      }
       const proxyOptions = event.target.closest?.('[data-cgpt-proxy-options]');
       if (proxyOptions) {
         event.preventDefault();
@@ -3303,9 +3576,12 @@
       const target = mutation.target.nodeType === 1
         ? mutation.target
         : mutation.target.parentElement;
-      return !target?.closest?.(`#${APP_ID}, #${HEADER_ID}, #${MENU_ID}`);
+      return !target?.closest?.(`#${APP_ID}, #${HEADER_ID}, #${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}`);
     });
-    if (externalChange) scheduleScan();
+    if (externalChange) {
+      scheduleScan();
+      scheduleImageDownloadButtons();
+    }
   });
   observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
 
@@ -3314,6 +3590,7 @@
     if (location.href !== previousUrl) {
       previousUrl = location.href;
       scheduleScan();
+      scheduleImageDownloadButtons();
     }
   }, 600);
   window.setInterval(() => {
@@ -3323,4 +3600,5 @@
 
   if (!localStorage.getItem(STORAGE_KEY)) saveState(true);
   scanNativeChats();
+  scheduleImageDownloadButtons();
 })();
