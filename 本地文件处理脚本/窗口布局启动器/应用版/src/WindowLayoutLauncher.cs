@@ -896,9 +896,13 @@ namespace WindowLayoutLauncher
     public class MainForm : Form
     {
         private readonly LayoutManager manager;
+        private Label titleLabel;
+        private Label sectionLabel;
+        private Label hintLabel;
         private ListBox listBox;
         private Label statusLabel;
         private GlassPanel card;
+        private GlassButton openButton;
 
         public MainForm(LayoutManager manager)
         {
@@ -912,91 +916,98 @@ namespace WindowLayoutLauncher
             AutoScaleMode = AutoScaleMode.None;
             Text = "窗口布局启动器";
             StartPosition = FormStartPosition.CenterScreen;
-            Size = UiTheme.DpiSize(720, 560);
-            MinimumSize = UiTheme.DpiSize(700, 540);
+            Size = UiTheme.DpiSize(760, 620);
+            MinimumSize = UiTheme.DpiSize(620, 560);
             BackColor = UiTheme.WindowBottom;
             Font = new Font("Microsoft YaHei UI", 9F);
             DoubleBuffered = true;
             Shown += (s, e) => CenterOnPrimaryScreen();
 
-            var title = new Label();
-            title.Text = "窗口布局中心";
-            title.Left = 38;
-            title.Top = 30;
-            title.Width = 520;
-            title.Height = 36;
-            title.Font = new Font("Microsoft YaHei UI", 14.5F, FontStyle.Bold);
-            title.ForeColor = UiTheme.Ink;
-            title.BackColor = Color.Transparent;
-            Controls.Add(title);
+            titleLabel = new Label();
+            titleLabel.Text = "窗口布局中心";
+            titleLabel.Left = 40;
+            titleLabel.Top = 30;
+            titleLabel.Width = 520;
+            titleLabel.Height = 36;
+            titleLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
+            titleLabel.Font = new Font("Microsoft YaHei UI", 14.5F, FontStyle.Bold);
+            titleLabel.ForeColor = UiTheme.Ink;
+            titleLabel.BackColor = Color.Transparent;
+            titleLabel.TextAlign = ContentAlignment.MiddleLeft;
+            Controls.Add(titleLabel);
 
-            var section = new Label();
-            section.Text = "选择一个工作布局";
-            section.Left = 40;
-            section.Top = 78;
-            section.Width = 420;
-            section.Height = 24;
-            section.Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
-            section.ForeColor = UiTheme.Ink;
-            section.BackColor = Color.Transparent;
-            Controls.Add(section);
+            sectionLabel = new Label();
+            sectionLabel.Text = "选择一个工作布局";
+            sectionLabel.Left = 40;
+            sectionLabel.Top = 78;
+            sectionLabel.Width = 420;
+            sectionLabel.Height = 24;
+            sectionLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
+            sectionLabel.Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
+            sectionLabel.ForeColor = UiTheme.Ink;
+            sectionLabel.BackColor = Color.Transparent;
+            sectionLabel.TextAlign = ContentAlignment.MiddleLeft;
+            Controls.Add(sectionLabel);
 
-            var hint = new Label();
-            hint.Text = "保存不同工作流的窗口位置和大小，下次一键恢复。";
-            hint.Left = 40;
-            hint.Top = 104;
-            hint.Width = 520;
-            hint.Height = 24;
-            hint.ForeColor = UiTheme.Muted;
-            hint.BackColor = Color.Transparent;
-            Controls.Add(hint);
+            hintLabel = new Label();
+            hintLabel.Text = "保存不同工作流的窗口位置和大小，下次一键恢复。";
+            hintLabel.Left = 40;
+            hintLabel.Top = 104;
+            hintLabel.Width = 520;
+            hintLabel.Height = 24;
+            hintLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
+            hintLabel.ForeColor = UiTheme.Muted;
+            hintLabel.BackColor = Color.Transparent;
+            hintLabel.TextAlign = ContentAlignment.TopLeft;
+            Controls.Add(hintLabel);
 
             card = new GlassPanel();
             card.Left = 34;
             card.Top = 142;
-            card.Width = 420;
+            card.Width = 430;
             card.Height = 250;
-            card.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Bottom;
+            card.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right | AnchorStyles.Bottom;
+            card.Padding = new Padding(22);
             card.FillColor = UiTheme.Panel;
             Controls.Add(card);
 
             listBox = new ListBox();
-            listBox.Left = 22;
-            listBox.Top = 22;
-            listBox.Width = 376;
-            listBox.Height = 206;
-            listBox.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right | AnchorStyles.Bottom;
+            listBox.Dock = DockStyle.Fill;
             listBox.DisplayMember = "Display";
             listBox.BackColor = UiTheme.Panel;
             listBox.ForeColor = UiTheme.Ink;
             listBox.BorderStyle = BorderStyle.None;
             listBox.DrawMode = DrawMode.OwnerDrawFixed;
-            listBox.ItemHeight = 66;
+            listBox.ItemHeight = 76;
             listBox.IntegralHeight = false;
             listBox.DrawItem += DrawLayoutItem;
             listBox.DoubleClick += (s, e) => RestoreSelected();
             card.Controls.Add(listBox);
 
-            AddButton(this, "打开布局", 516, 148, true, (s, e) => RestoreSelected());
-            AddActionGroup(492, 194,
-                new[] { "保存为新布局", "覆盖所选布局", "重命名布局" },
-                new EventHandler[] { (s, e) => SaveNew(), (s, e) => OverwriteSelected(), (s, e) => RenameSelected() });
-            AddActionGroup(492, 330,
+            openButton = AddButton(this, "打开布局", 536, 148, true, (s, e) => RestoreSelected());
+
+            AddActionGroup(512, 184,
+                new[] { "保存为新布局", "覆盖所选布局", "重命名布局", "删除布局" },
+                new EventHandler[] { (s, e) => SaveNew(), (s, e) => OverwriteSelected(), (s, e) => RenameSelected(), (s, e) => DeleteSelected() });
+
+            AddActionGroup(512, 362,
                 new[] { "导出 JSON", "导入 JSON" },
                 new EventHandler[] { (s, e) => ExportSelected(), (s, e) => ImportLayout() });
-            AddActionGroup(492, 422,
+
+            AddActionGroup(512, 462,
                 new[] { "布局文件夹", "刷新" },
                 new EventHandler[] { (s, e) => Process.Start("explorer.exe", manager.LayoutDir), (s, e) => RefreshLayouts() });
 
             statusLabel = new Label();
             statusLabel.Left = 46;
             statusLabel.Top = 414;
-            statusLabel.Width = 400;
+            statusLabel.Width = 410;
             statusLabel.Height = 24;
-            statusLabel.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;
+            statusLabel.Anchor = AnchorStyles.Left | AnchorStyles.Bottom | AnchorStyles.Right;
             statusLabel.ForeColor = UiTheme.Muted;
             statusLabel.BackColor = Color.Transparent;
             statusLabel.AutoEllipsis = true;
+            statusLabel.TextAlign = ContentAlignment.MiddleLeft;
             Controls.Add(statusLabel);
         }
 
@@ -1025,7 +1036,7 @@ namespace WindowLayoutLauncher
             }
         }
 
-        private void AddButton(Control parent, string text, int left, int top, bool primary, EventHandler handler)
+        private GlassButton AddButton(Control parent, string text, int left, int top, bool primary, EventHandler handler)
         {
             var button = new GlassButton();
             button.Text = text;
@@ -1033,8 +1044,11 @@ namespace WindowLayoutLauncher
             button.Top = top;
             button.Width = 136;
             button.Height = 34;
-            button.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             button.Primary = primary;
+            if (parent is MainForm)
+            {
+                button.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            }
             var panel = parent as GlassPanel;
             var surface = panel == null ? parent.BackColor : panel.FillColor;
             if (surface == Color.Transparent || surface.A == 0)
@@ -1046,9 +1060,10 @@ namespace WindowLayoutLauncher
             button.Font = new Font("Microsoft YaHei UI", 9F, primary ? FontStyle.Bold : FontStyle.Regular);
             button.Click += handler;
             parent.Controls.Add(button);
+            return button;
         }
 
-        private void AddActionGroup(int left, int top, string[] labels, EventHandler[] handlers)
+        private GlassPanel AddActionGroup(int left, int top, string[] labels, EventHandler[] handlers)
         {
             var group = new GlassPanel();
             group.Left = left;
@@ -1064,6 +1079,7 @@ namespace WindowLayoutLauncher
             {
                 AddButton(group, labels[i], 18, 10 + i * 36, false, handlers[i]);
             }
+            return group;
         }
 
         private void DrawLayoutItem(object sender, DrawItemEventArgs e)
@@ -1076,7 +1092,7 @@ namespace WindowLayoutLauncher
             }
 
             var item = listBox.Items[e.Index] as LayoutSummary;
-            var rect = new Rectangle(e.Bounds.Left + 4, e.Bounds.Top + 5, e.Bounds.Width - 8, e.Bounds.Height - 10);
+            var rect = new Rectangle(e.Bounds.Left + 4, e.Bounds.Top + 6, e.Bounds.Width - 8, e.Bounds.Height - 12);
             bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
             using (var path = UiTheme.RoundedRect(rect, 14))
             using (var lightPath = UiTheme.RoundedRect(new Rectangle(rect.X - 2, rect.Y - 2, rect.Width, rect.Height), 14))
@@ -1108,10 +1124,10 @@ namespace WindowLayoutLauncher
             var meta = item == null ? "" : (item.Count + " 个窗口｜" + FormatSavedAt(item.SavedAt));
             int textLeft = rect.Left + (selected ? 22 : 14);
             using (var nameFont = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold))
-            using (var metaFont = new Font("Microsoft YaHei UI", 8F))
+            using (var metaFont = new Font("Microsoft YaHei UI", 8.5F))
             {
-                TextRenderer.DrawText(e.Graphics, name, nameFont, new Rectangle(textLeft, rect.Top + 10, rect.Width - 28, 20), UiTheme.Ink, TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
-                TextRenderer.DrawText(e.Graphics, meta, metaFont, new Rectangle(textLeft, rect.Top + 35, rect.Width - 28, 18), UiTheme.Muted, TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+                TextRenderer.DrawText(e.Graphics, name, nameFont, new Rectangle(textLeft, rect.Top + 11, rect.Width - 30, 24), UiTheme.Ink, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(e.Graphics, meta, metaFont, new Rectangle(textLeft, rect.Top + 38, rect.Width - 30, 22), UiTheme.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
             }
         }
 
