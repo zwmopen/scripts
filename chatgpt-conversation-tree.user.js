@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.5.3
+// @version      1.5.5
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT“最近”列表，并给图片组增加外置下载全部快捷按钮。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -2067,6 +2067,36 @@
     return true;
   }
 
+  function dispatchNativeClickAt(element, xRatio = 0.5, yRatio = 0.5) {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect?.();
+    if (!rect || rect.width < 1 || rect.height < 1) return false;
+    const clientX = Math.min(innerWidth - 2, Math.max(2, Math.round(rect.left + rect.width * xRatio)));
+    const clientY = Math.min(innerHeight - 2, Math.max(2, Math.round(rect.top + rect.height * yRatio)));
+    const pointElement = document.elementFromPoint(clientX, clientY);
+    const target = pointElement?.closest?.('button, a, [role="button"]') || pointElement || element;
+    ['pointerover', 'mouseover', 'pointermove', 'mousemove', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']
+      .forEach((type) => {
+        const EventClass = type.startsWith('pointer') && typeof PointerEvent === 'function'
+          ? PointerEvent
+          : MouseEvent;
+        target.dispatchEvent(new EventClass(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: window,
+          button: 0,
+          buttons: type.endsWith('down') ? 1 : 0,
+          clientX,
+          clientY,
+          pointerId: 1,
+          pointerType: 'mouse',
+          isPrimary: true,
+        }));
+      });
+    return true;
+  }
+
   function forceOpenChat(chatId, fallbackHref = '') {
     const href = chatHref(chatId, fallbackHref);
     const url = new URL(href, location.href);
@@ -3025,6 +3055,10 @@
     });
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
   function broadImageElements(scope = document, minSize = 24) {
     const root = scope === document ? (document.querySelector('main') || document.body) : scope;
     return [...root.querySelectorAll('img')].filter((img) => {
@@ -3321,26 +3355,25 @@
         const centerY = rect.top + rect.height / 2;
         let score = 0;
 
+        const looksLikeDownloadIcon = /download|arrow|Down|M9 3v|M12 3v|M12 15|M12 5|M5\.5 8|M7 10|M4 14\.5|M12 16|M19 14|M21 15|M5 20/i.test(html);
+        const isTopToolbar = rect.top < Math.max(150, innerHeight * 0.18)
+          && rect.right > innerWidth * 0.58
+          && rect.left > innerWidth * 0.32;
+        const hasDownloadMeaning = looksLikeDownloadIcon || /\u4e0b\u8f7d|download/i.test(text);
+
         if (/\u4e0b\u8f7d|download/i.test(text)) score += 120;
-        if (/download|arrow|Down|M9 3v|M12 3v|M5\.5 8|M4 14\.5/i.test(html)) score += 60;
+        if (looksLikeDownloadIcon) score += 60;
         if (button.querySelector('svg')) score += 16;
-        if (rect.top < Math.max(170, innerHeight * 0.22) && rect.right > innerWidth * 0.35) score += 30;
-        if (imageRect) {
-          const nearBottomRight = centerX > imageRect.left + imageRect.width * 0.68
-            && centerX < imageRect.right + 48
-            && centerY > imageRect.top + imageRect.height * 0.62
-            && centerY < imageRect.bottom + 58;
-          if (nearBottomRight) score += 110;
-        }
+        if (isTopToolbar) score += looksLikeDownloadIcon ? 260 : 50;
         if (/\u5206\u4eab|share|\u66f4\u591a|more|\u5173\u95ed|close|\u8fd4\u56de|back|\u8bc4\u8bba|comment/i.test(text)) {
           score -= 160;
         }
         if (button.closest?.('[role="menu"], [data-radix-menu-content], [data-radix-popper-content-wrapper]')) {
           score -= 80;
         }
-        return { button, score, text };
+        return { button, score, text, isTopToolbar, hasDownloadMeaning };
       })
-      .filter((item) => item.score > 40)
+      .filter((item) => item.isTopToolbar && item.hasDownloadMeaning && item.score > 90)
       .sort((a, b) => b.score - a.score);
 
     return candidates[0]?.button || null;
@@ -3363,24 +3396,77 @@
       || candidates[0];
   }
 
-  function closeImagePreviewSoon() {
-    window.setTimeout(() => {
-      const closeButton = [...document.querySelectorAll('button')]
+  async function openPreviewAndFindDownloadButton(images, label = null) {
+    let downloadButton = topPreviewDownloadButton();
+    if (downloadButton) return downloadButton;
+
+    const image = largestImage(images);
+    if (!image) return null;
+    image.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    await sleep(220);
+
+    const clickSteps = [
+      () => dispatchNativeClickAt(image, 0.5, 0.5),
+      () => dispatchNativeClick(clickTargetForImage(image)),
+      () => dispatchNativeClickAt(image, 0.5, 0.22),
+      () => dispatchNativeClickAt(image, 0.5, 0.78),
+      () => dispatchNativeClickAt(image, 0.24, 0.5),
+      () => dispatchNativeClickAt(image, 0.76, 0.5),
+    ];
+
+    for (let index = 0; index < clickSteps.length; index += 1) {
+      if (label) label.textContent = index ? '\u91cd\u8bd5\u6253\u5f00\u2026' : '\u6253\u5f00\u9884\u89c8\u2026';
+      clickSteps[index]();
+      downloadButton = await waitForValue(() => topPreviewDownloadButton(), index ? 1350 : 1900, 80);
+      if (downloadButton) return downloadButton;
+      await sleep(120);
+    }
+
+    return null;
+  }
+
+  function dispatchEscapeKey() {
+    const eventInit = {
+      key: 'Escape',
+      code: 'Escape',
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    };
+    [document.activeElement, document, window].filter(Boolean).forEach((target) => {
+      target.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      target.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    });
+  }
+
+  async function closeImagePreview(delay = 0) {
+    if (delay) await sleep(delay);
+    const closeButton = [...document.querySelectorAll('button')]
+      .filter(isElementVisible)
+      .find((button) => {
+        const rect = button.getBoundingClientRect();
+        return rect.left < 140
+          && rect.top < Math.max(170, innerHeight * 0.22)
+          && /\u5173\u95ed|close|\u8fd4\u56de|back/i.test(elementText(button));
+      })
+      || [...document.querySelectorAll('button')]
         .filter(isElementVisible)
         .find((button) => {
           const rect = button.getBoundingClientRect();
           return rect.left < 120
-            && rect.top < Math.max(170, innerHeight * 0.22)
-            && /\u5173\u95ed|close|\u8fd4\u56de|back/i.test(elementText(button));
+            && rect.top < Math.max(150, innerHeight * 0.18)
+            && rect.width <= 70
+            && rect.height <= 70;
         });
-      if (closeButton) dispatchNativeClick(closeButton);
-      else document.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Escape',
-        code: 'Escape',
-        bubbles: true,
-        cancelable: true,
-      }));
-    }, 850);
+    if (closeButton) return dispatchNativeClick(closeButton);
+    dispatchEscapeKey();
+    return false;
+  }
+
+  function closeImagePreviewSoon(delay = 850) {
+    window.setTimeout(() => {
+      closeImagePreview(0);
+    }, delay);
   }
 
   async function runImageDownloadShortcut(button) {
@@ -3404,13 +3490,11 @@
     let exactCount = 0;
 
     try {
-      const target = clickTargetForImage(largestImage(images));
-      dispatchNativeClick(target);
-      const downloadButton = await waitForValue(() => topPreviewDownloadButton(), 2600, 70);
+      const downloadButton = await openPreviewAndFindDownloadButton(images, label);
       if (!downloadButton) throw new Error('\u6ca1\u6709\u627e\u5230\u9884\u89c8\u9875\u53f3\u4e0a\u89d2\u7684\u4e0b\u8f7d\u6309\u94ae');
       if (label) label.textContent = '\u6253\u5f00\u83dc\u5355\u2026';
       dispatchNativeClick(downloadButton);
-      const menuItem = await waitForValue(() => visibleNativeDownloadMenuItem(), 2200, 70);
+      const menuItem = await waitForValue(() => visibleNativeDownloadMenuItem(), 2600, 70);
       if (!menuItem) throw new Error('\u6ca1\u6709\u627e\u5230\u201c\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247\u201d\u7684\u83dc\u5355\u9879');
       exactCount = countFromText(elementText(menuItem));
       if (exactCount) {
@@ -3422,7 +3506,8 @@
       closeImagePreviewSoon();
     } catch (error) {
       console.warn('[ChatGPT \u56fe\u7247\u4e0b\u8f7d\u5feb\u6377\u6309\u94ae] \u89e6\u53d1\u5931\u8d25\uff1a', error);
-      window.alert('\u6ca1\u6709\u6210\u529f\u89e6\u53d1 ChatGPT \u539f\u751f\u4e0b\u8f7d\u6309\u94ae\u3002\u4f60\u53ef\u4ee5\u5148\u70b9\u5f00\u56fe\u7247\u786e\u8ba4\u53f3\u4e0a\u89d2\u662f\u5426\u8fd8\u80fd\u770b\u5230\u201c\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247\u201d\u3002');
+      await closeImagePreview(80);
+      window.alert('\u6ca1\u6709\u6210\u529f\u89e6\u53d1 ChatGPT \u539f\u751f\u4e0b\u8f7d\u6309\u94ae\u3002\u6211\u5df2\u5c1d\u8bd5\u628a\u9884\u89c8\u5173\u56de\u53bb\uff0c\u4f60\u53ef\u4ee5\u5237\u65b0\u5230\u6700\u65b0\u7248\u540e\u518d\u8bd5\u4e00\u6b21\u3002');
     } finally {
       window.setTimeout(() => {
         button.disabled = false;
