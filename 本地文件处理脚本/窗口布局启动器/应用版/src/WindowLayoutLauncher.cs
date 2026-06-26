@@ -921,6 +921,7 @@ namespace WindowLayoutLauncher
             BackColor = UiTheme.WindowBottom;
             Font = new Font("Microsoft YaHei UI", 9F);
             DoubleBuffered = true;
+            TrySetWindowIcon();
             Shown += (s, e) => CenterOnPrimaryScreen();
 
             var root = new TableLayoutPanel();
@@ -1048,6 +1049,28 @@ namespace WindowLayoutLauncher
             int x = area.Left + Math.Max(0, (area.Width - Width) / 2);
             int y = area.Top + Math.Max(0, (area.Height - Height) / 2);
             Location = new Point(x, y);
+        }
+
+        private void TrySetWindowIcon()
+        {
+            try
+            {
+                var iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "app.ico");
+                if (File.Exists(iconPath))
+                {
+                    Icon = new Icon(iconPath);
+                    return;
+                }
+
+                var associated = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                if (associated != null)
+                {
+                    Icon = associated;
+                }
+            }
+            catch
+            {
+            }
         }
 
         protected override void OnPaintBackground(PaintEventArgs e)
