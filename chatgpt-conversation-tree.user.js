@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.5.2
+// @version      1.5.3
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT“最近”列表，并给图片组增加外置下载全部快捷按钮。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -3298,28 +3298,52 @@
   }
 
   function topPreviewDownloadButton() {
-    const buttons = [...document.querySelectorAll('button, [role="button"], a')]
-      .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`));
-    const topButtons = buttons.filter((button) => {
-      const rect = button.getBoundingClientRect();
-      return rect.top >= 0
-        && rect.top < Math.max(170, innerHeight * 0.22)
-        && rect.right > innerWidth * 0.35
-        && rect.width > 5
-        && rect.height > 5;
-    });
-    return topButtons.find((button) => /\u4e0b\u8f7d|download/i.test(elementText(button)))
-      || topButtons.find((button) => {
-        const svgText = button.innerHTML || '';
-        return /M9 3v|download|arrow|Down/i.test(svgText)
-          && button.querySelector('svg');
+    const previewImages = broadImageElements(document, 90)
+      .map((img) => ({ img, rect: img.getBoundingClientRect() }))
+      .filter(({ rect }) => rect.width > Math.min(220, innerWidth * 0.18) && rect.height > 160)
+      .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height));
+    const imageRect = previewImages[0]?.rect || null;
+
+    const candidates = [...document.querySelectorAll('button, [role="button"], a')]
+      .filter((button) => {
+        if (button.closest?.(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, #${APP_ID}, #${MENU_ID}`)) return false;
+        const rect = button.getBoundingClientRect?.();
+        if (!rect || rect.width < 5 || rect.height < 5) return false;
+        if (rect.right < 0 || rect.bottom < 0 || rect.left > innerWidth || rect.top > innerHeight) return false;
+        const style = getComputedStyle(button);
+        return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0;
       })
-      || topButtons
-        .sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)
-        .find((button) => {
-          const html = button.innerHTML || '';
-          return /svg|path/i.test(html) && !/\u5206\u4eab|share|\u66f4\u591a|more/i.test(elementText(button));
-        });
+      .map((button) => {
+        const rect = button.getBoundingClientRect();
+        const text = elementText(button);
+        const html = button.innerHTML || '';
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        let score = 0;
+
+        if (/\u4e0b\u8f7d|download/i.test(text)) score += 120;
+        if (/download|arrow|Down|M9 3v|M12 3v|M5\.5 8|M4 14\.5/i.test(html)) score += 60;
+        if (button.querySelector('svg')) score += 16;
+        if (rect.top < Math.max(170, innerHeight * 0.22) && rect.right > innerWidth * 0.35) score += 30;
+        if (imageRect) {
+          const nearBottomRight = centerX > imageRect.left + imageRect.width * 0.68
+            && centerX < imageRect.right + 48
+            && centerY > imageRect.top + imageRect.height * 0.62
+            && centerY < imageRect.bottom + 58;
+          if (nearBottomRight) score += 110;
+        }
+        if (/\u5206\u4eab|share|\u66f4\u591a|more|\u5173\u95ed|close|\u8fd4\u56de|back|\u8bc4\u8bba|comment/i.test(text)) {
+          score -= 160;
+        }
+        if (button.closest?.('[role="menu"], [data-radix-menu-content], [data-radix-popper-content-wrapper]')) {
+          score -= 80;
+        }
+        return { button, score, text };
+      })
+      .filter((item) => item.score > 40)
+      .sort((a, b) => b.score - a.score);
+
+    return candidates[0]?.button || null;
   }
 
   function visibleNativeDownloadMenuItem() {
