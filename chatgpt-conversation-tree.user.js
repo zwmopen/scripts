@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.9
+// @version      1.7.10
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -513,7 +513,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.9',
+      scriptVersion: '1.7.10',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -741,9 +741,9 @@
         flex: 0 0 auto;
         align-self: center;
         height: auto;
-        min-height: 28px;
+        min-height: 0;
         min-width: 0;
-        padding: 0 6px;
+        padding: 0 4px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -758,7 +758,7 @@
         line-height: inherit;
         cursor: pointer;
         white-space: nowrap;
-        transform: translateY(1px);
+        box-sizing: border-box;
       }
       #${PROMPT_BUTTON_ID}:hover,
       #${PROMPT_BUTTON_ID}[aria-expanded="true"] {
@@ -1929,6 +1929,28 @@
     return { parent: row, before };
   }
 
+  function syncPromptButtonStyle(button, modelButton) {
+    if (!button || !modelButton?.isConnected) return;
+    try {
+      const style = getComputedStyle(modelButton);
+      const rect = modelButton.getBoundingClientRect?.();
+      button.style.fontSize = style.fontSize || '';
+      button.style.fontWeight = style.fontWeight || '';
+      button.style.fontFamily = style.fontFamily || '';
+      button.style.lineHeight = style.lineHeight || '';
+      button.style.color = style.color || '';
+      button.style.height = rect?.height ? `${Math.round(rect.height)}px` : style.height || '';
+      button.style.paddingTop = style.paddingTop || '0px';
+      button.style.paddingBottom = style.paddingBottom || '0px';
+      button.style.paddingLeft = '4px';
+      button.style.paddingRight = '4px';
+      button.style.marginTop = style.marginTop || '';
+      button.style.marginBottom = style.marginBottom || '';
+    } catch {
+      // If ChatGPT changes the model button shape, the CSS fallback still keeps this usable.
+    }
+  }
+
   function ensurePromptButton() {
     const input = promptComposerInput();
     if (!input) return false;
@@ -1960,6 +1982,7 @@
       || input.parentElement;
 
     if (!targetParent) return false;
+    syncPromptButtonStyle(button, modelButton);
     if (mount?.before && mount.parent === targetParent) {
       if (button.parentElement !== targetParent || button.nextSibling !== mount.before) {
         targetParent.insertBefore(button, mount.before);
