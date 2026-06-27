@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.17
+// @version      1.7.18
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -516,7 +516,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.17',
+      scriptVersion: '1.7.18',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -2184,6 +2184,7 @@
   function composerSendButton(input = promptComposerInput()) {
     const composer = composerRootFor(input);
     const inputRect = input?.getBoundingClientRect?.();
+    const composerRect = composer?.getBoundingClientRect?.();
     const scopes = [composer, document].filter(Boolean);
     const buttons = [...new Set(scopes.flatMap((scope) => [...scope.querySelectorAll('button')]))]
       .filter((button) => (
@@ -2193,12 +2194,25 @@
         && !button.disabled
         && button.getAttribute('aria-disabled') !== 'true'
       ));
+    const directSendButton = buttons.find((button) => {
+      const text = compactTitle(`${button.innerText || ''} ${button.getAttribute('aria-label') || ''} ${button.title || ''} ${button.getAttribute('data-testid') || ''} ${button.id || ''}`);
+      return /\u53d1\u9001|\u63d0\u4ea4|send|submit|send-button|composer-submit|submit-button/i.test(text);
+    });
+    if (directSendButton) return directSendButton;
     const rightEdgeButton = buttons
       .map((button) => {
         const rect = button.getBoundingClientRect();
         const text = compactTitle(`${button.innerText || ''} ${button.getAttribute('aria-label') || ''} ${button.title || ''} ${button.getAttribute('data-testid') || ''}`);
         const html = button.innerHTML || '';
         let score = 0;
+        const referenceRect = composerRect || inputRect;
+        if (referenceRect) {
+          const centerY = rect.top + rect.height / 2;
+          const referenceCenterY = referenceRect.top + referenceRect.height / 2;
+          if (rect.left > referenceRect.left + referenceRect.width * 0.76) score += 90;
+          if (rect.right > referenceRect.right - 92) score += 70;
+          if (Math.abs(centerY - referenceCenterY) < Math.max(44, referenceRect.height * 0.38)) score += 45;
+        }
         if (inputRect) {
           const centerY = rect.top + rect.height / 2;
           const inputCenterY = inputRect.top + inputRect.height / 2;
@@ -2214,7 +2228,7 @@
         if (rect.width >= 30 && rect.width <= 62 && rect.height >= 30 && rect.height <= 62) score += 28;
         return { button, score, rect };
       })
-      .filter((item) => item.score >= 105)
+      .filter((item) => item.score >= 82)
       .sort((a, b) => b.score - a.score || b.rect.right - a.rect.right)[0]?.button;
     if (rightEdgeButton) return rightEdgeButton;
     const explicitSendButton = buttons.find((button) => {
@@ -2281,6 +2295,7 @@
     await sleep(120);
     const sendButton = await waitForValue(() => composerSendButton(input), 2200, 80);
     if (sendButton) {
+      dispatchNativeClickAt(sendButton, 0.5, 0.5);
       dispatchNativeClick(sendButton);
       return true;
     }
