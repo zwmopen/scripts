@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.5.5
+// @version      1.5.6
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT“最近”列表，并给图片组增加外置下载全部快捷按钮。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -13,7 +13,9 @@
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_listValues
+// @grant        GM_download
 // @grant        unsafeWindow
+// @connect      *
 // ==/UserScript==
 
 (() => {
@@ -3251,6 +3253,39 @@
     return count > 1 ? String(count) : '';
   }
 
+  function logImageDownloadStep(step, detail = {}) {
+    try {
+      console.info('[ChatGPT 图片下载快捷按钮]', step, detail);
+      unsafeWindow.__cgptImageDownloadLastStep = {
+        step,
+        detail,
+        time: new Date().toISOString(),
+      };
+    } catch {
+      // 调试日志失败不影响下载流程。
+    }
+  }
+
+  function setImageButtonStatus(button, text, busy = true) {
+    const label = button?.querySelector?.('[data-cgpt-image-download-label]');
+    if (!label) return;
+    label.hidden = false;
+    label.textContent = text;
+    button.dataset.cgptBusyText = busy ? text : '';
+  }
+
+  function triggerImageDownloadButton(button, event = null) {
+    if (!button || button.disabled) return;
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    event?.stopImmediatePropagation?.();
+    logImageDownloadStep('外部按钮点击', {
+      title: button.title,
+      count: button.dataset.cgptImageCount,
+    });
+    runImageDownloadShortcut(button);
+  }
+
   function ensureImageDownloadButton(container, images, preferredActionRow = null) {
     container.setAttribute('data-cgpt-image-download-container', 'true');
     let slot = container.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
@@ -3275,8 +3310,12 @@
       button.type = 'button';
       button.className = IMAGE_DOWNLOAD_CLASS;
       button.setAttribute('aria-label', '\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247');
+      button.addEventListener('click', (event) => {
+        triggerImageDownloadButton(button, event);
+      }, true);
       slot.append(button);
     }
+    button.onclick = (event) => triggerImageDownloadButton(button, event);
     button.__cgptImageDownloadContainer = container;
     button.__cgptImageDownloadImages = images;
     const declaredCount = Number(button.dataset.cgptExactCount || 0)
@@ -3313,9 +3352,7 @@
     document.addEventListener('click', (event) => {
       const imageDownloadButton = event.target.closest?.(`.${IMAGE_DOWNLOAD_CLASS}`);
       if (!imageDownloadButton) return;
-      event.preventDefault();
-      event.stopPropagation();
-      runImageDownloadShortcut(imageDownloadButton);
+      triggerImageDownloadButton(imageDownloadButton, event);
     }, true);
   }
 
@@ -3394,6 +3431,92 @@
     return candidates.find((element) => /\u4e0b\u8f7d\u672c\u7ec4|\u672c\u7ec4.*\d+.*\u5f20|download all|download.*all|download.*\d+.*image/i.test(elementText(element)))
       || candidates.find((element) => /\u4e0b\u8f7d\u56fe\u7247|download image/i.test(elementText(element)))
       || candidates[0];
+  }
+
+  function imageUrlForDirectDownload(img) {
+    const src = img?.currentSrc || img?.src || '';
+    if (!src || /^data:image\/svg/i.test(src)) return '';
+    return src;
+  }
+
+  function directDownloadName(index, url) {
+    let ext = 'jpg';
+    try {
+      const pathname = new URL(url, location.href).pathname;
+      const match = pathname.match(/\.([a-z0-9]{3,5})(?:$|[?#])/i) || pathname.match(/\.([a-z0-9]{3,5})$/i);
+      if (match?.[1] && !/html?|aspx?|php/i.test(match[1])) ext = match[1].toLowerCase();
+    } catch {
+      // keep default
+    }
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
+    return `chatgpt-image-group-${stamp}-${String(index + 1).padStart(2, '0')}.${ext}`;
+  }
+
+  function gmDownload(url, name) {
+    return new Promise((resolve) => {
+      if (typeof GM_download === 'function' && !/^blob:/i.test(url)) {
+        try {
+          GM_download({
+            url,
+            name,
+            saveAs: false,
+            onload: () => resolve(true),
+            onerror: (error) => {
+              console.warn('[ChatGPT 图片下载快捷按钮] GM_download 失败，改用链接下载：', error);
+              resolve(false);
+            },
+            ontimeout: () => resolve(false),
+          });
+          return;
+        } catch (error) {
+          console.warn('[ChatGPT 图片下载快捷按钮] GM_download 调用失败，改用链接下载：', error);
+        }
+      }
+      try {
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = name;
+        anchor.rel = 'noopener';
+        anchor.style.display = 'none';
+        document.body.append(anchor);
+        anchor.click();
+        anchor.remove();
+        resolve(true);
+      } catch (error) {
+        console.warn('[ChatGPT 图片下载快捷按钮] 链接下载失败：', error);
+        resolve(false);
+      }
+    });
+  }
+
+  async function directDownloadImagesFromContainer(container, seedImages = []) {
+    const allImages = [
+      ...seedImages,
+      ...broadImageElements(container || document, 24),
+    ];
+    const urls = [];
+    const seen = new Set();
+    allImages.forEach((img) => {
+      const url = imageUrlForDirectDownload(img);
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      urls.push(url);
+    });
+    const usableUrls = urls
+      .filter((url) => !/^data:image\/svg/i.test(url))
+      .slice(0, 20);
+    logImageDownloadStep('直接下载兜底候选', {
+      count: usableUrls.length,
+      sample: usableUrls.slice(0, 3),
+    });
+    if (!usableUrls.length) return 0;
+    let ok = 0;
+    for (let index = 0; index < usableUrls.length; index += 1) {
+      const success = await gmDownload(usableUrls[index], directDownloadName(index, usableUrls[index]));
+      if (success) ok += 1;
+      await sleep(180);
+    }
+    return ok;
   }
 
   async function openPreviewAndFindDownloadButton(images, label = null) {
@@ -3486,28 +3609,50 @@
     const label = button.querySelector('[data-cgpt-image-download-label]');
     const originalText = label?.textContent || imageButtonLabel(images.length);
     button.disabled = true;
-    if (label) label.textContent = '\u51c6\u5907\u4e0b\u8f7d\u2026';
+    setImageButtonStatus(button, '\u51c6\u5907\u2026');
     let exactCount = 0;
+    let fallbackCount = 0;
 
     try {
+      logImageDownloadStep('开始桥接原生下载', {
+        imageCount: images.length,
+        containerText: compactTitle(container.innerText || '').slice(0, 120),
+      });
       const downloadButton = await openPreviewAndFindDownloadButton(images, label);
       if (!downloadButton) throw new Error('\u6ca1\u6709\u627e\u5230\u9884\u89c8\u9875\u53f3\u4e0a\u89d2\u7684\u4e0b\u8f7d\u6309\u94ae');
-      if (label) label.textContent = '\u6253\u5f00\u83dc\u5355\u2026';
+      logImageDownloadStep('找到预览下载按钮', {
+        text: elementText(downloadButton),
+      });
+      setImageButtonStatus(button, '\u83dc\u5355\u2026');
       dispatchNativeClick(downloadButton);
       const menuItem = await waitForValue(() => visibleNativeDownloadMenuItem(), 2600, 70);
       if (!menuItem) throw new Error('\u6ca1\u6709\u627e\u5230\u201c\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247\u201d\u7684\u83dc\u5355\u9879');
       exactCount = countFromText(elementText(menuItem));
+      logImageDownloadStep('找到下载菜单项', {
+        text: elementText(menuItem),
+        exactCount,
+      });
       if (exactCount) {
         button.dataset.cgptExactCount = String(exactCount);
         button.title = `\u4e0b\u8f7d\u672c\u7ec4\u4e2d\u7684 ${exactCount} \u5f20\u56fe\u7247`;
       }
-      if (label) label.textContent = '\u5f00\u59cb\u4e0b\u8f7d\u2026';
+      setImageButtonStatus(button, '\u4e0b\u8f7d\u2026');
       dispatchNativeClick(menuItem);
+      logImageDownloadStep('已点击原生下载菜单项', {
+        text: elementText(menuItem),
+      });
       closeImagePreviewSoon();
     } catch (error) {
       console.warn('[ChatGPT \u56fe\u7247\u4e0b\u8f7d\u5feb\u6377\u6309\u94ae] \u89e6\u53d1\u5931\u8d25\uff1a', error);
       await closeImagePreview(80);
-      window.alert('\u6ca1\u6709\u6210\u529f\u89e6\u53d1 ChatGPT \u539f\u751f\u4e0b\u8f7d\u6309\u94ae\u3002\u6211\u5df2\u5c1d\u8bd5\u628a\u9884\u89c8\u5173\u56de\u53bb\uff0c\u4f60\u53ef\u4ee5\u5237\u65b0\u5230\u6700\u65b0\u7248\u540e\u518d\u8bd5\u4e00\u6b21\u3002');
+      logImageDownloadStep('原生桥接失败，尝试直接下载兜底', {
+        message: error?.message || String(error),
+      });
+      setImageButtonStatus(button, '\u5907\u7528\u2026');
+      fallbackCount = await directDownloadImagesFromContainer(container, images);
+      if (!fallbackCount) {
+        window.alert('\u6ca1\u6709\u6210\u529f\u89e6\u53d1 ChatGPT \u539f\u751f\u4e0b\u8f7d\u6309\u94ae\uff0c\u5907\u7528\u56fe\u7247 URL \u4e0b\u8f7d\u4e5f\u6ca1\u6709\u6210\u529f\u3002\u8bf7\u6253\u5f00\u63a7\u5236\u53f0\u67e5\u770b\u201cChatGPT \u56fe\u7247\u4e0b\u8f7d\u5feb\u6377\u6309\u94ae\u201d\u65e5\u5fd7\u3002');
+      }
     } finally {
       window.setTimeout(() => {
         button.disabled = false;
@@ -3515,8 +3660,16 @@
           if (exactCount) {
             label.hidden = false;
             label.textContent = String(exactCount);
+          } else if (fallbackCount) {
+            label.hidden = false;
+            label.textContent = String(fallbackCount);
+            button.title = `\u5907\u7528\u4e0b\u8f7d\u5df2\u5c1d\u8bd5 ${fallbackCount} \u5f20\u56fe\u7247`;
+          } else if (originalText) {
+            label.hidden = false;
+            label.textContent = originalText;
           } else {
             label.textContent = originalText;
+            label.hidden = true;
           }
         }
       }, 900);
