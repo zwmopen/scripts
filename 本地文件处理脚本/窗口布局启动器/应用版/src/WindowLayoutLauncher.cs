@@ -117,6 +117,12 @@ namespace WindowLayoutLauncher
         [DataMember(Name = "exe_path", EmitDefaultValue = false)]
         public string ExePath { get; set; }
 
+        [DataMember(Name = "process_name", EmitDefaultValue = false)]
+        public string ProcessName { get; set; }
+
+        [DataMember(Name = "title", EmitDefaultValue = false)]
+        public string Title { get; set; }
+
         [DataMember(Name = "url", EmitDefaultValue = false)]
         public string Url { get; set; }
 
@@ -215,6 +221,8 @@ namespace WindowLayoutLauncher
             var safeName = SafeName(name);
             var topWindows = WindowTools.GetTopLevelWindows();
             var items = new List<LayoutItem>();
+            var captured = new HashSet<IntPtr>();
+            var currentExe = FullPathTrim(Application.ExecutablePath);
 
             foreach (var explorer in WindowTools.GetExplorerWindows(topWindows, false).OrderBy(w => w.X).ThenBy(w => w.Y))
             {
@@ -227,6 +235,7 @@ namespace WindowLayoutLauncher
                     W = explorer.W,
                     H = explorer.H
                 });
+                captured.Add(explorer.Hwnd);
             }
 
             foreach (var browser in topWindows
@@ -246,6 +255,28 @@ namespace WindowLayoutLauncher
                     Y = browser.Y,
                     W = browser.W,
                     H = browser.H
+                });
+                captured.Add(browser.Hwnd);
+            }
+
+            foreach (var app in topWindows
+                .Where(w => !w.IsMinimized && !captured.Contains(w.Hwnd))
+                .OrderBy(w => w.X).ThenBy(w => w.Y))
+            {
+                var exePath = WindowTools.GetProcessPath(app.ProcessId);
+                if (IsIgnoredAppWindow(app, exePath, currentExe)) continue;
+
+                items.Add(new LayoutItem
+                {
+                    Kind = "app",
+                    ProcessName = app.ProcessName,
+                    ExePath = exePath,
+                    Title = app.Title,
+                    TitleKeyword = TitleKeywordFromTitle(app.Title),
+                    X = app.X,
+                    Y = app.Y,
+                    W = app.W,
+                    H = app.H
                 });
             }
 
@@ -285,6 +316,10 @@ namespace WindowLayoutLauncher
                 else if (EqualsIgnoreCase(item.Kind, "browser"))
                 {
                     hwnd = FindOrOpenBrowser(item, topWindows, used);
+                }
+                else if (EqualsIgnoreCase(item.Kind, "app"))
+                {
+                    hwnd = FindOrOpenApp(item, topWindows, used);
                 }
 
                 if (hwnd == IntPtr.Zero)
@@ -467,6 +502,82 @@ namespace WindowLayoutLauncher
             return created == null ? IntPtr.Zero : created.Hwnd;
         }
 
+        private IntPtr FindOrOpenApp(LayoutItem item, List<WindowInfo> existing, HashSet<IntPtr> used)
+        {
+            var processName = item.ProcessName;
+            var exePath = FullPathTrim(item.ExePath);
+            var keyword = string.IsNullOrWhiteSpace(item.TitleKeyword) ? item.Title : item.TitleKeyword;
+
+            var found = FindBestAppWindow(existing, processName, exePath, keyword, used, null);
+            if (found != null) return found.Hwnd;
+
+            if (string.IsNullOrWhiteSpace(item.ExePath) || !File.Exists(item.ExePath))
+            {
+                return IntPtr.Zero;
+            }
+
+            var before = new HashSet<IntPtr>(existing
+                .Where(w => IsSameAppWindow(w, processName, exePath))
+                .Select(w => w.Hwnd));
+
+            try
+            {
+                Process.Start(item.ExePath);
+            }
+            catch
+            {
+                return IntPtr.Zero;
+            }
+
+            var created = WaitFor(() =>
+            {
+                var latest = WindowTools.GetTopLevelWindows();
+                var fresh = FindBestAppWindow(latest, processName, exePath, keyword, used, before);
+                if (fresh != null) return fresh;
+                return FindBestAppWindow(latest, processName, exePath, "", used, before);
+            }, 5000);
+
+            return created == null ? IntPtr.Zero : created.Hwnd;
+        }
+
+        private static WindowInfo FindBestAppWindow(List<WindowInfo> windows, string processName, string exePath, string keyword, HashSet<IntPtr> used, HashSet<IntPtr> exclude)
+        {
+            var candidates = windows
+                .Where(w => !used.Contains(w.Hwnd))
+                .Where(w => exclude == null || !exclude.Contains(w.Hwnd))
+                .Where(w => IsSameAppWindow(w, processName, exePath))
+                .ToList();
+
+            if (!string.IsNullOrWhiteSpace(keyword))
+            {
+                var titled = candidates
+                    .Where(w => ContainsIgnoreCase(w.Title, keyword))
+                    .OrderBy(w => w.X).ThenBy(w => w.Y)
+                    .FirstOrDefault();
+                if (titled != null) return titled;
+            }
+
+            return candidates
+                .OrderBy(w => w.X).ThenBy(w => w.Y)
+                .FirstOrDefault();
+        }
+
+        private static bool IsSameAppWindow(WindowInfo window, string processName, string exePath)
+        {
+            if (!string.IsNullOrWhiteSpace(processName) && EqualsIgnoreCase(window.ProcessName, processName))
+            {
+                return true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(exePath))
+            {
+                var windowExe = FullPathTrim(string.IsNullOrWhiteSpace(window.ExePath) ? WindowTools.GetProcessPath(window.ProcessId) : window.ExePath);
+                return EqualsIgnoreCase(windowExe, exePath);
+            }
+
+            return false;
+        }
+
         private static T WaitFor<T>(Func<T> getter, int timeoutMs) where T : class
         {
             var sw = Stopwatch.StartNew();
@@ -488,6 +599,44 @@ namespace WindowLayoutLauncher
         {
             try { return System.IO.Path.GetFullPath(path).TrimEnd('\\'); }
             catch { return (path ?? "").TrimEnd('\\'); }
+        }
+
+        private static bool IsIgnoredAppWindow(WindowInfo window, string exePath, string currentExe)
+        {
+            if (window == null) return true;
+            if (string.IsNullOrWhiteSpace(window.Title)) return true;
+            if (window.W < 120 || window.H < 90) return true;
+            if (EqualsIgnoreCase(window.Title, "Program Manager")) return true;
+
+            var processName = window.ProcessName ?? "";
+            var ignoredProcesses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "explorer",
+                "dwm",
+                "sihost",
+                "ShellExperienceHost",
+                "StartMenuExperienceHost",
+                "SearchHost",
+                "TextInputHost",
+                "ApplicationFrameHost",
+                "SystemSettings",
+                "RuntimeBroker",
+                "LockApp"
+            };
+
+            if (ignoredProcesses.Contains(processName)) return true;
+            if (!string.IsNullOrWhiteSpace(exePath) && EqualsIgnoreCase(FullPathTrim(exePath), currentExe)) return true;
+            return false;
+        }
+
+        private static string TitleKeywordFromTitle(string title)
+        {
+            var value = (title ?? "").Trim();
+            if (value.Length > 60)
+            {
+                value = value.Substring(0, 60);
+            }
+            return value;
         }
 
         public static string SafeName(string name)
