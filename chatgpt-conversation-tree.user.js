@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.5.7
-// @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT“最近”列表，并给图片组增加外置下载全部快捷按钮。
+// @version      1.7.0
+// @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -14,6 +14,7 @@
 // @grant        GM_deleteValue
 // @grant        GM_listValues
 // @grant        GM_download
+// @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
 // @connect      *
 // ==/UserScript==
@@ -29,6 +30,8 @@
   const RENAME_ID = `${APP_ID}-batch-rename`;
   const RENAME_STAGE_ID = `${APP_ID}-rename-stage`;
   const IMPORT_INPUT_ID = `${APP_ID}-import-input`;
+  const PROMPT_BUTTON_ID = `${APP_ID}-prompt-button`;
+  const PROMPT_PANEL_ID = `${APP_ID}-prompt-panel`;
   const PAGE_OPEN_EVENT = `${APP_ID}:page-open-chat`;
   const IMAGE_DOWNLOAD_CLASS = `${APP_ID}-image-download-all`;
   const IMAGE_DOWNLOAD_SLOT_CLASS = `${APP_ID}-image-download-slot`;
@@ -41,6 +44,10 @@
   const GM_STATE_KEY = 'state-v3';
   const GM_BACKUP_PREFIX = 'backup:';
   const UNGROUPED_COLLAPSED_KEY = 'ungrouped-collapsed';
+  const PROMPT_STORAGE_KEY = `${APP_ID}:prompts:v1`;
+  const GM_PROMPT_KEY = 'prompts-v1';
+  const DIAGNOSTIC_LOG_KEY = `${APP_ID}:diagnostic-log:v1`;
+  const MAX_DIAGNOSTIC_LOGS = 220;
   const DRAG_MIME = `application/x-${APP_ID}`;
 
   const icons = {
@@ -93,10 +100,17 @@
   let batchSelectedChatIds = [];
   let renameRun = null;
   let pendingImportMode = 'merge';
+  let promptState = loadPromptState();
+  let editingPromptId = '';
   let pendingRecentMenuUntil = 0;
   let recentMenuAugmented = false;
   let imageToolsTimer = 0;
   let imageEventsBound = false;
+  let preloadHistoryRun = null;
+  let openChatRunning = false;
+  let queuedOpenChat = null;
+  let openChatRequestSeq = 0;
+  let diagnosticLogs = loadDiagnosticLogs();
   let ungroupedCollapsed = (() => {
     try {
       return Boolean(GM_getValue(UNGROUPED_COLLAPSED_KEY, false));
@@ -376,6 +390,205 @@
     else saveTimer = window.setTimeout(save, 100);
   }
 
+  function defaultPromptState() {
+    return {
+      version: 1,
+      items: [],
+      updatedAt: 0,
+    };
+  }
+
+  function normalizePromptItem(item) {
+    const title = compactTitle(item?.title || '');
+    const content = String(item?.content || '').trim();
+    if (!title && !content) return null;
+    const now = Date.now();
+    return {
+      id: String(item?.id || uid('prompt')),
+      title: title || compactTitle(content).slice(0, 28) || '未命名提示词',
+      content,
+      createdAt: Number(item?.createdAt || now),
+      updatedAt: Number(item?.updatedAt || now),
+    };
+  }
+
+  function loadPromptState() {
+    const sources = [];
+    try {
+      sources.push(GM_getValue(GM_PROMPT_KEY, null));
+    } catch {
+      // keep fallback
+    }
+    try {
+      sources.push(JSON.parse(localStorage.getItem(PROMPT_STORAGE_KEY) || 'null'));
+    } catch {
+      sources.push(null);
+    }
+    const source = sources.find((candidate) => candidate && Array.isArray(candidate.items));
+    if (!source) return defaultPromptState();
+    const items = source.items
+      .map((item) => normalizePromptItem(item))
+      .filter(Boolean)
+      .slice(0, 300);
+    return {
+      version: 1,
+      items,
+      updatedAt: Number(source.updatedAt || 0),
+    };
+  }
+
+  function savePromptState() {
+    promptState.updatedAt = Date.now();
+    const payload = {
+      version: 1,
+      items: promptState.items.map((item) => ({ ...item })),
+      updatedAt: promptState.updatedAt,
+    };
+    try {
+      GM_setValue(GM_PROMPT_KEY, payload);
+    } catch {
+      // localStorage fallback
+    }
+    try {
+      localStorage.setItem(PROMPT_STORAGE_KEY, JSON.stringify(payload));
+    } catch (error) {
+      console.warn('[ChatGPT 辅助器] 提示词保存失败：', error);
+    }
+  }
+
+  function loadDiagnosticLogs() {
+    try {
+      const logs = JSON.parse(localStorage.getItem(DIAGNOSTIC_LOG_KEY) || '[]');
+      return Array.isArray(logs) ? logs.slice(-MAX_DIAGNOSTIC_LOGS) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveDiagnosticLogs() {
+    try {
+      localStorage.setItem(
+        DIAGNOSTIC_LOG_KEY,
+        JSON.stringify(diagnosticLogs.slice(-MAX_DIAGNOSTIC_LOGS))
+      );
+    } catch {
+      // 诊断日志不影响主功能。
+    }
+  }
+
+  function safeDiagnosticDetail(value, depth = 0) {
+    if (value == null || ['string', 'number', 'boolean'].includes(typeof value)) {
+      const text = String(value ?? '');
+      if (typeof value === 'string') return text.slice(0, 500);
+      return value;
+    }
+    if (depth > 2) return '[depth-limit]';
+    if (Array.isArray(value)) {
+      return value.slice(0, 20).map((item) => safeDiagnosticDetail(item, depth + 1));
+    }
+    if (typeof value === 'object') {
+      const output = {};
+      Object.entries(value).slice(0, 30).forEach(([key, item]) => {
+        if (/token|cookie|authorization|password|secret/i.test(key)) return;
+        output[key] = safeDiagnosticDetail(item, depth + 1);
+      });
+      return output;
+    }
+    return String(value).slice(0, 200);
+  }
+
+  function diagnosticSnapshot() {
+    return {
+      scriptVersion: '1.7.0',
+      pageUrl: location.href,
+      pageTitle: document.title,
+      appMounted: Boolean(host?.isConnected),
+      appVersion: host?.dataset?.cgptTreeVersion || '',
+      bridgeVersion: (() => {
+        try {
+          const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+          return pageWindow.__cgptConversationTreeBridgeVersion || window.__cgptConversationTreeBridgeVersion || '';
+        } catch {
+          return '';
+        }
+      })(),
+      knownChats: Object.keys(state.known || {}).length,
+      classifiedChats: classifiedChatIds().size,
+      visibleFallbackChats: host?.querySelectorAll?.('.cgpt-fallback-chat[data-chat-id]').length || 0,
+      visibleNativeRows: nativeRows.size,
+      openChatRunning,
+      queuedOpenChat: queuedOpenChat ? { ...queuedOpenChat } : null,
+    };
+  }
+
+  function addDiagnosticLog(eventName, detail = {}) {
+    const entry = {
+      at: new Date().toISOString(),
+      event: eventName,
+      detail: safeDiagnosticDetail(detail),
+      snapshot: safeDiagnosticDetail(diagnosticSnapshot()),
+    };
+    diagnosticLogs.push(entry);
+    diagnosticLogs = diagnosticLogs.slice(-MAX_DIAGNOSTIC_LOGS);
+    saveDiagnosticLogs();
+    try {
+      const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+      pageWindow.__cgptConversationTreeDiagnostics = {
+        snapshot: diagnosticSnapshot(),
+        logs: diagnosticLogs,
+      };
+    } catch {
+      // ignore
+    }
+    console.debug('[ChatGPT 最近对话分组诊断]', eventName, entry);
+  }
+
+  async function copyDiagnosticLogs() {
+    const payload = {
+      format: `${APP_ID}:diagnostics`,
+      exportedAt: new Date().toISOString(),
+      snapshot: diagnosticSnapshot(),
+      logs: diagnosticLogs.slice(-MAX_DIAGNOSTIC_LOGS),
+    };
+    const text = JSON.stringify(payload, null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      window.alert(`已复制诊断日志：${payload.logs.length} 条。把它发给 Codex 就能继续定位。`);
+    } catch {
+      const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `chatgpt-conversation-tree-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+  }
+
+  function clearDiagnosticLogs() {
+    diagnosticLogs = [];
+    saveDiagnosticLogs();
+    addDiagnosticLog('diagnostic:cleared');
+  }
+
+  function installConversationTreeDebugApi() {
+    try {
+      const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+      pageWindow.CGPTConversationTreeDebug = {
+        snapshot: () => diagnosticSnapshot(),
+        logs: () => diagnosticLogs.slice(),
+        copyLogs: () => copyDiagnosticLogs(),
+        clearLogs: () => clearDiagnosticLogs(),
+        preloadHistory: () => preloadAllHistoryChats(),
+        version: '1.7.0',
+      };
+    } catch {
+      // ignore
+    }
+  }
+
   function uid(prefix) {
     if (crypto?.randomUUID) return `${prefix}:${crypto.randomUUID()}`;
     return `${prefix}:${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -485,6 +698,163 @@
       .cgpt-tree-button:hover {
         color: var(--text-primary, currentColor);
         background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+      }
+      .cgpt-load-all-button {
+        position: relative;
+      }
+      .cgpt-load-all-button.cgpt-loading,
+      .cgpt-load-all-button.cgpt-done {
+        width: auto;
+        min-width: 36px;
+        padding: 0 6px;
+        gap: 3px;
+        font-size: 11px;
+        line-height: 1;
+      }
+      .cgpt-load-all-button.cgpt-loading {
+        color: #2563eb;
+        background: color-mix(in srgb, #2563eb 10%, transparent);
+      }
+      .cgpt-load-all-button.cgpt-done {
+        color: #16a34a;
+      }
+      .cgpt-load-all-button span {
+        max-width: 42px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #${PROMPT_BUTTON_ID} {
+        height: 32px;
+        min-width: 58px;
+        padding: 0 10px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        border: 0;
+        border-radius: 999px;
+        color: var(--text-secondary, currentColor);
+        background: transparent;
+        font-size: 13px;
+        line-height: 1;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      #${PROMPT_BUTTON_ID}:hover,
+      #${PROMPT_BUTTON_ID}[aria-expanded="true"] {
+        color: var(--text-primary, currentColor);
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+      }
+      #${PROMPT_PANEL_ID} {
+        position: fixed;
+        z-index: 2147483647;
+        width: min(420px, calc(100vw - 24px));
+        max-height: min(620px, calc(100vh - 24px));
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+        border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+        border-radius: 16px;
+        color: var(--text-primary, inherit);
+        background: var(--main-surface-primary, Canvas);
+        box-shadow: 0 18px 44px rgba(0,0,0,.18);
+      }
+      #${PROMPT_PANEL_ID}[hidden] {
+        display: none;
+      }
+      .cgpt-prompt-head,
+      .cgpt-prompt-foot,
+      .cgpt-prompt-row-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .cgpt-prompt-head {
+        justify-content: space-between;
+        font-weight: 600;
+        padding: 0 2px;
+      }
+      .cgpt-prompt-head small {
+        color: var(--text-tertiary, #888);
+        font-weight: 400;
+      }
+      #${PROMPT_PANEL_ID} button {
+        border: 0;
+        border-radius: 10px;
+        padding: 7px 9px;
+        color: inherit;
+        background: transparent;
+        cursor: pointer;
+        text-align: left;
+      }
+      #${PROMPT_PANEL_ID} button:hover {
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+      }
+      #${PROMPT_PANEL_ID} .cgpt-prompt-primary {
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.08));
+        font-weight: 600;
+      }
+      #${PROMPT_PANEL_ID} .cgpt-danger {
+        color: #e03131;
+      }
+      .cgpt-prompt-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-height: 330px;
+        overflow: auto;
+      }
+      .cgpt-prompt-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 4px;
+        align-items: center;
+        border-radius: 12px;
+      }
+      .cgpt-prompt-insert {
+        min-width: 0;
+        display: grid;
+        gap: 3px;
+      }
+      .cgpt-prompt-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 600;
+      }
+      .cgpt-prompt-preview,
+      .cgpt-prompt-empty {
+        color: var(--text-tertiary, #888);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      .cgpt-prompt-preview {
+        overflow: hidden;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+      .cgpt-prompt-editor {
+        display: grid;
+        gap: 8px;
+        padding-top: 4px;
+      }
+      .cgpt-prompt-editor input,
+      .cgpt-prompt-editor textarea {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 9px 10px;
+        border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+        border-radius: 10px;
+        color: inherit;
+        background: var(--main-surface-primary, Canvas);
+        font: inherit;
+      }
+      .cgpt-prompt-editor textarea {
+        min-height: 150px;
+        resize: vertical;
+        line-height: 1.45;
       }
       .cgpt-tree-button svg,
       .cgpt-folder-icon svg,
@@ -599,6 +969,29 @@
         width: calc(100% - var(--cgpt-depth, 1) * 14px);
         max-width: calc(100% - var(--cgpt-depth, 1) * 14px);
       }
+      li.cgpt-native-chat.cgpt-active-chat {
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.08));
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 7%, transparent);
+        overflow: hidden;
+      }
+      li.cgpt-native-chat.cgpt-active-chat > a,
+      li.cgpt-native-chat.cgpt-active-chat [role="link"] {
+        background: transparent !important;
+        box-shadow: none !important;
+        outline: none !important;
+      }
+      li.cgpt-native-chat.cgpt-opening-chat > a,
+      li.cgpt-native-chat.cgpt-opening-chat {
+        background: color-mix(in srgb, #2563eb 8%, transparent);
+      }
+      li.cgpt-native-chat.cgpt-open-failed > a,
+      li.cgpt-native-chat.cgpt-open-failed {
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, #ef4444 38%, transparent);
+      }
+      li.cgpt-native-chat[data-cgpt-tree-managed="true"] {
+        margin: 0 6px;
+        border-radius: 8px;
+      }
       li.cgpt-native-chat:hover button[aria-label*="对话选项"],
       li.cgpt-native-chat:focus-within button[aria-label*="对话选项"],
       li.cgpt-native-chat:hover button[aria-label*="conversation options" i],
@@ -638,6 +1031,24 @@
       }
       .cgpt-fallback-chat:hover {
         background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+      }
+      .cgpt-fallback-chat.cgpt-active-chat {
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.08));
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 7%, transparent);
+        overflow: hidden;
+      }
+      .cgpt-fallback-chat.cgpt-active-chat .cgpt-fallback-link {
+        outline: none !important;
+        box-shadow: none !important;
+      }
+      .cgpt-fallback-chat.cgpt-active-chat .cgpt-fallback-link {
+        font-weight: 600;
+      }
+      .cgpt-fallback-chat.cgpt-opening-chat {
+        background: color-mix(in srgb, #2563eb 8%, transparent);
+      }
+      .cgpt-fallback-chat.cgpt-open-failed {
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, #ef4444 38%, transparent);
       }
       .cgpt-fallback-link {
         min-width: 0;
@@ -788,14 +1199,14 @@
         border: 0;
         border-radius: 10px;
         color: var(--text-primary, currentColor);
-        background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+        background: transparent;
         font: inherit;
         font-size: 12px;
         line-height: 1;
         cursor: pointer;
       }
       .${IMAGE_DOWNLOAD_CLASS}:hover {
-        background: var(--sidebar-surface-tertiary, rgba(0,0,0,.1));
+        background: var(--sidebar-surface-tertiary, rgba(0,0,0,.08));
       }
       .${IMAGE_DOWNLOAD_CLASS}[disabled] {
         opacity: .58;
@@ -817,6 +1228,7 @@
         font-weight: 600;
         line-height: 1;
       }
+
       #${MENU_ID}.cgpt-batch-menu {
         width: min(330px, calc(100vw - 20px));
         max-width: 330px;
@@ -1085,9 +1497,10 @@
       host.id = APP_ID;
       host.className = 'list-none';
       host.setAttribute('aria-label', '最近对话分组');
-      host.dataset.cgptTreeVersion = '1.4.9';
+      host.dataset.cgptTreeVersion = '1.7.0';
       nativeList.insertBefore(host, nativeList.firstChild);
     }
+    if (host?.isConnected) host.dataset.cgptTreeVersion = '1.7.0';
 
     if (!parkingLot?.isConnected) {
       parkingLot = document.getElementById(PARKING_ID) || document.createElement('div');
@@ -1104,6 +1517,10 @@
                 title="新建分组" aria-label="新建分组">${icons.plus}</button>
         <button class="cgpt-tree-button" data-cgpt-action="batch-group"
                 title="批量分组未分组对话" aria-label="批量分组未分组对话">${icons.batch}</button>
+        <button class="cgpt-tree-button cgpt-load-all-button" data-cgpt-action="preload-history"
+                title="手动预加载所有历史对话（再次点击可停止）" aria-label="手动预加载所有历史对话">
+          ${icons.download}<span data-cgpt-load-label hidden></span>
+        </button>
         <button class="cgpt-tree-button" data-cgpt-action="collapse-all"
                 title="全部折叠或展开" aria-label="全部折叠或展开">${icons.fold}</button>
         <button class="cgpt-tree-button" data-cgpt-action="data-menu"
@@ -1122,8 +1539,10 @@
     const source = `(() => {
       const EVENT_NAME = ${JSON.stringify(PAGE_OPEN_EVENT)};
       const APP_ID = ${JSON.stringify(APP_ID)};
-      if (window.__cgptConversationTreeBridge) return;
+      const BRIDGE_VERSION = '1.7.0';
+      if (window.__cgptConversationTreeBridgeVersion === BRIDGE_VERSION) return;
       window.__cgptConversationTreeBridge = true;
+      window.__cgptConversationTreeBridgeVersion = BRIDGE_VERSION;
 
       function chatInfoFromHref(href) {
         try {
@@ -1136,7 +1555,7 @@
       }
 
       function nativeAnchorForChat(chatId) {
-        const anchors = [...document.querySelectorAll('#history a[href*="/c/"]')];
+        const anchors = [...document.querySelectorAll('#history a[href*="/c/"], nav a[href*="/c/"], aside a[href*="/c/"]')];
         return anchors.find((anchor) => (
           chatInfoFromHref(anchor.getAttribute('href')) === chatId
           && !anchor.closest('.cgpt-fallback-chat')
@@ -1237,12 +1656,11 @@
         });
       }
 
-      window.addEventListener(EVENT_NAME, (event) => {
-        const chatId = event.detail?.chatId;
-        if (!chatId) return;
+      function openChat(chatId) {
+        if (!chatId) return { ok: false, reason: 'missing-chat-id' };
         const before = location.href;
         const anchor = nativeAnchorForChat(chatId);
-        if (!anchor) return;
+        if (!anchor) return { ok: false, reason: 'native-anchor-not-found' };
         const row = anchor.closest('li');
         row?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
         const usedReact = invokeReactClick(anchor);
@@ -1253,14 +1671,36 @@
             dispatchMouseClick(anchor);
           }
         }, 80);
+        return { ok: true, usedReact };
+      }
+
+      window.__cgptConversationTreeOpenChat = openChat;
+
+      window.addEventListener(EVENT_NAME, (event) => {
+        const chatId = event.detail?.chatId;
+        if (!chatId) return;
+        openChat(chatId);
       }, true);
     })();`;
     try {
       const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-      if (pageWindow.__cgptConversationTreeBridge) return;
+      if (pageWindow.__cgptConversationTreeBridgeVersion === '1.7.0') return;
+      if (typeof pageWindow.eval === 'function') {
+        pageWindow.eval(source);
+        if (pageWindow.__cgptConversationTreeBridgeVersion === '1.7.0') {
+          addDiagnosticLog('bridge:eval-success');
+          return;
+        }
+      }
       pageWindow.Function(source)();
+      addDiagnosticLog('bridge:function-success', {
+        bridgeVersion: pageWindow.__cgptConversationTreeBridgeVersion || '',
+      });
       return;
-    } catch {
+    } catch (error) {
+      addDiagnosticLog('bridge:page-window-failed', {
+        message: error?.message || String(error),
+      });
       // Fall back to a script tag. Some pages block this through CSP, but
       // Tampermonkey page-window execution above works on most Chromium setups.
     }
@@ -1269,6 +1709,16 @@
     script.textContent = source;
     (document.head || document.documentElement).append(script);
     script.remove();
+    window.setTimeout(() => {
+      try {
+        const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+        addDiagnosticLog('bridge:script-tag-result', {
+          bridgeVersion: pageWindow.__cgptConversationTreeBridgeVersion || '',
+        });
+      } catch {
+        addDiagnosticLog('bridge:script-tag-result', { bridgeVersion: '' });
+      }
+    }, 120);
   }
 
   function ensureImportInput() {
@@ -1281,6 +1731,258 @@
     input.hidden = true;
     document.body.append(input);
     return input;
+  }
+
+  function ensurePromptPanel() {
+    let panel = document.getElementById(PROMPT_PANEL_ID);
+    if (panel) return panel;
+    panel = document.createElement('section');
+    panel.id = PROMPT_PANEL_ID;
+    panel.hidden = true;
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', '提示词库');
+    document.body.append(panel);
+    return panel;
+  }
+
+  function promptComposerInput() {
+    return document.querySelector('#prompt-textarea')
+      || [...document.querySelectorAll('main textarea, form textarea, main [contenteditable="true"], form [contenteditable="true"]')]
+        .find((element) => {
+          if (element.closest?.(`#${APP_ID}, #${MENU_ID}, #${PROMPT_PANEL_ID}`)) return false;
+          const rect = element.getBoundingClientRect?.();
+          return rect && rect.width > 160 && rect.height > 20 && isElementVisible(element);
+        })
+      || null;
+  }
+
+  function composerRootFor(element) {
+    return element?.closest?.('form')
+      || element?.closest?.('[data-testid*="composer"], [class*="composer"], main')
+      || null;
+  }
+
+  function findModelButton(composer) {
+    if (!composer) return null;
+    const buttons = [...composer.querySelectorAll('button')]
+      .filter((button) => (
+        button.id !== PROMPT_BUTTON_ID
+        && !button.closest(`#${APP_ID}, #${MENU_ID}, #${PROMPT_PANEL_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}`)
+        && isElementVisible(button)
+      ));
+    const byText = buttons.find((button) => /高级|模型|model|GPT|auto|thinking|reason|fast|legacy|standard|默认/i.test(
+      compactTitle(`${button.innerText || ''} ${button.getAttribute('aria-label') || ''} ${button.title || ''}`)
+    ));
+    if (byText) return byText;
+    return buttons.find((button) => {
+      const rect = button.getBoundingClientRect();
+      const inputRect = promptComposerInput()?.getBoundingClientRect?.();
+      return inputRect && rect.left > inputRect.left + inputRect.width * 0.45 && rect.top > inputRect.top - 20;
+    }) || null;
+  }
+
+  function ensurePromptButton() {
+    const input = promptComposerInput();
+    if (!input) return false;
+    const composer = composerRootFor(input);
+    if (!composer) return false;
+
+    let button = document.getElementById(PROMPT_BUTTON_ID);
+    if (!button) {
+      button = document.createElement('button');
+      button.id = PROMPT_BUTTON_ID;
+      button.type = 'button';
+      button.textContent = '提示词';
+      button.title = '打开提示词库';
+      button.setAttribute('aria-haspopup', 'dialog');
+      button.setAttribute('aria-expanded', 'false');
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        togglePromptPanel(button);
+      }, true);
+    }
+
+    const modelButton = findModelButton(composer);
+    const targetParent = modelButton?.parentElement
+      || [...composer.querySelectorAll('div')].reverse().find((element) => (
+        element.querySelectorAll('button').length >= 2 && element.contains(input) === false
+      ))
+      || input.parentElement;
+
+    if (!targetParent) return false;
+    if (modelButton?.parentElement === targetParent) {
+      if (button.parentElement !== targetParent || button.nextSibling !== modelButton) {
+        targetParent.insertBefore(button, modelButton);
+      }
+    } else if (button.parentElement !== targetParent) {
+      targetParent.insertBefore(button, targetParent.firstChild || null);
+    }
+    return true;
+  }
+
+  function closePromptPanel() {
+    const panel = document.getElementById(PROMPT_PANEL_ID);
+    const button = document.getElementById(PROMPT_BUTTON_ID);
+    if (panel) panel.hidden = true;
+    if (button) button.setAttribute('aria-expanded', 'false');
+    editingPromptId = '';
+  }
+
+  function togglePromptPanel(button) {
+    const panel = ensurePromptPanel();
+    if (!panel.hidden) {
+      closePromptPanel();
+      return;
+    }
+    editingPromptId = '';
+    renderPromptPanel();
+    const rect = button.getBoundingClientRect();
+    panel.hidden = false;
+    const width = panel.offsetWidth || 420;
+    const height = panel.offsetHeight || 420;
+    panel.style.left = `${Math.max(8, Math.min(innerWidth - width - 8, rect.left - width + rect.width))}px`;
+    panel.style.top = `${Math.max(8, Math.min(innerHeight - height - 8, rect.top - height - 8))}px`;
+    button.setAttribute('aria-expanded', 'true');
+  }
+
+  function renderPromptPanel() {
+    const panel = ensurePromptPanel();
+    const editing = editingPromptId
+      ? promptState.items.find((item) => item.id === editingPromptId)
+      : null;
+    const editorTitle = editingPromptId === 'new' ? '新建提示词' : '编辑提示词';
+    const list = promptState.items.length ? promptState.items.map((item) => `
+      <div class="cgpt-prompt-row" data-prompt-id="${escapeHtml(item.id)}">
+        <button class="cgpt-prompt-insert"
+                data-cgpt-prompt-action="insert"
+                data-prompt-id="${escapeHtml(item.id)}"
+                title="插入到输入框：${escapeHtml(item.title)}">
+          <span class="cgpt-prompt-title">${escapeHtml(item.title)}</span>
+          <span class="cgpt-prompt-preview">${escapeHtml(item.content || '空内容')}</span>
+        </button>
+        <span class="cgpt-prompt-row-actions">
+          <button data-cgpt-prompt-action="edit" data-prompt-id="${escapeHtml(item.id)}">编辑</button>
+          <button class="cgpt-danger" data-cgpt-prompt-action="delete" data-prompt-id="${escapeHtml(item.id)}">删除</button>
+        </span>
+      </div>`).join('') : '<div class="cgpt-prompt-empty">还没有提示词。点“新增”创建一个，之后点击提示词会插入到输入框，不会自动发送。</div>';
+
+    const editingTitle = editing?.title || '';
+    const editingContent = editing?.content || '';
+    panel.innerHTML = `
+      <div class="cgpt-prompt-head">
+        <span>提示词库 <small>${promptState.items.length} 条</small></span>
+        <span>
+          <button data-cgpt-prompt-action="new">＋ 新增</button>
+          <button data-cgpt-prompt-action="close">关闭</button>
+        </span>
+      </div>
+      <div class="cgpt-prompt-list">${list}</div>
+      ${editingPromptId ? `
+        <div class="cgpt-prompt-editor">
+          <div>${editorTitle}</div>
+          <input data-cgpt-prompt-title placeholder="标题" value="${escapeHtml(editingTitle)}">
+          <textarea data-cgpt-prompt-content placeholder="提示词内容">${escapeHtml(editingContent)}</textarea>
+          <div class="cgpt-prompt-foot">
+            <button class="cgpt-prompt-primary" data-cgpt-prompt-action="save">保存</button>
+            <button data-cgpt-prompt-action="cancel">取消</button>
+          </div>
+        </div>
+      ` : ''}`;
+  }
+
+  function upsertPromptFromPanel() {
+    const panel = ensurePromptPanel();
+    const titleInput = panel.querySelector('[data-cgpt-prompt-title]');
+    const contentInput = panel.querySelector('[data-cgpt-prompt-content]');
+    const content = String(contentInput?.value || '').trim();
+    const title = compactTitle(titleInput?.value || content.slice(0, 32));
+    if (!content) {
+      window.alert('提示词内容不能为空。');
+      return;
+    }
+    const now = Date.now();
+    if (editingPromptId && editingPromptId !== 'new') {
+      const item = promptState.items.find((candidate) => candidate.id === editingPromptId);
+      if (item) {
+        item.title = title || item.title;
+        item.content = content;
+        item.updatedAt = now;
+      }
+    } else {
+      promptState.items.unshift({
+        id: uid('prompt'),
+        title: title || '未命名提示词',
+        content,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    savePromptState();
+    editingPromptId = '';
+    renderPromptPanel();
+  }
+
+  function deletePrompt(promptId) {
+    const item = promptState.items.find((candidate) => candidate.id === promptId);
+    if (!item) return;
+    if (!window.confirm(`删除提示词“${item.title}”？`)) return;
+    promptState.items = promptState.items.filter((candidate) => candidate.id !== promptId);
+    savePromptState();
+    renderPromptPanel();
+  }
+
+  function insertTextIntoComposer(text) {
+    const input = promptComposerInput();
+    if (!input) {
+      window.alert('没有找到 ChatGPT 输入框。');
+      return false;
+    }
+    input.focus();
+    if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? input.value.length;
+      input.setRangeText(text, start, end, 'end');
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: text,
+      }));
+      return true;
+    }
+    const selection = window.getSelection();
+    if (selection && input.isContentEditable) {
+      if (!selection.rangeCount || !input.contains(selection.anchorNode)) {
+        const range = document.createRange();
+        range.selectNodeContents(input);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      const ok = document.execCommand?.('insertText', false, text);
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: text,
+      }));
+      if (ok) return true;
+      const range = selection.rangeCount ? selection.getRangeAt(0) : document.createRange();
+      range.deleteContents();
+      range.insertNode(document.createTextNode(text));
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    }
+    return false;
+  }
+
+  function insertPrompt(promptId) {
+    const item = promptState.items.find((candidate) => candidate.id === promptId);
+    if (!item) return;
+    const ok = insertTextIntoComposer(item.content);
+    addDiagnosticLog('prompt:insert', { promptId, title: item.title, ok });
+    if (ok) closePromptPanel();
   }
 
   function findNode(nodeId, nodes = state.tree, parentArray = state.tree) {
@@ -1661,14 +2363,16 @@
 
   function renderUngroupedFolder() {
     const chats = unclassifiedChats();
+    const activeId = currentChatId();
     const children = ungroupedCollapsed
       ? ''
       : chats.map(({ chatId, info }) => `
-          <li class="cgpt-fallback-chat cgpt-ungrouped-chat"
+          <li class="cgpt-fallback-chat cgpt-ungrouped-chat ${activeId === chatId ? 'cgpt-active-chat' : ''}"
               style="--cgpt-depth:1"
               draggable="true"
               data-chat-id="${escapeHtml(chatId)}"
-              data-cgpt-ungrouped-chat="${escapeHtml(chatId)}">
+              data-cgpt-ungrouped-chat="${escapeHtml(chatId)}"
+              ${activeId === chatId ? 'aria-current="page"' : ''}>
             <a class="cgpt-fallback-link"
                href="${escapeHtml(info.url || `/c/${encodeURIComponent(chatId)}`)}"
                title="${escapeHtml(info.title || '未命名对话')}">${escapeHtml(info.title || '未命名对话')}</a>
@@ -1720,9 +2424,13 @@
       'cgpt-native-chat',
       'cgpt-native-source-row',
       'cgpt-native-unclassified-row',
+      'cgpt-active-chat',
+      'cgpt-opening-chat',
+      'cgpt-open-failed',
       'cgpt-dragging'
     );
     delete row.dataset.cgptTreeNodeId;
+    delete row.dataset.cgptTreeManaged;
     row.style.removeProperty('--cgpt-depth');
   }
 
@@ -1743,16 +2451,40 @@
 
   function placeChatRows() {
     const classified = classifiedChatIds();
+    const activeId = currentChatId();
+    const placedNativeChatIds = new Set();
 
     host.querySelectorAll('.cgpt-chat-slot').forEach((slot) => {
       const chatId = slot.dataset.chatId;
       const nodeId = slot.dataset.chatNodeId;
       const depth = Number(slot.dataset.depth || 1);
       const info = state.known[chatId] || {};
-      slot.className = 'cgpt-fallback-chat';
+      const nativeRow = nativeRows.get(chatId);
+      const nativeAnchor = nativeRow?.isConnected ? nativeAnchorForChat(chatId) : null;
+
+      if (!preloadHistoryRun?.running && nativeRow?.isConnected && nativeAnchor) {
+        resetNativeRow(nativeRow);
+        nativeRow.classList.add('cgpt-native-chat');
+        nativeRow.dataset.cgptChatId = chatId;
+        nativeRow.dataset.cgptTreeNodeId = nodeId || '';
+        nativeRow.dataset.cgptTreeManaged = 'true';
+        nativeRow.style.setProperty('--cgpt-depth', depth);
+        nativeRow.draggable = true;
+        nativeRow.classList.toggle('cgpt-active-chat', activeId === chatId);
+        if (activeId === chatId) nativeRow.setAttribute('aria-current', 'page');
+        else nativeRow.removeAttribute('aria-current');
+        nativeAnchor.draggable = true;
+        slot.replaceWith(nativeRow);
+        placedNativeChatIds.add(chatId);
+        return;
+      }
+
+      slot.className = `cgpt-fallback-chat ${activeId === chatId ? 'cgpt-active-chat' : ''}`;
       slot.style.setProperty('--cgpt-depth', depth);
       slot.draggable = true;
       slot.dataset.cgptTreeNodeId = nodeId;
+      if (activeId === chatId) slot.setAttribute('aria-current', 'page');
+      else slot.removeAttribute('aria-current');
       slot.innerHTML = `
         <a class="cgpt-fallback-link"
            data-cgpt-fallback="true"
@@ -1769,6 +2501,7 @@
     });
 
     nativeRows.forEach((row, chatId) => {
+      if (placedNativeChatIds.has(chatId)) return;
       if (!row.isConnected || row.closest(`#${APP_ID}`) || row.parentElement === parkingLot) {
         insertUnclassifiedRow(row, chatId);
       }
@@ -1784,6 +2517,27 @@
     });
   }
 
+  function bindFallbackRowDirectHandlers() {
+    host?.querySelectorAll?.('.cgpt-fallback-chat[data-chat-id]').forEach((row) => {
+      if (row.dataset.cgptDirectOpenBound === 'true') return;
+      row.dataset.cgptDirectOpenBound = 'true';
+      row.addEventListener('click', (event) => {
+        if (event.target.closest?.('[data-cgpt-proxy-options], button')) return;
+        const chatId = row.dataset.chatId;
+        const fallbackLink = row.querySelector('.cgpt-fallback-link[href]');
+        if (!chatId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        addDiagnosticLog('click:direct-row', {
+          chatId,
+          href: fallbackLink?.getAttribute('href') || '',
+          target: event.target?.tagName || '',
+        });
+        requestOpenChat(chatId, fallbackLink?.getAttribute('href') || '');
+      }, true);
+    });
+  }
+
   function renderTree() {
     if (!ensureMounted() || rendering) return;
     rendering = true;
@@ -1794,6 +2548,7 @@
       state.tree.map((node) => node.type === 'folder' ? renderFolder(node) : '').join('')
     }${renderUngroupedFolder()}</ul>`;
     placeChatRows();
+    bindFallbackRowDirectHandlers();
 
     rendering = false;
   }
@@ -1989,12 +2744,36 @@
     anchor?.removeEventListener('click', preventNavigation, true);
   }
 
+  function liveNativeAnchorForChat(chatId) {
+    const roots = [historyRoot, document.querySelector('#history'), document]
+      .filter(Boolean);
+    for (const root of [...new Set(roots)]) {
+      const anchor = [...root.querySelectorAll('a[href*="/c/"]')]
+        .find((candidate) => (
+          chatInfoFromHref(candidate.getAttribute('href'))?.chatId === chatId
+          && !candidate.closest('.cgpt-fallback-chat')
+          && !candidate.closest(`#${APP_ID}`)
+          && !candidate.closest(`#${MENU_ID}`)
+        ));
+      if (anchor) return anchor;
+    }
+    return null;
+  }
+
   function nativeAnchorForChat(chatId) {
     const row = nativeRows.get(chatId);
-    if (!row) return null;
-    return [...row.querySelectorAll('a[href]')]
+    const rowAnchor = row?.isConnected ? [...row.querySelectorAll('a[href]')]
       .find((anchor) => chatInfoFromHref(anchor.getAttribute('href'))?.chatId === chatId)
-      || null;
+      : null;
+    if (rowAnchor) return rowAnchor;
+
+    const liveAnchor = liveNativeAnchorForChat(chatId);
+    const liveRow = liveAnchor?.closest('li');
+    if (liveAnchor && liveRow) {
+      nativeRows.set(chatId, liveRow);
+      liveRow.dataset.cgptChatId = chatId;
+    }
+    return liveAnchor || null;
   }
 
   function clickLoadedNativeChat(chatId) {
@@ -2044,6 +2823,35 @@
 
   function isChatLocation(chatId) {
     return chatInfoFromHref(location.href)?.chatId === chatId;
+  }
+
+  function currentChatId() {
+    return chatInfoFromHref(location.href)?.chatId || '';
+  }
+
+  function updateFallbackChatVisualState(chatId = '') {
+    const activeId = currentChatId();
+    host?.querySelectorAll?.('.cgpt-fallback-chat[data-chat-id], li.cgpt-native-chat[data-cgpt-chat-id]')
+      .forEach((row) => {
+      const rowChatId = row.dataset.chatId || row.dataset.cgptChatId || '';
+      const isActive = Boolean(activeId && rowChatId === activeId);
+      row.classList.toggle('cgpt-active-chat', isActive);
+      if (isActive) row.setAttribute('aria-current', 'page');
+      else row.removeAttribute('aria-current');
+      if (chatId && rowChatId === chatId && isActive) {
+        row.classList.remove('cgpt-opening-chat', 'cgpt-open-failed');
+      }
+    });
+  }
+
+  function markFallbackChatOpening(chatId, stateName = 'opening') {
+    host?.querySelectorAll?.(
+      `.cgpt-fallback-chat[data-chat-id="${CSS.escape(chatId)}"], li.cgpt-native-chat[data-cgpt-chat-id="${CSS.escape(chatId)}"]`
+    )
+      .forEach((row) => {
+        row.classList.toggle('cgpt-opening-chat', stateName === 'opening');
+        row.classList.toggle('cgpt-open-failed', stateName === 'failed');
+      });
   }
 
   function dispatchNativeClick(element) {
@@ -2099,32 +2907,354 @@
     return true;
   }
 
+  function pageBridgeOpenChat(chatId, fallbackHref = '') {
+    try {
+      const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+      const href = chatHref(chatId, fallbackHref);
+      if (typeof pageWindow.__cgptConversationTreeOpenChat === 'function') {
+        const result = pageWindow.__cgptConversationTreeOpenChat(chatId, href);
+        addDiagnosticLog('open:bridge-call', { chatId, href, result });
+        if (result?.ok) return true;
+      }
+      pageWindow.dispatchEvent(new CustomEvent(PAGE_OPEN_EVENT, {
+        detail: { chatId, href },
+      }));
+      addDiagnosticLog('open:bridge-event', {
+        chatId,
+        href,
+        hasLiveAnchor: Boolean(liveNativeAnchorForChat(chatId)),
+      });
+      return Boolean(liveNativeAnchorForChat(chatId));
+    } catch (error) {
+      addDiagnosticLog('open:bridge-error', {
+        chatId,
+        message: error?.message || String(error),
+      });
+      return false;
+    }
+  }
+
+  function historyScrollContainer() {
+    const starts = [
+      historyRoot,
+      nativeList,
+      recentHeader,
+      document.querySelector('#history'),
+    ].filter(Boolean);
+
+    const isScrollable = (element) => {
+      if (!element || element === document.documentElement || element === document.body) return false;
+      const style = getComputedStyle(element);
+      const overflowY = style.overflowY || style.overflow;
+      const historyNode = historyRoot || nativeList;
+      const looksLikeHistoryScroller = (historyNode && element.contains?.(historyNode))
+        || element.matches?.('[data-radix-scroll-area-viewport], [class*="scroll"], [class*="overflow"]');
+      return element.scrollHeight > element.clientHeight + 40
+        && (/(auto|scroll|overlay)/i.test(overflowY) || looksLikeHistoryScroller);
+    };
+
+    for (const start of starts) {
+      for (let element = start; element && element !== document.body; element = element.parentElement) {
+        if (isScrollable(element)) return element;
+      }
+    }
+
+    return [...document.querySelectorAll('aside div, nav div, [class*="scroll"], [data-radix-scroll-area-viewport]')]
+      .filter((element) => element.contains?.(historyRoot || nativeList))
+      .sort((a, b) => (a.clientHeight || 0) - (b.clientHeight || 0))
+      .find(isScrollable)
+      || document.scrollingElement
+      || document.documentElement;
+  }
+
+  function setHistoryPreloadButtonState(button, status = {}) {
+    const target = button || headerActions?.querySelector('[data-cgpt-action="preload-history"]');
+    if (!target) return;
+    const label = target.querySelector('[data-cgpt-load-label]');
+    target.classList.toggle('cgpt-loading', status.running === true);
+    target.classList.toggle('cgpt-done', status.done === true);
+    if (label) {
+      const count = Number(status.count || 0);
+      label.hidden = !status.running && !status.done;
+      label.textContent = count ? String(count) : '...';
+    }
+    if (status.running) {
+      target.title = `正在加载最近对话，已发现 ${status.count || 0} 条；再次点击可停止`;
+      target.setAttribute('aria-label', target.title);
+    } else if (status.done) {
+      target.title = `最近对话加载完成，已发现 ${status.count || 0} 条`;
+      target.setAttribute('aria-label', target.title);
+      window.setTimeout(() => {
+        target.classList.remove('cgpt-done');
+        if (label) label.hidden = true;
+        target.title = '手动预加载所有历史对话（再次点击可停止）';
+        target.setAttribute('aria-label', '手动预加载所有历史对话');
+      }, 2600);
+    } else {
+      target.title = '手动预加载所有历史对话（再次点击可停止）';
+      target.setAttribute('aria-label', '手动预加载所有历史对话');
+      if (label) label.hidden = true;
+    }
+  }
+
+  async function preloadAllHistoryChats(button = null) {
+    if (preloadHistoryRun?.running) {
+      preloadHistoryRun.cancelled = true;
+      setHistoryPreloadButtonState(button, {
+        running: true,
+        count: Object.keys(state.known || {}).length,
+      });
+      return;
+    }
+
+    if (!ensureMounted()) return;
+    const scroller = historyScrollContainer();
+    if (!scroller) {
+      window.alert('没有找到左侧最近对话的滚动区域。');
+      return;
+    }
+
+    const run = { running: true, cancelled: false };
+    preloadHistoryRun = run;
+    const originalTop = scroller.scrollTop || 0;
+    let lastCount = -1;
+    let stableRounds = 0;
+    let direction = 1;
+
+    try {
+      scanNativeChats();
+      setHistoryPreloadButtonState(button, {
+        running: true,
+        count: Object.keys(state.known || {}).length,
+      });
+
+      for (let round = 0; round < 240 && !run.cancelled; round += 1) {
+        const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        if (maxScroll <= 0) break;
+
+        const targetTop = direction > 0 ? maxScroll : 0;
+        scroller.scrollTop = targetTop;
+        scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+        await sleep(round < 8 ? 420 : 650);
+        scanNativeChats();
+
+        const count = Object.keys(state.known || {}).length;
+        setHistoryPreloadButtonState(button, { running: true, count });
+        if (count <= lastCount) stableRounds += 1;
+        else stableRounds = 0;
+        lastCount = count;
+
+        if (stableRounds >= 8 && direction > 0) {
+          direction = -1;
+          stableRounds = 0;
+        } else if (stableRounds >= 5 && direction < 0) {
+          break;
+        }
+      }
+    } finally {
+      if (scroller && Number.isFinite(originalTop)) {
+        scroller.scrollTop = Math.max(0, Math.min(originalTop, scroller.scrollHeight));
+      }
+      preloadHistoryRun = null;
+      scanNativeChats();
+      queueRender();
+      setHistoryPreloadButtonState(button, {
+        done: true,
+        count: Object.keys(state.known || {}).length,
+      });
+    }
+  }
+
   function forceOpenChat(chatId, fallbackHref = '') {
     const href = chatHref(chatId, fallbackHref);
     const url = new URL(href, location.href);
     if (url.href === location.href || isChatLocation(chatId)) return;
-    location.assign(url.href);
+    addDiagnosticLog('open:hard-navigation-disabled', { chatId, href: url.href });
+    markFallbackChatOpening(chatId, 'failed');
   }
 
-  function openChatThroughNativeRow(chatId, fallbackHref = '') {
-    const anchor = nativeAnchorForChat(chatId);
+  function requestOpenChat(chatId, fallbackHref = '') {
+    if (!chatId) return;
+    const requestSeq = ++openChatRequestSeq;
+    markFallbackChatOpening(chatId, 'opening');
+    addDiagnosticLog('open:request', { chatId, fallbackHref, requestSeq });
+    queuedOpenChat = { chatId, fallbackHref };
+    if (openChatRunning) return;
+    void drainOpenChatQueue();
+    window.setTimeout(() => {
+      if (requestSeq !== openChatRequestSeq) return;
+      if (isChatLocation(chatId)) return;
+      addDiagnosticLog('open:request-timeout-no-hard-navigation', { chatId, fallbackHref, requestSeq });
+      forceOpenChat(chatId, fallbackHref);
+    }, 9000);
+  }
+
+  async function drainOpenChatQueue() {
+    openChatRunning = true;
+    try {
+      while (queuedOpenChat) {
+        const job = queuedOpenChat;
+        queuedOpenChat = null;
+        try {
+          addDiagnosticLog('open:queue-start', {
+            chatId: job.chatId,
+            fallbackHref: job.fallbackHref,
+          });
+          await openChatThroughNativeRow(job.chatId, job.fallbackHref);
+          addDiagnosticLog('open:queue-finish', {
+            chatId: job.chatId,
+            currentUrl: location.href,
+            isCurrent: isChatLocation(job.chatId),
+          });
+          updateFallbackChatVisualState(job.chatId);
+        } catch (error) {
+          console.warn('[ChatGPT 最近对话分组] 打开分组对话失败，改用硬跳转：', error);
+          addDiagnosticLog('open:queue-error', {
+            chatId: job.chatId,
+            message: error?.message || String(error),
+          });
+          forceOpenChat(job.chatId, job.fallbackHref);
+        }
+        await sleep(520);
+      }
+    } finally {
+      openChatRunning = false;
+    }
+  }
+
+  async function waitForChatLocation(chatId, timeout = 950) {
+    return Boolean(await waitForValue(() => isChatLocation(chatId), timeout, 80));
+  }
+
+  async function openChatThroughNativeRow(chatId, fallbackHref = '') {
+    if (!chatId || isChatLocation(chatId)) return true;
+    scanNativeChats();
+
+    let anchor = nativeAnchorForChat(chatId);
     const before = location.href;
+    addDiagnosticLog('open:start', {
+      chatId,
+      fallbackHref,
+      before,
+      hasAnchor: Boolean(anchor),
+      nativeRows: nativeRows.size,
+    });
+
+    if (!anchor) {
+      addDiagnosticLog('open:no-native-anchor-click-skipped-loading', {
+        chatId,
+        reason: '点击时不再自动滚动加载历史；请先点最近右侧加载按钮',
+      });
+      markFallbackChatOpening(chatId, 'failed');
+      return false;
+    }
+
     if (anchor) {
       wakeNativeRow(anchor.closest('li'));
+      const usedBridge = pageBridgeOpenChat(chatId, fallbackHref);
+      if (!usedBridge) dispatchNativeClick(anchor);
+      addDiagnosticLog('open:native-click', {
+        chatId,
+        usedBridge,
+        href: anchor.getAttribute('href') || '',
+      });
+      if (await waitForChatLocation(chatId, 4200)) return true;
+
+      wakeNativeRow(anchor.closest('li'));
       dispatchNativeClick(anchor);
-      window.setTimeout(() => {
-        if (location.href === before && !isChatLocation(chatId)) {
-          forceOpenChat(chatId, fallbackHref);
-        }
-      }, 320);
+      addDiagnosticLog('open:native-click-retry', { chatId });
+      if (await waitForChatLocation(chatId, 2600)) return true;
+
+      if (location.href === before && !isChatLocation(chatId)) {
+        addDiagnosticLog('open:native-click-no-change-no-hard-navigation', { chatId, before });
+        markFallbackChatOpening(chatId, 'failed');
+      }
       return true;
     }
-    if (fallbackHref) {
-      forceOpenChat(chatId, fallbackHref);
+
+    const href = chatHref(chatId, fallbackHref);
+    const url = new URL(href, location.href);
+    if (url.href === location.href || isChatLocation(chatId)) return false;
+
+    if (pageBridgeOpenChat(chatId, fallbackHref) && await waitForChatLocation(chatId, 900)) {
+      addDiagnosticLog('open:bridge-only-success', { chatId });
       return true;
     }
-    forceOpenChat(chatId);
+
+    addDiagnosticLog('open:no-native-anchor-no-hard-navigation', { chatId, href: url.href });
+    markFallbackChatOpening(chatId, 'failed');
     return false;
+  }
+
+  function scrollHistoryToLoad(chatId) {
+    const sidebar = historyScrollContainer();
+    if (!sidebar) return;
+
+    const sortedIds = Object.keys(state.known || {}).sort((a, b) => {
+      const activityA = state.known[a]?.activity || 0;
+      const activityB = state.known[b]?.activity || 0;
+      return activityB - activityA;
+    });
+
+    const chatIndex = sortedIds.indexOf(chatId);
+    if (chatIndex === -1) {
+      sidebar.scrollTop = sidebar.scrollHeight;
+      return;
+    }
+
+    const maxScroll = Math.max(0, sidebar.scrollHeight - sidebar.clientHeight);
+    const ratio = sortedIds.length <= 1 ? 0 : chatIndex / (sortedIds.length - 1);
+    const targetScroll = Math.max(0, Math.min(maxScroll, maxScroll * ratio));
+    sidebar.scrollTo({ top: targetScroll, behavior: 'smooth' });
+  }
+
+  async function findNativeAnchorByScrolling(chatId, maxRounds = 18) {
+    const sidebar = historyScrollContainer();
+    if (!sidebar) return null;
+
+    const sortedIds = Object.keys(state.known || {}).sort((a, b) => {
+      const activityA = state.known[a]?.activity || 0;
+      const activityB = state.known[b]?.activity || 0;
+      return activityB - activityA;
+    });
+    const chatIndex = sortedIds.indexOf(chatId);
+    const maxScroll = Math.max(0, sidebar.scrollHeight - sidebar.clientHeight);
+    const ratio = chatIndex >= 0 && sortedIds.length > 1
+      ? chatIndex / (sortedIds.length - 1)
+      : 1;
+    const estimatedTop = Math.max(0, Math.min(maxScroll, maxScroll * ratio));
+    const step = Math.max(220, sidebar.clientHeight * 0.72);
+    const targets = [estimatedTop];
+
+    for (let offset = 1; targets.length < maxRounds; offset += 1) {
+      targets.push(Math.max(0, estimatedTop - offset * step));
+      if (targets.length >= maxRounds) break;
+      targets.push(Math.min(maxScroll, estimatedTop + offset * step));
+    }
+    if (!targets.includes(maxScroll)) targets.push(maxScroll);
+    if (!targets.includes(0)) targets.push(0);
+
+    for (let attempt = 0; attempt < targets.length; attempt += 1) {
+      const top = targets[attempt];
+      addDiagnosticLog('open:targeted-scroll-attempt', {
+        chatId,
+        attempt,
+        top: Math.round(top),
+        maxScroll: Math.round(maxScroll),
+      });
+      sidebar.scrollTop = top;
+      sidebar.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await sleep(attempt < 3 ? 280 : 420);
+      scanNativeChats();
+      const anchor = nativeAnchorForChat(chatId);
+      if (anchor) {
+        addDiagnosticLog('open:targeted-scroll-found', { chatId, attempt });
+        return anchor;
+      }
+    }
+
+    addDiagnosticLog('open:targeted-scroll-not-found', { chatId, rounds: targets.length });
+    return null;
   }
 
   async function openNativeOptionsForChat(chatId, anchorElement) {
@@ -2674,6 +3804,7 @@
         chats: chatIds.length,
         ungroupedChats: ungroupedChatIds.length,
         knownChats: knownChatIds.length,
+        prompts: promptState.items.length,
       },
       state: {
         version: 2,
@@ -2682,6 +3813,11 @@
           : JSON.parse(JSON.stringify(state.tree)),
         known,
       },
+      prompts: {
+        version: 1,
+        items: promptState.items.map((item) => ({ ...item })),
+        updatedAt: promptState.updatedAt || 0,
+      },
     };
     const json = JSON.stringify(payload, null, 2);
     const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
@@ -2689,11 +3825,23 @@
     const anchor = document.createElement('a');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     anchor.href = url;
-    anchor.download = `chatgpt-conversation-groups-${stamp}.json`;
+    anchor.download = `chatgpt-helper-data-${stamp}.json`;
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function registerUserscriptMenuCommands() {
+    if (typeof GM_registerMenuCommand !== 'function') return;
+    GM_registerMenuCommand('导出 ChatGPT 辅助器数据（分组+提示词）', () => exportGroupData());
+    GM_registerMenuCommand('打开提示词库', () => {
+      ensurePromptButton();
+      const button = document.getElementById(PROMPT_BUTTON_ID);
+      if (button) togglePromptPanel(button);
+      else window.alert('没有找到 ChatGPT 输入框，暂时无法打开提示词库。');
+    });
+    GM_registerMenuCommand('复制诊断日志', () => copyDiagnosticLogs());
   }
 
   function sanitizeKnownRecord(record) {
@@ -2758,9 +3906,17 @@
         known[chatId] = sanitizeKnownRecord(source.known[chatId]);
       });
     }
+    const promptSource = raw?.prompts?.items
+      || source.prompts?.items
+      || raw?.promptState?.items
+      || [];
+    const prompts = Array.isArray(promptSource)
+      ? promptSource.map((item) => normalizePromptItem(item)).filter(Boolean).slice(0, 300)
+      : [];
     return {
       tree,
       known,
+      prompts,
       folders: (() => {
         const count = (nodes) => nodes.reduce((total, node) => (
           total + (node.type === 'folder' ? 1 + count(node.children) : 0)
@@ -2768,6 +3924,7 @@
         return count(tree);
       })(),
       chats: seenChats.size,
+      promptCount: prompts.length,
     };
   }
 
@@ -2788,13 +3945,20 @@
   function importGroupData(imported, mode) {
     if (mode === 'replace') {
       if (!window.confirm(
-        `将用备份中的 ${imported.folders} 个分组、${imported.chats} 条对话替换本机分组数据。确定继续吗？`
+        `将用备份中的 ${imported.folders} 个分组、${imported.chats} 条对话、${imported.promptCount || 0} 条提示词替换本机数据。确定继续吗？`
       )) return false;
       state.tree = imported.tree;
       state.known = {
         ...state.known,
         ...imported.known,
       };
+      if (Array.isArray(imported.prompts)) {
+        promptState = {
+          version: 1,
+          items: imported.prompts,
+          updatedAt: Date.now(),
+        };
+      }
     } else {
       const existingChatIds = classifiedChatIds();
       const importedTree = pruneImportedDuplicates(imported.tree, existingChatIds);
@@ -2803,8 +3967,23 @@
         ...imported.known,
         ...state.known,
       };
+      if (Array.isArray(imported.prompts) && imported.prompts.length) {
+        const seenPromptKeys = new Set(promptState.items.map((item) => (
+          `${item.title}\n${item.content}`
+        )));
+        imported.prompts.forEach((item) => {
+          const key = `${item.title}\n${item.content}`;
+          if (seenPromptKeys.has(key)) return;
+          seenPromptKeys.add(key);
+          promptState.items.push({
+            ...item,
+            id: uid('prompt'),
+          });
+        });
+      }
     }
     saveState(true, mode === 'replace');
+    savePromptState();
     queueRender();
     return true;
   }
@@ -2820,7 +3999,7 @@
       const completed = importGroupData(imported, pendingImportMode);
       if (completed) {
         window.alert(
-          `导入完成：${imported.folders} 个分组，${imported.chats} 条已分组对话。`
+          `导入完成：${imported.folders} 个分组，${imported.chats} 条已分组对话，${imported.promptCount || 0} 条提示词。`
         );
       }
     } catch (error) {
@@ -2934,13 +4113,16 @@
     const chatCount = classifiedChatIdList().length;
     const snapshotCount = recoverySnapshots().length;
     menu.innerHTML = `
-      <div class="cgpt-menu-title">分组数据 · ${folderCount} 个分组 / ${chatCount} 条对话</div>
-      <button data-cgpt-action="export-data">导出分组数据（JSON）</button>
+      <div class="cgpt-menu-title">辅助器数据 · ${folderCount} 个分组 / ${chatCount} 条对话 / ${promptState.items.length} 条提示词</div>
+      <button data-cgpt-action="export-data">导出全部数据（分组+提示词）</button>
       <div class="cgpt-menu-divider"></div>
       <button data-cgpt-action="import-data-merge">导入并合并…</button>
       <button data-cgpt-action="import-data-replace">导入并替换…</button>
       <div class="cgpt-menu-divider"></div>
-      <button data-cgpt-action="restore-snapshot">恢复历史分组${snapshotCount ? `（${snapshotCount}）` : ''}</button>`;
+      <button data-cgpt-action="restore-snapshot">恢复历史分组${snapshotCount ? `（${snapshotCount}）` : ''}</button>
+      <div class="cgpt-menu-divider"></div>
+      <button data-cgpt-action="copy-diagnostics">复制诊断日志（${diagnosticLogs.length}）</button>
+      <button data-cgpt-action="clear-diagnostics">清空诊断日志</button>`;
     menu.style.left = `${Math.max(8, Math.min(innerWidth - 220, rect.right - 210))}px`;
     menu.style.top = `${Math.max(8, Math.min(innerHeight - 190, rect.bottom + 4))}px`;
     menu.hidden = false;
@@ -3201,10 +4383,10 @@
     const rowRect = row.getBoundingClientRect();
     const sameTurn = row.closest?.('[data-testid^="conversation-turn"], [data-message-author-role], article, [class*="group/conversation-turn"]');
     const sameTurnImages = sameTurn
-      ? contentImageElements(sameTurn).filter((img) => {
+      ? broadImageElements(sameTurn, 24).filter((img) => {
         const rect = img.getBoundingClientRect();
         const gap = rowRect.top - rect.bottom;
-        return gap > -8 && gap < Math.max(320, innerHeight * 0.36);
+        return gap > -100 && gap < Math.max(600, innerHeight * 0.5);
       })
       : [];
     if (sameTurnImages.length) {
@@ -3216,21 +4398,21 @@
       if (ancestor === document.body || ancestor === document.documentElement || ancestor.matches?.('main')) break;
       const rect = ancestor.getBoundingClientRect?.();
       if (!rect || rect.height > Math.max(1400, innerHeight * 1.65)) continue;
-      const images = contentImageElements(ancestor)
+      const images = broadImageElements(ancestor, 24)
         .filter((img) => {
           const imgRect = img.getBoundingClientRect();
           const gap = rowRect.top - imgRect.bottom;
-          return gap > -8 && gap < Math.max(360, innerHeight * 0.42);
+          return gap > -100 && gap < Math.max(600, innerHeight * 0.5);
         });
       if (images.length) return { container: ancestor, images };
     }
 
-    const candidates = contentImageElements(document)
+    const candidates = broadImageElements(document, 24)
       .map((img) => ({ img, rect: img.getBoundingClientRect() }))
       .filter(({ rect }) => {
         const verticalGap = rowRect.top - rect.bottom;
-        return verticalGap > -8
-          && verticalGap < Math.max(860, innerHeight * 0.9)
+        return verticalGap > -100
+          && verticalGap < Math.max(1000, innerHeight * 1.0)
           && overlapRatio(rect, rowRect) > 0.08;
       })
       .sort((a, b) => {
@@ -3242,7 +4424,7 @@
 
     const nearestBottom = candidates[0].rect.bottom;
     const images = candidates
-      .filter(({ rect }) => Math.abs(rect.bottom - nearestBottom) < Math.max(260, innerHeight * 0.32))
+      .filter(({ rect }) => Math.abs(rect.bottom - nearestBottom) < Math.max(400, innerHeight * 0.45))
       .map(({ img }) => img);
     const container = imageTurnContainer(images[0]) || row.parentElement;
     return { container, images };
@@ -3616,14 +4798,40 @@
     }, delay);
   }
 
+  async function directDownloadImages(images, onProgress = null) {
+    const urls = [];
+    const seen = new Set();
+    images.forEach((img) => {
+      const url = imageUrlForDirectDownload(img);
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      urls.push(url);
+    });
+    const usableUrls = urls.filter((url) => !/^data:image\/svg/i.test(url));
+    if (!usableUrls.length) return 0;
+    let ok = 0;
+    for (let index = 0; index < usableUrls.length; index += 1) {
+      if (onProgress) {
+        try { onProgress(index + 1, usableUrls.length); } catch {}
+      }
+      const success = await gmDownload(usableUrls[index], directDownloadName(index, usableUrls[index]));
+      if (success) ok += 1;
+      await sleep(220);
+    }
+    return ok;
+  }
+
   async function runImageDownloadShortcut(button) {
     if (button.disabled) return;
     const container = button.__cgptImageDownloadContainer
       || button.closest('[data-cgpt-image-download-container]')
       || document;
-    let images = contentImageElements(container);
-    if (!images.length && Array.isArray(button.__cgptImageDownloadImages)) {
+    let images = [];
+    if (Array.isArray(button.__cgptImageDownloadImages)) {
       images = button.__cgptImageDownloadImages.filter((img) => img?.isConnected);
+    }
+    if (!images.length) {
+      images = broadImageElements(container, 24);
     }
     if (!images.length) {
       window.alert('\u8fd9\u4e2a\u56de\u590d\u91cc\u6682\u65f6\u6ca1\u6709\u627e\u5230\u53ef\u4e0b\u8f7d\u7684\u56fe\u7247\u3002');
@@ -3634,60 +4842,30 @@
     const originalText = label?.textContent || imageButtonLabel(images.length);
     button.disabled = true;
     setImageButtonStatus(button, '\u51c6\u5907\u2026');
-    let exactCount = 0;
-    let fallbackCount = 0;
 
+    let downloaded = 0;
     try {
-      logImageDownloadStep('开始桥接原生下载', {
+      logImageDownloadStep('\u5f00\u59cb\u76f4\u63a5\u4e0b\u8f7d', {
         imageCount: images.length,
         containerText: compactTitle(container.innerText || '').slice(0, 120),
       });
-      const downloadButton = await openPreviewAndFindDownloadButton(images, label);
-      if (!downloadButton) throw new Error('\u6ca1\u6709\u627e\u5230\u9884\u89c8\u9875\u53f3\u4e0a\u89d2\u7684\u4e0b\u8f7d\u6309\u94ae');
-      logImageDownloadStep('找到预览下载按钮', {
-        text: elementText(downloadButton),
+      downloaded = await directDownloadImages(images, (current, total) => {
+        setImageButtonStatus(button, `${current}/${total}`);
       });
-      setImageButtonStatus(button, '\u83dc\u5355\u2026');
-      dispatchNativeClick(downloadButton);
-      const menuItem = await waitForValue(() => visibleNativeDownloadMenuItem(), 2600, 70);
-      if (!menuItem) throw new Error('\u6ca1\u6709\u627e\u5230\u201c\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247\u201d\u7684\u83dc\u5355\u9879');
-      exactCount = countFromText(elementText(menuItem));
-      logImageDownloadStep('找到下载菜单项', {
-        text: elementText(menuItem),
-        exactCount,
-      });
-      if (exactCount) {
-        button.dataset.cgptExactCount = String(exactCount);
-        button.title = `\u4e0b\u8f7d\u672c\u7ec4\u4e2d\u7684 ${exactCount} \u5f20\u56fe\u7247`;
+      if (!downloaded) {
+        window.alert('\u4e0b\u8f7d\u5931\u8d25\u4e86\uff0c\u53ef\u80fd\u662f\u7f51\u7edc\u95ee\u9898\u6216\u8005\u56fe\u7247\u5730\u5740\u53d8\u4e86\u3002\u6253\u5f00\u63a7\u5236\u53f0\u53ef\u4ee5\u770b\u5230\u8be6\u7ec6\u65e5\u5fd7\u3002');
       }
-      setImageButtonStatus(button, '\u4e0b\u8f7d\u2026');
-      dispatchNativeClick(menuItem);
-      logImageDownloadStep('已点击原生下载菜单项', {
-        text: elementText(menuItem),
-      });
-      closeImagePreviewSoon();
     } catch (error) {
-      console.warn('[ChatGPT \u56fe\u7247\u4e0b\u8f7d\u5feb\u6377\u6309\u94ae] \u89e6\u53d1\u5931\u8d25\uff1a', error);
-      await closeImagePreview(80);
-      logImageDownloadStep('原生桥接失败，尝试直接下载兜底', {
-        message: error?.message || String(error),
-      });
-      setImageButtonStatus(button, '\u5907\u7528\u2026');
-      fallbackCount = await directDownloadImagesFromContainer(container, images);
-      if (!fallbackCount) {
-        window.alert('\u6ca1\u6709\u6210\u529f\u89e6\u53d1 ChatGPT \u539f\u751f\u4e0b\u8f7d\u6309\u94ae\uff0c\u5907\u7528\u56fe\u7247 URL \u4e0b\u8f7d\u4e5f\u6ca1\u6709\u6210\u529f\u3002\u8bf7\u6253\u5f00\u63a7\u5236\u53f0\u67e5\u770b\u201cChatGPT \u56fe\u7247\u4e0b\u8f7d\u5feb\u6377\u6309\u94ae\u201d\u65e5\u5fd7\u3002');
-      }
+      console.warn('[ChatGPT \u56fe\u7247\u4e0b\u8f7d\u5feb\u6377\u6309\u94ae] \u4e0b\u8f7d\u5931\u8d25\uff1a', error);
+      window.alert('\u4e0b\u8f7d\u51fa\u9519\u4e86\uff0c\u6253\u5f00\u63a7\u5236\u53f0\u770b\u8be6\u7ec6\u4fe1\u606f\u3002');
     } finally {
       window.setTimeout(() => {
         button.disabled = false;
         if (label) {
-          if (exactCount) {
+          if (downloaded) {
             label.hidden = false;
-            label.textContent = String(exactCount);
-          } else if (fallbackCount) {
-            label.hidden = false;
-            label.textContent = String(fallbackCount);
-            button.title = `\u5907\u7528\u4e0b\u8f7d\u5df2\u5c1d\u8bd5 ${fallbackCount} \u5f20\u56fe\u7247`;
+            label.textContent = String(downloaded);
+            button.title = `\u5df2\u4e0b\u8f7d ${downloaded} \u5f20\u56fe\u7247`;
           } else if (originalText) {
             label.hidden = false;
             label.textContent = originalText;
@@ -3696,7 +4874,7 @@
             label.hidden = true;
           }
         }
-      }, 900);
+      }, 600);
     }
   }
 
@@ -3706,6 +4884,7 @@
 
     if (action === 'add-folder') addFolder();
     else if (action === 'batch-group') showBatchGroupingMenu(actionElement);
+    else if (action === 'preload-history') preloadAllHistoryChats(actionElement);
     else if (action === 'condition-group') groupByTitleCondition();
     else if (action === 'data-menu') showDataMenu(actionElement);
     else if (action === 'toggle-ungrouped') {
@@ -3719,6 +4898,12 @@
     }
     else if (action === 'export-data') {
       exportGroupData();
+      closeMenu();
+    } else if (action === 'copy-diagnostics') {
+      copyDiagnosticLogs();
+      closeMenu();
+    } else if (action === 'clear-diagnostics') {
+      clearDiagnosticLogs();
       closeMenu();
     } else if (action === 'import-data-merge') {
       chooseImportFile('merge');
@@ -3810,18 +4995,14 @@
       if (proxyLink) {
         const row = proxyLink.closest('[data-chat-id]');
         const chatId = row?.dataset.chatId;
-        if (chatId && nativeAnchorForChat(chatId)) {
+        if (chatId) {
           event.preventDefault();
           event.stopPropagation();
-          const before = location.href;
-          window.dispatchEvent(new CustomEvent(PAGE_OPEN_EVENT, {
-            detail: { chatId, href: proxyLink.getAttribute('href') || '' },
-          }));
-          window.setTimeout(() => {
-            if (location.href === before && !isChatLocation(chatId)) {
-              forceOpenChat(chatId, proxyLink.getAttribute('href') || '');
-            }
-          }, 900);
+          addDiagnosticLog('click:proxy-link', {
+            chatId,
+            href: proxyLink.getAttribute('href') || '',
+          });
+          requestOpenChat(chatId, proxyLink.getAttribute('href') || '');
         }
         return;
       }
@@ -3830,21 +5011,16 @@
       if (proxyRow) {
         const chatId = proxyRow.dataset.chatId;
         const fallbackLink = proxyRow.querySelector('.cgpt-fallback-link[href]');
-        if (chatId && nativeAnchorForChat(chatId)) {
+        if (chatId) {
           event.preventDefault();
           event.stopPropagation();
-          const before = location.href;
-          window.dispatchEvent(new CustomEvent(PAGE_OPEN_EVENT, {
-            detail: { chatId, href: fallbackLink?.getAttribute('href') || '' },
-          }));
-          window.setTimeout(() => {
-            if (location.href === before && !isChatLocation(chatId)) {
-              forceOpenChat(chatId, fallbackLink?.getAttribute('href') || '');
-            }
-          }, 900);
-          return;
+          addDiagnosticLog('click:proxy-row', {
+            chatId,
+            href: fallbackLink?.getAttribute('href') || '',
+            target: event.target?.tagName || '',
+          });
+          requestOpenChat(chatId, fallbackLink?.getAttribute('href') || '');
         }
-        if (fallbackLink && event.target === proxyRow) fallbackLink.click();
         return;
       }
 
@@ -3876,6 +5052,33 @@
         return;
       }
 
+      const promptAction = event.target.closest?.('[data-cgpt-prompt-action]');
+      if (promptAction) {
+        event.preventDefault();
+        event.stopPropagation();
+        const action = promptAction.dataset.cgptPromptAction;
+        const promptId = promptAction.dataset.promptId || '';
+        if (action === 'new') {
+          editingPromptId = 'new';
+          renderPromptPanel();
+        } else if (action === 'edit') {
+          editingPromptId = promptId;
+          renderPromptPanel();
+        } else if (action === 'delete') {
+          deletePrompt(promptId);
+        } else if (action === 'insert') {
+          insertPrompt(promptId);
+        } else if (action === 'save') {
+          upsertPromptFromPanel();
+        } else if (action === 'cancel') {
+          editingPromptId = '';
+          renderPromptPanel();
+        } else if (action === 'close') {
+          closePromptPanel();
+        }
+        return;
+      }
+
       const actionElement = event.target.closest?.('[data-cgpt-action]');
       if (actionElement) {
         event.preventDefault();
@@ -3895,6 +5098,9 @@
         return;
       }
       if (!event.target.closest?.(`#${MENU_ID}`)) closeMenu();
+      if (!event.target.closest?.(`#${PROMPT_PANEL_ID}, #${PROMPT_BUTTON_ID}`)) {
+        closePromptPanel();
+      }
     }, true);
 
     document.addEventListener('change', (event) => {
@@ -3920,6 +5126,9 @@
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && !document.getElementById(RENAME_ID)?.hidden) {
         closeBatchRenameDialog();
+      }
+      if (event.key === 'Escape' && !document.getElementById(PROMPT_PANEL_ID)?.hidden) {
+        closePromptPanel();
       }
     }, true);
 
@@ -4115,11 +5324,12 @@
       const target = mutation.target.nodeType === 1
         ? mutation.target
         : mutation.target.parentElement;
-      return !target?.closest?.(`#${APP_ID}, #${HEADER_ID}, #${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}`);
+      return !target?.closest?.(`#${APP_ID}, #${HEADER_ID}, #${MENU_ID}, #${PROMPT_PANEL_ID}, #${PROMPT_BUTTON_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}`);
     });
     if (externalChange) {
       scheduleScan();
       scheduleImageDownloadButtons();
+      ensurePromptButton();
     }
   });
   observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
@@ -4128,18 +5338,25 @@
   window.setInterval(() => {
     if (location.href !== previousUrl) {
       previousUrl = location.href;
+      updateFallbackChatVisualState();
       scheduleScan();
       scheduleImageDownloadButtons();
+      ensurePromptButton();
     }
   }, 600);
   window.setInterval(() => {
     syncLegacyChanges();
     scheduleScan();
+    ensurePromptButton();
   }, 2500);
 
   if (!localStorage.getItem(STORAGE_KEY)) saveState(true);
+  installConversationTreeDebugApi();
+  registerUserscriptMenuCommands();
   bindImageDownloadEvents();
   installImageDownloadDebugApi();
+  addDiagnosticLog('script:init');
   scanNativeChats();
+  ensurePromptButton();
   scheduleImageDownloadButtons();
 })();
