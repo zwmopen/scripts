@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.14
+// @version      1.7.15
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -515,7 +515,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.14',
+      scriptVersion: '1.7.15',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -5057,9 +5057,6 @@
     window.setTimeout(() => {
       setWorkPackageButtonState(button, 'done');
       showImageDownloadToast('打包完成', true);
-      window.setTimeout(() => {
-        setWorkPackageButtonState(button, 'idle');
-      }, 2600);
     }, 3600);
   }
 
