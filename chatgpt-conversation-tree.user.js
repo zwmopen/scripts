@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.11
+// @version      1.7.13
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -36,6 +36,8 @@
   const PAGE_OPEN_EVENT = `${APP_ID}:page-open-chat`;
   const IMAGE_DOWNLOAD_CLASS = `${APP_ID}-image-download-all`;
   const IMAGE_DOWNLOAD_SLOT_CLASS = `${APP_ID}-image-download-slot`;
+  const TEXT_DOWNLOAD_CLASS = `${APP_ID}-text-download`;
+  const TEXT_DOWNLOAD_SLOT_CLASS = `${APP_ID}-text-download-slot`;
   const WORK_PACKAGE_CLASS = `${APP_ID}-work-package`;
   const IMAGE_DOWNLOAD_TOAST_ID = `${APP_ID}-image-download-toast`;
   const WORK_PACKAGE_PROTOCOL_URL = 'cgpt-workpkg://run';
@@ -513,7 +515,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.11',
+      scriptVersion: '1.7.13',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -1246,8 +1248,15 @@
         display: flex;
         margin: 7px 0 2px;
       }
+      .${TEXT_DOWNLOAD_SLOT_CLASS} {
+        display: inline-flex;
+        align-items: center;
+        margin-inline-start: 4px;
+        vertical-align: middle;
+      }
       .${IMAGE_DOWNLOAD_CLASS},
-      .${WORK_PACKAGE_CLASS} {
+      .${WORK_PACKAGE_CLASS},
+      .${TEXT_DOWNLOAD_CLASS} {
         position: relative;
         min-width: 34px;
         height: 34px;
@@ -1266,7 +1275,8 @@
         cursor: pointer;
       }
       .${IMAGE_DOWNLOAD_CLASS}:hover,
-      .${WORK_PACKAGE_CLASS}:hover {
+      .${WORK_PACKAGE_CLASS}:hover,
+      .${TEXT_DOWNLOAD_CLASS}:hover {
         background: var(--sidebar-surface-tertiary, rgba(0,0,0,.08));
       }
       .${IMAGE_DOWNLOAD_CLASS}.cgpt-image-download-done {
@@ -1290,7 +1300,8 @@
         cursor: progress;
       }
       .${IMAGE_DOWNLOAD_CLASS} svg,
-      .${WORK_PACKAGE_CLASS} svg {
+      .${WORK_PACKAGE_CLASS} svg,
+      .${TEXT_DOWNLOAD_CLASS} svg {
         width: 16px;
         height: 16px;
         flex: 0 0 16px;
@@ -4538,7 +4549,7 @@
   function contentImageElements(scope = document) {
     const root = scope === document ? (document.querySelector('main') || document.body) : scope;
     return [...root.querySelectorAll('img')].filter((img) => {
-      if (img.closest?.(`#${APP_ID}, #${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return false;
+      if (img.closest?.(`#${APP_ID}, #${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return false;
       if (img.closest?.('#history, nav, aside, [role="navigation"]')) return false;
       if (img.closest?.('[data-radix-menu-content], [data-radix-popper-content-wrapper]')) return false;
       const src = img.currentSrc || img.src || '';
@@ -4556,7 +4567,7 @@
   function broadImageElements(scope = document, minSize = 24) {
     const root = scope === document ? (document.querySelector('main') || document.body) : scope;
     return [...root.querySelectorAll('img')].filter((img) => {
-      if (img.closest?.(`#${APP_ID}, #${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return false;
+      if (img.closest?.(`#${APP_ID}, #${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return false;
       if (img.closest?.('#history, nav, aside, [role="navigation"]')) return false;
       if (img.closest?.('[data-radix-menu-content], [data-radix-popper-content-wrapper]')) return false;
       const src = img.currentSrc || img.src || '';
@@ -4632,7 +4643,7 @@
 
   function findImageActionRow(container) {
     const buttons = [...container.querySelectorAll('button')]
-      .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`));
+      .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`));
     const scored = buttons.map((button) => {
       const text = elementText(button);
       const score = /\u590d\u5236|copy|\u66f4\u591a|more|\u9009\u9879|options|\u5206\u4eab|share/i.test(text) ? 10 : 0;
@@ -4657,7 +4668,7 @@
     const rect = row.getBoundingClientRect?.();
     if (!rect || rect.width < 34 || rect.height < 18 || rect.height > 72) return false;
     const buttons = [...row.querySelectorAll('button')]
-      .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(button));
+      .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(button));
     if (buttons.length < 1 || buttons.length > 8) return false;
     const rowText = elementText(row);
     const hasKnownAction = buttons.some((button) => {
@@ -4672,7 +4683,7 @@
     const main = document.querySelector('main') || document.body;
     const rows = new Set();
     [...main.querySelectorAll('button')].forEach((button) => {
-      if (!isElementVisible(button) || button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return;
+      if (!isElementVisible(button) || button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return;
       let row = button.parentElement;
       for (let depth = 0; row && depth < 5; depth += 1, row = row.parentElement) {
         if (isLikelyImageActionRow(row)) {
@@ -4691,12 +4702,13 @@
 
   function nearbyImagesForActionRow(row) {
     const rowRect = row.getBoundingClientRect();
+    const maxActionGap = Math.max(96, Math.min(170, innerHeight * 0.18));
     const sameTurn = row.closest?.('[data-testid^="conversation-turn"], [data-message-author-role], article, [class*="group/conversation-turn"]');
     const sameTurnImages = sameTurn
       ? broadImageElements(sameTurn, 24).filter((img) => {
         const rect = img.getBoundingClientRect();
         const gap = rowRect.top - rect.bottom;
-        return gap > -100 && gap < Math.max(600, innerHeight * 0.5);
+        return gap > -70 && gap < maxActionGap && overlapRatio(rect, rowRect) > 0.08;
       })
       : [];
     if (sameTurnImages.length) {
@@ -4712,7 +4724,7 @@
         .filter((img) => {
           const imgRect = img.getBoundingClientRect();
           const gap = rowRect.top - imgRect.bottom;
-          return gap > -100 && gap < Math.max(600, innerHeight * 0.5);
+          return gap > -70 && gap < maxActionGap && overlapRatio(imgRect, rowRect) > 0.08;
         });
       if (images.length) return { container: ancestor, images };
     }
@@ -4721,8 +4733,8 @@
       .map((img) => ({ img, rect: img.getBoundingClientRect() }))
       .filter(({ rect }) => {
         const verticalGap = rowRect.top - rect.bottom;
-        return verticalGap > -100
-          && verticalGap < Math.max(1000, innerHeight * 1.0)
+        return verticalGap > -70
+          && verticalGap < maxActionGap
           && overlapRatio(rect, rowRect) > 0.08;
       })
       .sort((a, b) => {
@@ -4852,6 +4864,114 @@
     showImageDownloadToast.timer = window.setTimeout(() => {
       toast.remove();
     }, 2600);
+  }
+
+  function textDownloadFilename(text = '') {
+    const firstLine = String(text || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean) || 'chatgpt-text';
+    const safe = firstLine
+      .replace(/[\\/:*?"<>|]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 42) || 'chatgpt-text';
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    return `${safe}-${stamp}.txt`;
+  }
+
+  function textContentForDownload(card) {
+    if (!card) return '';
+    const clone = card.cloneNode(true);
+    clone.querySelectorAll?.(`button, svg, .${TEXT_DOWNLOAD_SLOT_CLASS}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, [aria-hidden="true"]`)
+      .forEach((element) => element.remove());
+    return String(clone.innerText || clone.textContent || '')
+      .replace(/^\s*(text|txt|文本)\s*/i, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  function textCardForCopyButton(copyButton) {
+    if (!copyButton || copyButton.closest?.(`.${TEXT_DOWNLOAD_SLOT_CLASS}, .${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return null;
+    const candidates = [];
+    let node = copyButton.parentElement;
+    for (let depth = 0; node && depth < 7; depth += 1, node = node.parentElement) {
+      if (node.matches?.('main, article, [data-testid^="conversation-turn"], [data-message-author-role]')) break;
+      if (node.querySelector?.('img')) continue;
+      const rect = node.getBoundingClientRect?.();
+      if (!rect || rect.width < 160 || rect.height < 42 || rect.height > 360) continue;
+      const text = textContentForDownload(node);
+      if (text.length < 12) continue;
+      const buttonCount = node.querySelectorAll?.('button')?.length || 0;
+      const hasTextBadge = /\b(text|txt)\b|文本/i.test(elementText(node));
+      const score = (hasTextBadge ? 40 : 0)
+        + (rect.height < 220 ? 12 : 0)
+        + (buttonCount <= 4 ? 10 : 0)
+        - Math.max(0, rect.height - 180) / 20;
+      candidates.push({ node, score });
+    }
+    return candidates.sort((a, b) => b.score - a.score)[0]?.node || null;
+  }
+
+  function ensureTextDownloadButton(card, copyButton) {
+    if (!card || !copyButton) return;
+    let slot = copyButton.parentElement?.querySelector?.(`:scope > .${TEXT_DOWNLOAD_SLOT_CLASS}`) || null;
+    if (!slot && copyButton.nextElementSibling?.classList?.contains(TEXT_DOWNLOAD_SLOT_CLASS)) {
+      slot = copyButton.nextElementSibling;
+    }
+    if (!slot) {
+      slot = document.createElement('span');
+      slot.className = TEXT_DOWNLOAD_SLOT_CLASS;
+      copyButton.insertAdjacentElement('afterend', slot);
+    }
+    let button = slot.querySelector(`.${TEXT_DOWNLOAD_CLASS}`);
+    if (!button) {
+      button = document.createElement('button');
+      button.type = 'button';
+      button.className = TEXT_DOWNLOAD_CLASS;
+      button.title = '下载这个文本为 TXT';
+      button.setAttribute('aria-label', '下载 TXT');
+      button.innerHTML = icons.download;
+      slot.append(button);
+    }
+    button.__cgptTextDownloadCard = card;
+  }
+
+  function refreshTextDownloadButtons() {
+    const main = document.querySelector('main') || document.body;
+    [...main.querySelectorAll(`.${TEXT_DOWNLOAD_SLOT_CLASS}`)].forEach((slot) => {
+      const copyButton = slot.previousElementSibling;
+      const card = copyButton ? textCardForCopyButton(copyButton) : null;
+      if (!card) slot.remove();
+    });
+    [...main.querySelectorAll('button')].forEach((button) => {
+      if (!isElementVisible(button) || button.closest?.(`#${APP_ID}, #${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return;
+      const label = elementText(button);
+      if (!/\u590d\u5236|copy/i.test(label)) return;
+      const card = textCardForCopyButton(button);
+      if (!card) return;
+      ensureTextDownloadButton(card, button);
+    });
+  }
+
+  function triggerTextDownloadButton(button, event = null) {
+    if (!button) return;
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    event?.stopImmediatePropagation?.();
+    const card = button.__cgptTextDownloadCard || textCardForCopyButton(button.closest?.(`.${TEXT_DOWNLOAD_SLOT_CLASS}`)?.previousElementSibling);
+    const text = textContentForDownload(card);
+    if (!text) {
+      window.alert('这个文本框里暂时没有找到可下载的文本。');
+      return;
+    }
+    const blob = new Blob([`${text}\n`], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = textDownloadFilename(text);
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 800);
+    showImageDownloadToast('TXT 下载完成', true);
   }
 
   function triggerImageDownloadButton(button, event = null) {
@@ -4998,11 +5118,16 @@
 
   function refreshImageDownloadButtons() {
     actionRowsOnPage().forEach((row) => {
-      if (row.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return;
+      const existingSlot = row.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
       const group = nearbyImagesForActionRow(row);
-      if (!group?.images?.length) return;
+      if (!group?.images?.length) {
+        existingSlot?.remove();
+        return;
+      }
+      if (existingSlot) return;
       ensureImageDownloadButton(group.container, group.images, row);
     });
+    refreshTextDownloadButtons();
   }
 
   function scheduleImageDownloadButtons() {
@@ -5017,6 +5142,11 @@
       const workPackageButton = event.target.closest?.(`.${WORK_PACKAGE_CLASS}`);
       if (workPackageButton) {
         triggerWorkPackageButton(workPackageButton, event);
+        return;
+      }
+      const textDownloadButton = event.target.closest?.(`.${TEXT_DOWNLOAD_CLASS}`);
+      if (textDownloadButton) {
+        triggerTextDownloadButton(textDownloadButton, event);
         return;
       }
       const imageDownloadButton = event.target.closest?.(`.${IMAGE_DOWNLOAD_CLASS}`);
@@ -5046,7 +5176,7 @@
 
     const candidates = [...document.querySelectorAll('button, [role="button"], a')]
       .filter((button) => {
-        if (button.closest?.(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, #${APP_ID}, #${MENU_ID}`)) return false;
+        if (button.closest?.(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}, #${APP_ID}, #${MENU_ID}`)) return false;
         const rect = button.getBoundingClientRect?.();
         if (!rect || rect.width < 5 || rect.height < 5) return false;
         if (rect.right < 0 || rect.bottom < 0 || rect.left > innerWidth || rect.top > innerHeight) return false;
@@ -5093,7 +5223,7 @@
     const candidates = scopes.flatMap((scope) => [
       ...scope.querySelectorAll('[role="menuitem"], button, a')
     ]).filter((element) => (
-      !element.closest?.(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)
+      !element.closest?.(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)
       && isElementVisible(element)
       && /\u4e0b\u8f7d|download/i.test(elementText(element))
     ));
@@ -5799,7 +5929,7 @@
       const target = mutation.target.nodeType === 1
         ? mutation.target
         : mutation.target.parentElement;
-      return !target?.closest?.(`#${APP_ID}, #${HEADER_ID}, #${MENU_ID}, #${PROMPT_PANEL_ID}, #${PROMPT_BUTTON_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}`);
+      return !target?.closest?.(`#${APP_ID}, #${HEADER_ID}, #${MENU_ID}, #${PROMPT_PANEL_ID}, #${PROMPT_BUTTON_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`);
     });
     if (externalChange) {
       scheduleScan();
