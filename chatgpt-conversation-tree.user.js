@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.15
+// @version      1.7.16
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -97,6 +97,7 @@
   let scanTimer = 0;
   let saveTimer = 0;
   let renderTimer = 0;
+  let promptButtonTimer = 0;
   let rendering = false;
   let ignoreMutationsUntil = 0;
   let eventsBound = false;
@@ -515,7 +516,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.15',
+      scriptVersion: '1.7.16',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -2004,6 +2005,13 @@
     return true;
   }
 
+  function schedulePromptButton(delay = 180) {
+    window.clearTimeout(promptButtonTimer);
+    promptButtonTimer = window.setTimeout(() => {
+      runWhenIdle(() => ensurePromptButton(), 700);
+    }, delay);
+  }
+
   function closePromptPanel() {
     const panel = document.getElementById(PROMPT_PANEL_ID);
     const button = document.getElementById(PROMPT_BUTTON_ID);
@@ -2614,7 +2622,7 @@
 
   function scheduleScan() {
     clearTimeout(scanTimer);
-    scanTimer = window.setTimeout(scanNativeChats, 160);
+    scanTimer = window.setTimeout(() => runWhenIdle(scanNativeChats, 900), 240);
   }
 
   function persistAndRender(immediate = false, allowEmpty = false) {
@@ -4588,6 +4596,14 @@
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
+  function runWhenIdle(callback, timeout = 900) {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(callback, { timeout });
+      return;
+    }
+    window.setTimeout(callback, Math.min(timeout, 260));
+  }
+
   function broadImageElements(scope = document, minSize = 24) {
     const root = scope === document ? (document.querySelector('main') || document.body) : scope;
     return [...root.querySelectorAll('img')].filter((img) => {
@@ -5153,7 +5169,9 @@
 
   function scheduleImageDownloadButtons() {
     window.clearTimeout(imageToolsTimer);
-    imageToolsTimer = window.setTimeout(refreshImageDownloadButtons, 180);
+    imageToolsTimer = window.setTimeout(() => {
+      runWhenIdle(refreshImageDownloadButtons, 1200);
+    }, 420);
   }
 
   function bindImageDownloadEvents() {
@@ -5955,10 +5973,10 @@
     if (externalChange) {
       scheduleScan();
       scheduleImageDownloadButtons();
-      ensurePromptButton();
+      schedulePromptButton();
     }
   });
-  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
 
   let previousUrl = location.href;
   window.setInterval(() => {
@@ -5967,14 +5985,13 @@
       updateFallbackChatVisualState();
       scheduleScan();
       scheduleImageDownloadButtons();
-      ensurePromptButton();
+      schedulePromptButton(80);
     }
   }, 600);
   window.setInterval(() => {
     syncLegacyChanges();
-    scheduleScan();
-    ensurePromptButton();
-  }, 2500);
+    schedulePromptButton(400);
+  }, 6000);
 
   if (!localStorage.getItem(STORAGE_KEY)) saveState(true);
   installConversationTreeDebugApi();
