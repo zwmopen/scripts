@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.13
+// @version      1.7.14
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -515,7 +515,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.13',
+      scriptVersion: '1.7.14',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -2175,15 +2175,40 @@
 
   function composerSendButton(input = promptComposerInput()) {
     const composer = composerRootFor(input);
-    const scope = composer || document;
-    const buttons = [...scope.querySelectorAll('button')]
+    const inputRect = input?.getBoundingClientRect?.();
+    const scopes = [composer, document].filter(Boolean);
+    const buttons = [...new Set(scopes.flatMap((scope) => [...scope.querySelectorAll('button')]))]
       .filter((button) => (
         button.id !== PROMPT_BUTTON_ID
-        && !button.closest?.(`#${APP_ID}, #${MENU_ID}, #${PROMPT_PANEL_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}`)
+        && !button.closest?.(`#${APP_ID}, #${MENU_ID}, #${PROMPT_PANEL_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)
         && isElementVisible(button)
         && !button.disabled
         && button.getAttribute('aria-disabled') !== 'true'
       ));
+    const rightEdgeButton = buttons
+      .map((button) => {
+        const rect = button.getBoundingClientRect();
+        const text = compactTitle(`${button.innerText || ''} ${button.getAttribute('aria-label') || ''} ${button.title || ''} ${button.getAttribute('data-testid') || ''}`);
+        const html = button.innerHTML || '';
+        let score = 0;
+        if (inputRect) {
+          const centerY = rect.top + rect.height / 2;
+          const inputCenterY = inputRect.top + inputRect.height / 2;
+          if (rect.left > inputRect.left + inputRect.width * 0.72) score += 70;
+          if (rect.right > inputRect.right - 80) score += 55;
+          if (Math.abs(centerY - inputCenterY) < 48) score += 45;
+          if (rect.left >= inputRect.left && rect.right <= inputRect.right + 90) score += 20;
+        }
+        if (/\u53d1\u9001|send|submit|arrow-up/i.test(text)) score += 60;
+        if (/send-button|composer-submit|submit-button/i.test(text)) score += 80;
+        if (button.querySelector('svg')) score += 20;
+        if (/M12|arrow-up|path/i.test(html)) score += 12;
+        if (rect.width >= 30 && rect.width <= 62 && rect.height >= 30 && rect.height <= 62) score += 28;
+        return { button, score, rect };
+      })
+      .filter((item) => item.score >= 105)
+      .sort((a, b) => b.score - a.score || b.rect.right - a.rect.right)[0]?.button;
+    if (rightEdgeButton) return rightEdgeButton;
     const explicitSendButton = buttons.find((button) => {
       const testId = button.getAttribute('data-testid') || '';
       const aria = button.getAttribute('aria-label') || '';
@@ -2200,7 +2225,6 @@
     return buttons
       .map((button) => {
         const rect = button.getBoundingClientRect();
-        const inputRect = input?.getBoundingClientRect?.();
         const html = button.innerHTML || '';
         let score = 0;
         if (inputRect && rect.left > inputRect.left + inputRect.width * 0.62) score += 30;
@@ -2213,7 +2237,6 @@
       ? buttons
         .map((button) => {
           const rect = button.getBoundingClientRect();
-          const inputRect = input?.getBoundingClientRect?.();
           let score = 0;
           if (inputRect && rect.left > inputRect.left + inputRect.width * 0.62) score += 30;
           if (inputRect && Math.abs((rect.top + rect.height / 2) - (inputRect.top + inputRect.height / 2)) < 80) score += 20;
@@ -3144,8 +3167,8 @@
   function dispatchNativeClick(element) {
     if (!element) return false;
     const rect = element.getBoundingClientRect?.() || {};
-    const clientX = Math.max(1, Math.round((rect.left || 0) + Math.min(24, (rect.width || 40) / 2)));
-    const clientY = Math.max(1, Math.round((rect.top || 0) + Math.min(14, (rect.height || 28) / 2)));
+    const clientX = Math.max(1, Math.round((rect.left || 0) + (rect.width || 40) / 2));
+    const clientY = Math.max(1, Math.round((rect.top || 0) + (rect.height || 28) / 2));
     ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach((type) => {
       const EventClass = type.startsWith('pointer') && typeof PointerEvent === 'function'
         ? PointerEvent
@@ -3161,6 +3184,7 @@
         clientY,
       }));
     });
+    try { element.click?.(); } catch {}
     return true;
   }
 
