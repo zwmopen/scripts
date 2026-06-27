@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.10
+// @version      1.7.11
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -513,7 +513,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.10',
+      scriptVersion: '1.7.11',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -2173,6 +2173,14 @@
         && !button.disabled
         && button.getAttribute('aria-disabled') !== 'true'
       ));
+    const explicitSendButton = buttons.find((button) => {
+      const testId = button.getAttribute('data-testid') || '';
+      const aria = button.getAttribute('aria-label') || '';
+      const title = button.title || '';
+      return /send-button|composer-submit|submit-button/i.test(testId)
+        || /(^|\s)(send|submit)(\s|$)/i.test(`${aria} ${title}`);
+    });
+    if (explicitSendButton) return explicitSendButton;
     const sendButton = buttons.find((button) => {
       const text = compactTitle(`${button.innerText || ''} ${button.getAttribute('aria-label') || ''} ${button.title || ''} ${button.getAttribute('data-testid') || ''}`);
       return /发送|send|submit/i.test(text);
@@ -2224,14 +2232,17 @@
     return true;
   }
 
-  function submitComposerAfterPrompt() {
+  async function submitComposerAfterPrompt() {
     const input = promptComposerInput();
     if (!input) return false;
-    const sendButton = composerSendButton(input);
+    input.focus();
+    await sleep(120);
+    const sendButton = await waitForValue(() => composerSendButton(input), 2200, 80);
     if (sendButton) {
       dispatchNativeClick(sendButton);
       return true;
     }
+    await sleep(120);
     return dispatchEnterToComposer(input);
   }
 
@@ -2241,8 +2252,8 @@
     const ok = insertTextIntoComposer(item.content);
     if (ok) {
       closePromptPanel();
-      window.setTimeout(() => {
-        const submitted = submitComposerAfterPrompt();
+      window.setTimeout(async () => {
+        const submitted = await submitComposerAfterPrompt();
         addDiagnosticLog('prompt:insert-submit', { promptId, title: item.title, ok, submitted });
       }, 80);
     } else {
