@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.16
+// @version      1.7.17
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -516,7 +516,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.16',
+      scriptVersion: '1.7.17',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -5327,6 +5327,26 @@
     });
   }
 
+  async function downloadUrlsConcurrently(urls, onProgress = null, concurrency = 4) {
+    const total = urls.length;
+    const limit = Math.max(1, Math.min(8, Number(concurrency || 4), total || 1));
+    let nextIndex = 0;
+    let ok = 0;
+    const worker = async () => {
+      while (nextIndex < total) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const success = await gmDownload(urls[index], directDownloadName(index, urls[index]));
+        if (success) ok += 1;
+        if (onProgress) {
+          try { onProgress(ok, total); } catch {}
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: limit }, worker));
+    return ok;
+  }
+
   async function directDownloadImagesFromContainer(container, seedImages = []) {
     const allImages = [
       ...seedImages,
@@ -5348,13 +5368,7 @@
       sample: usableUrls.slice(0, 3),
     });
     if (!usableUrls.length) return 0;
-    let ok = 0;
-    for (let index = 0; index < usableUrls.length; index += 1) {
-      const success = await gmDownload(usableUrls[index], directDownloadName(index, usableUrls[index]));
-      if (success) ok += 1;
-      await sleep(180);
-    }
-    return ok;
+    return downloadUrlsConcurrently(usableUrls, null, 4);
   }
 
   async function openPreviewAndFindDownloadButton(images, label = null) {
@@ -5441,19 +5455,10 @@
     });
     const usableUrls = urls.filter((url) => !/^data:image\/svg/i.test(url));
     if (!usableUrls.length) return 0;
-    let ok = 0;
     if (onProgress) {
       try { onProgress(0, usableUrls.length); } catch {}
     }
-    for (let index = 0; index < usableUrls.length; index += 1) {
-      const success = await gmDownload(usableUrls[index], directDownloadName(index, usableUrls[index]));
-      if (success) ok += 1;
-      if (onProgress) {
-        try { onProgress(ok, usableUrls.length); } catch {}
-      }
-      await sleep(220);
-    }
-    return ok;
+    return downloadUrlsConcurrently(usableUrls, onProgress, 4);
   }
 
   async function runImageDownloadShortcut(button) {
