@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.5.6
+// @version      1.5.7
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT“最近”列表，并给图片组增加外置下载全部快捷按钮。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -3253,6 +3253,26 @@
     return count > 1 ? String(count) : '';
   }
 
+  function uniqueImageUrls(images = []) {
+    const urls = [];
+    const seen = new Set();
+    images.forEach((img) => {
+      const url = imageUrlForDirectDownload(img);
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      urls.push(url);
+    });
+    return urls;
+  }
+
+  function imageGroupUniqueCount(container, images = []) {
+    const candidates = [
+      ...images,
+      ...broadImageElements(container || document, 24),
+    ];
+    return uniqueImageUrls(candidates).length;
+  }
+
   function logImageDownloadStep(step, detail = {}) {
     try {
       console.info('[ChatGPT 图片下载快捷按钮]', step, detail);
@@ -3303,7 +3323,7 @@
         container.append(slot);
       }
     }
-    const count = images.length;
+    const count = imageGroupUniqueCount(container, images) || images.length;
     let button = slot.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
     if (!button) {
       button = document.createElement('button');
@@ -3317,8 +3337,12 @@
     }
     button.onclick = (event) => triggerImageDownloadButton(button, event);
     button.__cgptImageDownloadContainer = container;
-    button.__cgptImageDownloadImages = images;
+    button.__cgptImageDownloadImages = [
+      ...images,
+      ...broadImageElements(container, 24),
+    ];
     const declaredCount = Number(button.dataset.cgptExactCount || 0)
+      || count
       || inferDeclaredImageCount(container, preferredActionRow || slot.parentElement);
     button.dataset.cgptImageCount = String(declaredCount || count || '');
     button.title = declaredCount > 1
@@ -4038,6 +4062,51 @@
     });
   }
 
+  function installImageDownloadDebugApi() {
+    try {
+      unsafeWindow.CGPTImageDownloadDebug = {
+        scan() {
+          return [...document.querySelectorAll(`.${IMAGE_DOWNLOAD_CLASS}`)].map((button, index) => {
+            const container = button.__cgptImageDownloadContainer
+              || button.closest('[data-cgpt-image-download-container]');
+            const images = container ? [
+              ...contentImageElements(container),
+              ...broadImageElements(container, 24),
+            ] : [];
+            const rect = button.getBoundingClientRect();
+            return {
+              index,
+              title: button.title,
+              text: compactTitle(button.textContent || ''),
+              disabled: button.disabled,
+              count: button.dataset.cgptImageCount || '',
+              exactCount: button.dataset.cgptExactCount || '',
+              uniqueUrls: uniqueImageUrls(images),
+              rect: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                w: Math.round(rect.width),
+                h: Math.round(rect.height),
+              },
+              lastStep: unsafeWindow.__cgptImageDownloadLastStep || null,
+            };
+          });
+        },
+        click(index = 0) {
+          const button = document.querySelectorAll(`.${IMAGE_DOWNLOAD_CLASS}`)[index];
+          if (!button) return false;
+          triggerImageDownloadButton(button);
+          return true;
+        },
+        lastStep() {
+          return unsafeWindow.__cgptImageDownloadLastStep || null;
+        },
+      };
+    } catch (error) {
+      console.warn('[ChatGPT 图片下载快捷按钮] 安装调试入口失败：', error);
+    }
+  }
+
   const observer = new MutationObserver((mutations) => {
     if (pendingNativeMenuChatId) augmentNativeConversationMenu();
     if (Date.now() <= pendingRecentMenuUntil) augmentNativeRecentMenu();
@@ -4070,6 +4139,7 @@
 
   if (!localStorage.getItem(STORAGE_KEY)) saveState(true);
   bindImageDownloadEvents();
+  installImageDownloadDebugApi();
   scanNativeChats();
   scheduleImageDownloadButtons();
 })();
