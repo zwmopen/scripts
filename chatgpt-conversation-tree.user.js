@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.4
+// @version      1.7.6
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -15,6 +15,7 @@
 // @grant        GM_listValues
 // @grant        GM_download
 // @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @grant        unsafeWindow
 // @connect      *
 // ==/UserScript==
@@ -35,7 +36,9 @@
   const PAGE_OPEN_EVENT = `${APP_ID}:page-open-chat`;
   const IMAGE_DOWNLOAD_CLASS = `${APP_ID}-image-download-all`;
   const IMAGE_DOWNLOAD_SLOT_CLASS = `${APP_ID}-image-download-slot`;
+  const WORK_PACKAGE_CLASS = `${APP_ID}-work-package`;
   const IMAGE_DOWNLOAD_TOAST_ID = `${APP_ID}-image-download-toast`;
+  const WORK_PACKAGE_PROTOCOL_URL = 'cgpt-workpkg://run';
   // v1 曾被多个同名/改名后的脚本版本同时读写。1.0 起改用独立存储区，
   // 旧脚本即使仍在运行，也不能再覆盖新版数据。
   const STORAGE_KEY = `${APP_ID}:state:v3`;
@@ -49,6 +52,7 @@
   const GM_PROMPT_KEY = 'prompts-v1';
   const DIAGNOSTIC_LOG_KEY = `${APP_ID}:diagnostic-log:v1`;
   const MAX_DIAGNOSTIC_LOGS = 220;
+  const WORK_PACKAGE_VISIBLE_KEY = 'work-package-visible';
   const DRAG_MIME = `application/x-${APP_ID}`;
 
   const icons = {
@@ -65,6 +69,7 @@
     batch: '<svg viewBox="0 0 18 18"><path d="M7 4h8M7 9h8M7 14h8"/><path d="m2.5 4 1 1 2-2M2.5 9l1 1 2-2M2.5 14l1 1 2-2"/></svg>',
     pencil: '<svg viewBox="0 0 18 18"><path d="m4 13 1-4 7-7 3 3-7 7z"/><path d="m10.5 3.5 3 3M4 13l3.7-.8"/></svg>',
     download: '<svg viewBox="0 0 18 18"><path d="M9 3v8"/><path d="m5.5 8 3.5 3.5L12.5 8"/><path d="M4 14.5h10"/></svg>',
+    package: '<svg viewBox="0 0 18 18"><path d="M3 6.2 9 3l6 3.2v6.4L9 16l-6-3.4z"/><path d="M3 6.2 9 9.4l6-3.2M9 9.4V16"/><path d="M7.2 5.1 13 8.2"/><path d="M5.2 11.1h3.1M6.8 9.5l1.6 1.6-1.6 1.6"/></svg>',
   };
 
   const defaultState = () => ({
@@ -107,11 +112,19 @@
   let recentMenuAugmented = false;
   let imageToolsTimer = 0;
   let imageEventsBound = false;
+  let userscriptMenuCommandIds = [];
   let preloadHistoryRun = null;
   let openChatRunning = false;
   let queuedOpenChat = null;
   let openChatRequestSeq = 0;
   let diagnosticLogs = loadDiagnosticLogs();
+  let workPackageButtonVisible = (() => {
+    try {
+      return GM_getValue(WORK_PACKAGE_VISIBLE_KEY, true) !== false;
+    } catch {
+      return true;
+    }
+  })();
   let ungroupedCollapsed = (() => {
     try {
       return Boolean(GM_getValue(UNGROUPED_COLLAPSED_KEY, false));
@@ -500,7 +513,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.4',
+      scriptVersion: '1.7.6',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -1229,7 +1242,8 @@
         display: flex;
         margin: 7px 0 2px;
       }
-      .${IMAGE_DOWNLOAD_CLASS} {
+      .${IMAGE_DOWNLOAD_CLASS},
+      .${WORK_PACKAGE_CLASS} {
         position: relative;
         min-width: 34px;
         height: 34px;
@@ -1247,18 +1261,24 @@
         line-height: 1;
         cursor: pointer;
       }
-      .${IMAGE_DOWNLOAD_CLASS}:hover {
+      .${IMAGE_DOWNLOAD_CLASS}:hover,
+      .${WORK_PACKAGE_CLASS}:hover {
         background: var(--sidebar-surface-tertiary, rgba(0,0,0,.08));
       }
       .${IMAGE_DOWNLOAD_CLASS}.cgpt-image-download-done {
         color: #16a34a;
         background: color-mix(in srgb, #16a34a 9%, transparent);
       }
+      .${WORK_PACKAGE_CLASS}.cgpt-work-package-called {
+        color: #2563eb;
+        background: color-mix(in srgb, #2563eb 9%, transparent);
+      }
       .${IMAGE_DOWNLOAD_CLASS}[disabled] {
         opacity: .58;
         cursor: progress;
       }
-      .${IMAGE_DOWNLOAD_CLASS} svg {
+      .${IMAGE_DOWNLOAD_CLASS} svg,
+      .${WORK_PACKAGE_CLASS} svg {
         width: 16px;
         height: 16px;
         flex: 0 0 16px;
@@ -4031,16 +4051,50 @@
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  function refreshWorkPackageButtons() {
+    document.querySelectorAll(`.${WORK_PACKAGE_CLASS}`).forEach((button) => button.remove());
+    scheduleImageDownloadButtons();
+  }
+
+  function setWorkPackageButtonVisible(visible) {
+    workPackageButtonVisible = Boolean(visible);
+    try {
+      GM_setValue(WORK_PACKAGE_VISIBLE_KEY, workPackageButtonVisible);
+    } catch {
+      // 菜单开关失败不影响页面按钮刷新。
+    }
+    refreshWorkPackageButtons();
+    showImageDownloadToast(
+      workPackageButtonVisible ? '已显示作品包按钮' : '已隐藏作品包按钮',
+      true
+    );
+    registerUserscriptMenuCommands();
+  }
+
   function registerUserscriptMenuCommands() {
     if (typeof GM_registerMenuCommand !== 'function') return;
-    GM_registerMenuCommand('导出 ChatGPT 辅助器数据（分组+提示词）', () => exportGroupData());
-    GM_registerMenuCommand('打开提示词库', () => {
+    if (typeof GM_unregisterMenuCommand === 'function') {
+      userscriptMenuCommandIds.forEach((id) => {
+        try { GM_unregisterMenuCommand(id); } catch {}
+      });
+    }
+    userscriptMenuCommandIds = [];
+    const addMenu = (label, handler) => {
+      const id = GM_registerMenuCommand(label, handler);
+      if (id != null) userscriptMenuCommandIds.push(id);
+    };
+    addMenu('导出 ChatGPT 辅助器数据（分组+提示词）', () => exportGroupData());
+    addMenu('打开提示词库', () => {
       ensurePromptButton();
       const button = document.getElementById(PROMPT_BUTTON_ID);
       if (button) togglePromptPanel(button);
       else window.alert('没有找到 ChatGPT 输入框，暂时无法打开提示词库。');
     });
-    GM_registerMenuCommand('复制诊断日志', () => copyDiagnosticLogs());
+    addMenu(
+      workPackageButtonVisible ? '隐藏作品包按钮' : '显示作品包按钮',
+      () => setWorkPackageButtonVisible(!workPackageButtonVisible)
+    );
+    addMenu('复制诊断日志', () => copyDiagnosticLogs());
   }
 
   function sanitizeKnownRecord(record) {
@@ -4728,6 +4782,32 @@
     runImageDownloadShortcut(button);
   }
 
+  function triggerWorkPackageButton(button, event = null) {
+    if (!button) return;
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    event?.stopImmediatePropagation?.();
+    button.classList.add('cgpt-work-package-called');
+    button.title = '已调用本地作品包脚本；如浏览器询问，请允许打开。';
+    showImageDownloadToast('正在调用本地作品包脚本...', true);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = WORK_PACKAGE_PROTOCOL_URL;
+      anchor.rel = 'noopener';
+      anchor.style.display = 'none';
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+    } catch (error) {
+      console.warn('[ChatGPT 作品包按钮] 调用本地协议失败：', error);
+      window.alert('调用本地作品包脚本失败。请检查 cgpt-workpkg://run 协议是否已注册。');
+    }
+    window.setTimeout(() => {
+      button.classList.remove('cgpt-work-package-called');
+      button.title = '打包作品：整理已下载图片和剪贴板文案';
+    }, 2600);
+  }
+
   function ensureImageDownloadButton(container, images, preferredActionRow = null) {
     container.setAttribute('data-cgpt-image-download-container', 'true');
     let slot = container.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
@@ -4756,6 +4836,24 @@
         triggerImageDownloadButton(button, event);
       }, true);
       slot.append(button);
+    }
+    let packageButton = slot.querySelector(`.${WORK_PACKAGE_CLASS}`);
+    if (workPackageButtonVisible) {
+      if (!packageButton) {
+        packageButton = document.createElement('button');
+        packageButton.type = 'button';
+        packageButton.className = WORK_PACKAGE_CLASS;
+        packageButton.setAttribute('aria-label', '打包作品');
+        packageButton.title = '打包作品：整理已下载图片和剪贴板文案';
+        packageButton.innerHTML = icons.package;
+        packageButton.addEventListener('click', (event) => {
+          triggerWorkPackageButton(packageButton, event);
+        }, true);
+        slot.append(packageButton);
+      }
+      packageButton.onclick = (event) => triggerWorkPackageButton(packageButton, event);
+    } else if (packageButton) {
+      packageButton.remove();
     }
     button.onclick = (event) => triggerImageDownloadButton(button, event);
     button.__cgptImageDownloadContainer = container;
@@ -4806,6 +4904,11 @@
     if (imageEventsBound) return;
     imageEventsBound = true;
     document.addEventListener('click', (event) => {
+      const workPackageButton = event.target.closest?.(`.${WORK_PACKAGE_CLASS}`);
+      if (workPackageButton) {
+        triggerWorkPackageButton(workPackageButton, event);
+        return;
+      }
       const imageDownloadButton = event.target.closest?.(`.${IMAGE_DOWNLOAD_CLASS}`);
       if (!imageDownloadButton) return;
       triggerImageDownloadButton(imageDownloadButton, event);
