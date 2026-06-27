@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.7
+// @version      1.7.8
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -513,7 +513,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.7',
+      scriptVersion: '1.7.8',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -1303,6 +1303,12 @@
         line-height: 1;
         text-align: right;
         font-variant-numeric: tabular-nums;
+      }
+      .${IMAGE_DOWNLOAD_CLASS} .cgpt-image-download-status {
+        white-space: nowrap;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1;
       }
       .${WORK_PACKAGE_CLASS} .cgpt-work-package-label {
         white-space: nowrap;
@@ -4704,6 +4710,24 @@
     return `${done}/${total}`;
   }
 
+  function imageButtonStatusText(state = 'idle') {
+    if (state === 'running') return '\u4e0b\u8f7d\u4e2d';
+    if (state === 'done') return '\u4e0b\u8f7d\u5b8c\u6210';
+    return '';
+  }
+
+  function ensureImageButtonLabels(button) {
+    if (!button) return {};
+    let status = button.querySelector('[data-cgpt-image-download-status]');
+    let count = button.querySelector('[data-cgpt-image-download-label]');
+    if (!status || !count) {
+      button.innerHTML = `${icons.download}<span class="cgpt-image-download-status" data-cgpt-image-download-status hidden></span><span class="cgpt-image-download-count" data-cgpt-image-download-label hidden></span>`;
+      status = button.querySelector('[data-cgpt-image-download-status]');
+      count = button.querySelector('[data-cgpt-image-download-label]');
+    }
+    return { status, count };
+  }
+
   function uniqueImageUrls(images = []) {
     const urls = [];
     const seen = new Set();
@@ -4738,26 +4762,35 @@
   }
 
   function setImageButtonStatus(button, text, busy = true) {
-    const label = button?.querySelector?.('[data-cgpt-image-download-label]');
-    if (!label) return;
-    label.hidden = false;
-    label.textContent = text;
+    const { status, count } = ensureImageButtonLabels(button);
+    if (!button || !status || !count) return;
+    const total = Number(button.dataset.cgptImageTotal || 0);
+    const downloaded = Number(button.dataset.cgptImageDownloaded || 0);
+    const countText = imageButtonLabel(total, downloaded);
+    status.hidden = false;
+    status.textContent = text;
+    count.hidden = !countText;
+    count.textContent = countText;
     button.dataset.cgptBusyText = busy ? text : '';
     button.classList.remove('cgpt-image-download-done');
   }
 
-  function setImageButtonProgress(button, downloaded, total, busy = false) {
-    const label = button?.querySelector?.('[data-cgpt-image-download-label]');
-    if (!button || !label) return;
+  function setImageButtonProgress(button, downloaded, total, busy = false, forcedState = '') {
+    const { status, count } = ensureImageButtonLabels(button);
+    if (!button || !status || !count) return;
     const safeTotal = Math.max(0, Number(total || 0));
     const safeDownloaded = Math.max(0, Math.min(safeTotal || Number(downloaded || 0), Number(downloaded || 0)));
     button.dataset.cgptImageDownloaded = String(safeDownloaded);
     if (safeTotal) button.dataset.cgptImageTotal = String(safeTotal);
-    button.dataset.cgptBusyText = busy ? imageButtonLabel(safeTotal, safeDownloaded) : '';
-    const text = imageButtonLabel(safeTotal, safeDownloaded);
-    label.hidden = !text;
-    label.textContent = text;
     const complete = safeTotal > 0 && safeDownloaded >= safeTotal;
+    const state = forcedState || (busy ? 'running' : (complete ? 'done' : 'idle'));
+    const statusText = imageButtonStatusText(state);
+    const countText = imageButtonLabel(safeTotal, safeDownloaded);
+    button.dataset.cgptBusyText = busy ? statusText : '';
+    status.hidden = !statusText;
+    status.textContent = statusText;
+    count.hidden = !countText;
+    count.textContent = countText;
     button.classList.toggle('cgpt-image-download-done', complete && !busy);
     if (safeTotal) {
       button.title = complete
@@ -4914,12 +4947,13 @@
       : '\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247';
     if (!button.disabled) {
       const downloaded = Number(button.dataset.cgptImageDownloaded || 0);
-      const labelText = imageButtonLabel(totalCount, downloaded);
-      const badge = totalCount
-        ? `<span class="cgpt-image-download-count" data-cgpt-image-download-label>${escapeHtml(labelText)}</span>`
-        : '<span data-cgpt-image-download-label hidden></span>';
-      button.innerHTML = `${icons.download}${badge}`;
-      button.classList.toggle('cgpt-image-download-done', totalCount > 0 && downloaded >= totalCount);
+      const countText = imageButtonLabel(totalCount, downloaded);
+      const done = totalCount > 0 && downloaded >= totalCount;
+      const statusText = imageButtonStatusText(done ? 'done' : 'idle');
+      const status = `<span class="cgpt-image-download-status" data-cgpt-image-download-status${statusText ? '' : ' hidden'}>${escapeHtml(statusText)}</span>`;
+      const badge = `<span class="cgpt-image-download-count" data-cgpt-image-download-label${countText ? '' : ' hidden'}>${escapeHtml(countText)}</span>`;
+      button.innerHTML = `${icons.download}${status}${badge}`;
+      button.classList.toggle('cgpt-image-download-done', done);
       if (downloaded) setImageButtonProgress(button, downloaded, totalCount, false);
     }
   }
@@ -5237,7 +5271,7 @@
       || uniqueImageUrls(images).length
       || images.length;
     button.disabled = true;
-    setImageButtonStatus(button, '\u51c6\u5907\u2026');
+    setImageButtonProgress(button, 0, totalImages, true);
 
     let downloaded = 0;
     try {
@@ -5262,7 +5296,7 @@
     } finally {
       window.setTimeout(() => {
         button.disabled = false;
-        if (label) setImageButtonProgress(button, downloaded, totalImages, false);
+        setImageButtonProgress(button, downloaded, totalImages, false, downloaded ? 'done' : 'idle');
       }, 600);
     }
   }
