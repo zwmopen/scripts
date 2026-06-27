@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.3
+// @version      1.7.4
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -500,7 +500,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.3',
+      scriptVersion: '1.7.4',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -1974,7 +1974,7 @@
            data-prompt-id="${escapeHtml(item.id)}"
            role="button"
            tabindex="0"
-           title="插入到输入框：${escapeHtml(item.title)}">
+           title="插入并发送：${escapeHtml(item.title)}">
         <div class="cgpt-prompt-insert">
           <span class="cgpt-prompt-title">${escapeHtml(item.title)}</span>
           <span class="cgpt-prompt-preview">${escapeHtml(item.content || '空内容')}</span>
@@ -1983,7 +1983,7 @@
           <button data-cgpt-prompt-action="edit" data-prompt-id="${escapeHtml(item.id)}">编辑</button>
           <button class="cgpt-danger" data-cgpt-prompt-action="delete" data-prompt-id="${escapeHtml(item.id)}">删除</button>
         </span>
-      </div>`).join('') : '<div class="cgpt-prompt-empty">还没有提示词。点“新增”创建一个，之后点击提示词会插入到输入框，不会自动发送。</div>';
+      </div>`).join('') : '<div class="cgpt-prompt-empty">还没有提示词。点“新增”创建一个；之后点击任意提示词，会插入输入框并直接发送。</div>';
 
     const editingTitle = editing?.title || '';
     const editingContent = editing?.content || '';
@@ -2096,12 +2096,92 @@
     return false;
   }
 
+  function composerSendButton(input = promptComposerInput()) {
+    const composer = composerRootFor(input);
+    const scope = composer || document;
+    const buttons = [...scope.querySelectorAll('button')]
+      .filter((button) => (
+        button.id !== PROMPT_BUTTON_ID
+        && !button.closest?.(`#${APP_ID}, #${MENU_ID}, #${PROMPT_PANEL_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}`)
+        && isElementVisible(button)
+        && !button.disabled
+        && button.getAttribute('aria-disabled') !== 'true'
+      ));
+    const sendButton = buttons.find((button) => {
+      const text = compactTitle(`${button.innerText || ''} ${button.getAttribute('aria-label') || ''} ${button.title || ''} ${button.getAttribute('data-testid') || ''}`);
+      return /发送|send|submit/i.test(text);
+    });
+    if (sendButton) return sendButton;
+    return buttons
+      .map((button) => {
+        const rect = button.getBoundingClientRect();
+        const inputRect = input?.getBoundingClientRect?.();
+        const html = button.innerHTML || '';
+        let score = 0;
+        if (inputRect && rect.left > inputRect.left + inputRect.width * 0.62) score += 30;
+        if (inputRect && Math.abs((rect.top + rect.height / 2) - (inputRect.top + inputRect.height / 2)) < 80) score += 20;
+        if (/arrow-up|send|M12|path/i.test(html) && button.querySelector('svg')) score += 18;
+        if (rect.width <= 58 && rect.height <= 58) score += 10;
+        return { button, score };
+      })
+      .sort((a, b) => b.score - a.score)[0]?.score > 30
+      ? buttons
+        .map((button) => {
+          const rect = button.getBoundingClientRect();
+          const inputRect = input?.getBoundingClientRect?.();
+          let score = 0;
+          if (inputRect && rect.left > inputRect.left + inputRect.width * 0.62) score += 30;
+          if (inputRect && Math.abs((rect.top + rect.height / 2) - (inputRect.top + inputRect.height / 2)) < 80) score += 20;
+          if (button.querySelector('svg')) score += 18;
+          if (rect.width <= 58 && rect.height <= 58) score += 10;
+          return { button, score };
+        })
+        .sort((a, b) => b.score - a.score)[0].button
+      : null;
+  }
+
+  function dispatchEnterToComposer(input = promptComposerInput()) {
+    if (!input) return false;
+    input.focus();
+    const eventInit = {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    };
+    input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+    input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+    input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    return true;
+  }
+
+  function submitComposerAfterPrompt() {
+    const input = promptComposerInput();
+    if (!input) return false;
+    const sendButton = composerSendButton(input);
+    if (sendButton) {
+      dispatchNativeClick(sendButton);
+      return true;
+    }
+    return dispatchEnterToComposer(input);
+  }
+
   function insertPrompt(promptId) {
     const item = promptState.items.find((candidate) => candidate.id === promptId);
     if (!item) return;
     const ok = insertTextIntoComposer(item.content);
-    addDiagnosticLog('prompt:insert', { promptId, title: item.title, ok });
-    if (ok) closePromptPanel();
+    if (ok) {
+      closePromptPanel();
+      window.setTimeout(() => {
+        const submitted = submitComposerAfterPrompt();
+        addDiagnosticLog('prompt:insert-submit', { promptId, title: item.title, ok, submitted });
+      }, 80);
+    } else {
+      addDiagnosticLog('prompt:insert-submit', { promptId, title: item.title, ok, submitted: false });
+    }
   }
 
   function findNode(nodeId, nodes = state.tree, parentArray = state.tree) {
