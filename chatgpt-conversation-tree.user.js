@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.2
+// @version      1.7.3
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -500,7 +500,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.2',
+      scriptVersion: '1.7.3',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -757,6 +757,8 @@
         flex-direction: column;
         gap: 8px;
         padding: 10px;
+        box-sizing: border-box;
+        overflow: hidden;
         border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
         border-radius: 16px;
         color: var(--text-primary, inherit);
@@ -774,9 +776,15 @@
         gap: 6px;
       }
       .cgpt-prompt-head {
+        flex: 0 0 auto;
         justify-content: space-between;
         font-weight: 600;
         padding: 0 2px;
+      }
+      .cgpt-prompt-head span:last-child,
+      .cgpt-prompt-foot {
+        flex-wrap: wrap;
+        justify-content: flex-end;
       }
       .cgpt-prompt-head small {
         color: var(--text-tertiary, #888);
@@ -802,10 +810,12 @@
         color: #e03131;
       }
       .cgpt-prompt-list {
+        flex: 1 1 auto;
+        min-height: 42px;
         display: flex;
         flex-direction: column;
         gap: 4px;
-        max-height: 330px;
+        max-height: none;
         overflow: auto;
       }
       .cgpt-prompt-row {
@@ -857,9 +867,12 @@
         white-space: nowrap;
       }
       .cgpt-prompt-editor {
+        flex: 0 0 auto;
         display: grid;
         gap: 8px;
         padding-top: 4px;
+        max-height: min(360px, 52vh);
+        overflow: auto;
       }
       .cgpt-prompt-editor input,
       .cgpt-prompt-editor textarea {
@@ -873,9 +886,17 @@
         font: inherit;
       }
       .cgpt-prompt-editor textarea {
-        min-height: 150px;
+        min-height: 120px;
+        max-height: min(220px, 34vh);
         resize: vertical;
         line-height: 1.45;
+      }
+      .cgpt-prompt-foot {
+        position: sticky;
+        bottom: 0;
+        z-index: 1;
+        padding-top: 6px;
+        background: var(--main-surface-primary, Canvas);
       }
       .cgpt-tree-button svg,
       .cgpt-folder-icon svg,
@@ -1914,23 +1935,30 @@
     editingPromptId = '';
   }
 
+  function positionPromptPanel(button = null) {
+    const panel = document.getElementById(PROMPT_PANEL_ID);
+    const anchor = button || panel?.__cgptPromptAnchor || document.getElementById(PROMPT_BUTTON_ID);
+    if (!panel || panel.hidden || !anchor?.isConnected) return;
+    const rect = anchor.getBoundingClientRect();
+    const availableAbove = Math.max(220, rect.top - 12);
+    panel.style.top = 'auto';
+    panel.style.maxHeight = `${Math.min(620, availableAbove)}px`;
+    panel.style.bottom = `${Math.max(8, innerHeight - rect.top + 8)}px`;
+    const width = panel.offsetWidth || 420;
+    panel.style.left = `${Math.max(8, Math.min(innerWidth - width - 8, rect.left + rect.width - width))}px`;
+  }
+
   function togglePromptPanel(button) {
     const panel = ensurePromptPanel();
     if (!panel.hidden) {
       closePromptPanel();
       return;
     }
+    panel.__cgptPromptAnchor = button;
     editingPromptId = '';
     renderPromptPanel();
-    const rect = button.getBoundingClientRect();
     panel.hidden = false;
-    panel.style.top = 'auto';
-    panel.style.bottom = 'auto';
-    panel.style.maxHeight = `${Math.max(220, Math.min(620, rect.top - 16))}px`;
-    const width = panel.offsetWidth || 420;
-    const height = panel.offsetHeight || 420;
-    panel.style.left = `${Math.max(8, Math.min(innerWidth - width - 8, rect.left + rect.width - width))}px`;
-    panel.style.top = `${Math.max(8, rect.top - height - 8)}px`;
+    positionPromptPanel(button);
     button.setAttribute('aria-expanded', 'true');
   }
 
@@ -1979,6 +2007,7 @@
           </div>
         </div>
       ` : ''}`;
+    positionPromptPanel();
   }
 
   function upsertPromptFromPanel() {
@@ -5261,6 +5290,10 @@
         updateRenameEditorState();
       }
     }, true);
+
+    window.addEventListener('resize', () => {
+      positionPromptPanel();
+    }, { passive: true });
 
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && !document.getElementById(RENAME_ID)?.hidden) {
