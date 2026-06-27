@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.6
+// @version      1.7.7
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -513,7 +513,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.6',
+      scriptVersion: '1.7.7',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -1273,6 +1273,14 @@
         color: #2563eb;
         background: color-mix(in srgb, #2563eb 9%, transparent);
       }
+      .${WORK_PACKAGE_CLASS}.cgpt-work-package-done {
+        color: #16a34a;
+        background: color-mix(in srgb, #16a34a 9%, transparent);
+      }
+      .${WORK_PACKAGE_CLASS}[disabled] {
+        opacity: .78;
+        cursor: progress;
+      }
       .${IMAGE_DOWNLOAD_CLASS}[disabled] {
         opacity: .58;
         cursor: progress;
@@ -1295,6 +1303,11 @@
         line-height: 1;
         text-align: right;
         font-variant-numeric: tabular-nums;
+      }
+      .${WORK_PACKAGE_CLASS} .cgpt-work-package-label {
+        white-space: nowrap;
+        font-size: 12px;
+        font-weight: 600;
       }
       #${IMAGE_DOWNLOAD_TOAST_ID} {
         position: fixed;
@@ -4782,14 +4795,36 @@
     runImageDownloadShortcut(button);
   }
 
-  function triggerWorkPackageButton(button, event = null) {
+  function setWorkPackageButtonState(button, state = 'idle') {
     if (!button) return;
+    button.classList.remove('cgpt-work-package-called', 'cgpt-work-package-done');
+    button.disabled = state === 'running';
+    if (state === 'running') {
+      button.classList.add('cgpt-work-package-called');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">打包中</span>`;
+      button.title = '打包中：正在调用本地作品包脚本';
+      button.setAttribute('aria-label', '打包中');
+      return;
+    }
+    if (state === 'done') {
+      button.classList.add('cgpt-work-package-done');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">打包完成</span>`;
+      button.title = '打包完成';
+      button.setAttribute('aria-label', '打包完成');
+      return;
+    }
+    button.innerHTML = icons.package;
+    button.title = '打包作品：整理已下载图片和剪贴板文案';
+    button.setAttribute('aria-label', '打包作品');
+  }
+
+  function triggerWorkPackageButton(button, event = null) {
+    if (!button || button.disabled) return;
     event?.preventDefault?.();
     event?.stopPropagation?.();
     event?.stopImmediatePropagation?.();
-    button.classList.add('cgpt-work-package-called');
-    button.title = '已调用本地作品包脚本；如浏览器询问，请允许打开。';
-    showImageDownloadToast('正在调用本地作品包脚本...', true);
+    setWorkPackageButtonState(button, 'running');
+    showImageDownloadToast('打包中...', true);
     try {
       const anchor = document.createElement('a');
       anchor.href = WORK_PACKAGE_PROTOCOL_URL;
@@ -4801,11 +4836,16 @@
     } catch (error) {
       console.warn('[ChatGPT 作品包按钮] 调用本地协议失败：', error);
       window.alert('调用本地作品包脚本失败。请检查 cgpt-workpkg://run 协议是否已注册。');
+      setWorkPackageButtonState(button, 'idle');
+      return;
     }
     window.setTimeout(() => {
-      button.classList.remove('cgpt-work-package-called');
-      button.title = '打包作品：整理已下载图片和剪贴板文案';
-    }, 2600);
+      setWorkPackageButtonState(button, 'done');
+      showImageDownloadToast('打包完成', true);
+      window.setTimeout(() => {
+        setWorkPackageButtonState(button, 'idle');
+      }, 2600);
+    }, 3600);
   }
 
   function ensureImageDownloadButton(container, images, preferredActionRow = null) {
@@ -4843,9 +4883,7 @@
         packageButton = document.createElement('button');
         packageButton.type = 'button';
         packageButton.className = WORK_PACKAGE_CLASS;
-        packageButton.setAttribute('aria-label', '打包作品');
-        packageButton.title = '打包作品：整理已下载图片和剪贴板文案';
-        packageButton.innerHTML = icons.package;
+        setWorkPackageButtonState(packageButton, 'idle');
         packageButton.addEventListener('click', (event) => {
           triggerWorkPackageButton(packageButton, event);
         }, true);
