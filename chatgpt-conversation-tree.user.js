@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.0
+// @version      1.7.2
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -35,6 +35,7 @@
   const PAGE_OPEN_EVENT = `${APP_ID}:page-open-chat`;
   const IMAGE_DOWNLOAD_CLASS = `${APP_ID}-image-download-all`;
   const IMAGE_DOWNLOAD_SLOT_CLASS = `${APP_ID}-image-download-slot`;
+  const IMAGE_DOWNLOAD_TOAST_ID = `${APP_ID}-image-download-toast`;
   // v1 曾被多个同名/改名后的脚本版本同时读写。1.0 起改用独立存储区，
   // 旧脚本即使仍在运行，也不能再覆盖新版数据。
   const STORAGE_KEY = `${APP_ID}:state:v3`;
@@ -499,7 +500,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.0',
+      scriptVersion: '1.7.2',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -724,6 +725,8 @@
         text-overflow: ellipsis;
       }
       #${PROMPT_BUTTON_ID} {
+        flex: 0 0 auto;
+        align-self: center;
         height: 32px;
         min-width: 58px;
         padding: 0 10px;
@@ -808,9 +811,16 @@
       .cgpt-prompt-row {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
-        gap: 4px;
+        gap: 8px;
         align-items: center;
+        padding: 6px;
         border-radius: 12px;
+        cursor: pointer;
+      }
+      .cgpt-prompt-row:hover,
+      .cgpt-prompt-row:focus-visible {
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+        outline: none;
       }
       .cgpt-prompt-insert {
         min-width: 0;
@@ -834,6 +844,17 @@
         display: -webkit-box;
         -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
+      }
+      .cgpt-prompt-row-actions {
+        opacity: .78;
+      }
+      .cgpt-prompt-row:hover .cgpt-prompt-row-actions,
+      .cgpt-prompt-row:focus-visible .cgpt-prompt-row-actions {
+        opacity: 1;
+      }
+      .cgpt-prompt-row-actions button {
+        padding: 6px 8px;
+        white-space: nowrap;
       }
       .cgpt-prompt-editor {
         display: grid;
@@ -1208,6 +1229,10 @@
       .${IMAGE_DOWNLOAD_CLASS}:hover {
         background: var(--sidebar-surface-tertiary, rgba(0,0,0,.08));
       }
+      .${IMAGE_DOWNLOAD_CLASS}.cgpt-image-download-done {
+        color: #16a34a;
+        background: color-mix(in srgb, #16a34a 9%, transparent);
+      }
       .${IMAGE_DOWNLOAD_CLASS}[disabled] {
         opacity: .58;
         cursor: progress;
@@ -1223,10 +1248,30 @@
         stroke-linejoin: round;
       }
       .${IMAGE_DOWNLOAD_CLASS} .cgpt-image-download-count {
-        min-width: 8px;
+        min-width: 26px;
         font-size: 12px;
         font-weight: 600;
         line-height: 1;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      #${IMAGE_DOWNLOAD_TOAST_ID} {
+        position: fixed;
+        right: 18px;
+        bottom: 18px;
+        z-index: 2147483647;
+        max-width: min(320px, calc(100vw - 36px));
+        padding: 10px 13px;
+        border: 1px solid color-mix(in srgb, currentColor 11%, transparent);
+        border-radius: 12px;
+        color: var(--text-primary, #111);
+        background: var(--main-surface-primary, Canvas);
+        box-shadow: 0 12px 34px rgba(0,0,0,.18);
+        font-size: 13px;
+        line-height: 1.35;
+      }
+      #${IMAGE_DOWNLOAD_TOAST_ID}.cgpt-image-download-toast-ok {
+        border-color: color-mix(in srgb, #16a34a 34%, transparent);
       }
 
       #${MENU_ID}.cgpt-batch-menu {
@@ -1762,6 +1807,15 @@
       || null;
   }
 
+  function directChildContaining(parent, child) {
+    if (!parent || !child || !parent.contains(child)) return null;
+    let current = child;
+    while (current?.parentElement && current.parentElement !== parent) {
+      current = current.parentElement;
+    }
+    return current?.parentElement === parent ? current : null;
+  }
+
   function findModelButton(composer) {
     if (!composer) return null;
     const buttons = [...composer.querySelectorAll('button')]
@@ -1779,6 +1833,36 @@
       const inputRect = promptComposerInput()?.getBoundingClientRect?.();
       return inputRect && rect.left > inputRect.left + inputRect.width * 0.45 && rect.top > inputRect.top - 20;
     }) || null;
+  }
+
+  function promptButtonMount(modelButton, composer, input) {
+    if (!modelButton) return null;
+    let row = null;
+    let parent = modelButton.parentElement;
+    while (parent && parent !== composer && parent !== document.body) {
+      const style = getComputedStyle(parent);
+      const rect = parent.getBoundingClientRect?.();
+      const isRow = (
+        rect
+        && rect.width > 120
+        && rect.height < 88
+        && (
+          (style.display.includes('flex') && !style.flexDirection.startsWith('column'))
+          || style.display.includes('grid')
+        )
+        && parent.querySelectorAll('button').length >= 2
+      );
+      if (isRow) {
+        row = parent;
+        break;
+      }
+      parent = parent.parentElement;
+    }
+    if (!row) return { parent: modelButton.parentElement, before: modelButton };
+    const before = directChildContaining(row, modelButton) || modelButton;
+    const inputChild = directChildContaining(row, input);
+    if (inputChild && inputChild === before) return { parent: modelButton.parentElement, before: modelButton };
+    return { parent: row, before };
   }
 
   function ensurePromptButton() {
@@ -1804,16 +1888,17 @@
     }
 
     const modelButton = findModelButton(composer);
-    const targetParent = modelButton?.parentElement
+    const mount = promptButtonMount(modelButton, composer, input);
+    const targetParent = mount?.parent
       || [...composer.querySelectorAll('div')].reverse().find((element) => (
         element.querySelectorAll('button').length >= 2 && element.contains(input) === false
       ))
       || input.parentElement;
 
     if (!targetParent) return false;
-    if (modelButton?.parentElement === targetParent) {
-      if (button.parentElement !== targetParent || button.nextSibling !== modelButton) {
-        targetParent.insertBefore(button, modelButton);
+    if (mount?.before && mount.parent === targetParent) {
+      if (button.parentElement !== targetParent || button.nextSibling !== mount.before) {
+        targetParent.insertBefore(button, mount.before);
       }
     } else if (button.parentElement !== targetParent) {
       targetParent.insertBefore(button, targetParent.firstChild || null);
@@ -1839,10 +1924,13 @@
     renderPromptPanel();
     const rect = button.getBoundingClientRect();
     panel.hidden = false;
+    panel.style.top = 'auto';
+    panel.style.bottom = 'auto';
+    panel.style.maxHeight = `${Math.max(220, Math.min(620, rect.top - 16))}px`;
     const width = panel.offsetWidth || 420;
     const height = panel.offsetHeight || 420;
-    panel.style.left = `${Math.max(8, Math.min(innerWidth - width - 8, rect.left - width + rect.width))}px`;
-    panel.style.top = `${Math.max(8, Math.min(innerHeight - height - 8, rect.top - height - 8))}px`;
+    panel.style.left = `${Math.max(8, Math.min(innerWidth - width - 8, rect.left + rect.width - width))}px`;
+    panel.style.top = `${Math.max(8, rect.top - height - 8)}px`;
     button.setAttribute('aria-expanded', 'true');
   }
 
@@ -1853,14 +1941,16 @@
       : null;
     const editorTitle = editingPromptId === 'new' ? '新建提示词' : '编辑提示词';
     const list = promptState.items.length ? promptState.items.map((item) => `
-      <div class="cgpt-prompt-row" data-prompt-id="${escapeHtml(item.id)}">
-        <button class="cgpt-prompt-insert"
-                data-cgpt-prompt-action="insert"
-                data-prompt-id="${escapeHtml(item.id)}"
-                title="插入到输入框：${escapeHtml(item.title)}">
+      <div class="cgpt-prompt-row"
+           data-cgpt-prompt-action="insert"
+           data-prompt-id="${escapeHtml(item.id)}"
+           role="button"
+           tabindex="0"
+           title="插入到输入框：${escapeHtml(item.title)}">
+        <div class="cgpt-prompt-insert">
           <span class="cgpt-prompt-title">${escapeHtml(item.title)}</span>
           <span class="cgpt-prompt-preview">${escapeHtml(item.content || '空内容')}</span>
-        </button>
+        </div>
         <span class="cgpt-prompt-row-actions">
           <button data-cgpt-prompt-action="edit" data-prompt-id="${escapeHtml(item.id)}">编辑</button>
           <button class="cgpt-danger" data-cgpt-prompt-action="delete" data-prompt-id="${escapeHtml(item.id)}">删除</button>
@@ -4430,9 +4520,12 @@
     return { container, images };
   }
 
-  function imageButtonLabel(count, busyText = '') {
+  function imageButtonLabel(count, downloaded = 0, busyText = '') {
     if (busyText) return busyText;
-    return count > 1 ? String(count) : '';
+    const total = Math.max(0, Number(count || 0));
+    if (!total) return '';
+    const done = Math.max(0, Math.min(total, Number(downloaded || 0)));
+    return `${done}/${total}`;
   }
 
   function uniqueImageUrls(images = []) {
@@ -4474,6 +4567,44 @@
     label.hidden = false;
     label.textContent = text;
     button.dataset.cgptBusyText = busy ? text : '';
+    button.classList.remove('cgpt-image-download-done');
+  }
+
+  function setImageButtonProgress(button, downloaded, total, busy = false) {
+    const label = button?.querySelector?.('[data-cgpt-image-download-label]');
+    if (!button || !label) return;
+    const safeTotal = Math.max(0, Number(total || 0));
+    const safeDownloaded = Math.max(0, Math.min(safeTotal || Number(downloaded || 0), Number(downloaded || 0)));
+    button.dataset.cgptImageDownloaded = String(safeDownloaded);
+    if (safeTotal) button.dataset.cgptImageTotal = String(safeTotal);
+    button.dataset.cgptBusyText = busy ? imageButtonLabel(safeTotal, safeDownloaded) : '';
+    const text = imageButtonLabel(safeTotal, safeDownloaded);
+    label.hidden = !text;
+    label.textContent = text;
+    const complete = safeTotal > 0 && safeDownloaded >= safeTotal;
+    button.classList.toggle('cgpt-image-download-done', complete && !busy);
+    if (safeTotal) {
+      button.title = complete
+        ? `已下载 ${safeDownloaded}/${safeTotal} 张图片；再次点击可重新下载`
+        : `已下载 ${safeDownloaded}/${safeTotal} 张图片；点击可下载本组图片`;
+    }
+  }
+
+  function showImageDownloadToast(message, ok = true) {
+    let toast = document.getElementById(IMAGE_DOWNLOAD_TOAST_ID);
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = IMAGE_DOWNLOAD_TOAST_ID;
+      toast.setAttribute('role', 'status');
+      toast.setAttribute('aria-live', 'polite');
+      document.body.append(toast);
+    }
+    toast.className = ok ? 'cgpt-image-download-toast-ok' : '';
+    toast.textContent = message;
+    window.clearTimeout(showImageDownloadToast.timer);
+    showImageDownloadToast.timer = window.setTimeout(() => {
+      toast.remove();
+    }, 2600);
   }
 
   function triggerImageDownloadButton(button, event = null) {
@@ -4526,15 +4657,25 @@
     const declaredCount = Number(button.dataset.cgptExactCount || 0)
       || count
       || inferDeclaredImageCount(container, preferredActionRow || slot.parentElement);
-    button.dataset.cgptImageCount = String(declaredCount || count || '');
+    const totalCount = declaredCount || count || 0;
+    const previousTotal = Number(button.dataset.cgptImageTotal || 0);
+    if (!button.disabled && previousTotal && totalCount && previousTotal !== totalCount) {
+      button.dataset.cgptImageDownloaded = '0';
+    }
+    button.dataset.cgptImageTotal = String(totalCount || '');
+    button.dataset.cgptImageCount = String(totalCount || '');
     button.title = declaredCount > 1
       ? `\u4e0b\u8f7d\u672c\u7ec4\u4e2d\u7684 ${declaredCount} \u5f20\u56fe\u7247`
       : '\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247';
     if (!button.disabled) {
-      const badge = declaredCount > 1
-        ? `<span class="cgpt-image-download-count" data-cgpt-image-download-label>${escapeHtml(imageButtonLabel(declaredCount))}</span>`
+      const downloaded = Number(button.dataset.cgptImageDownloaded || 0);
+      const labelText = imageButtonLabel(totalCount, downloaded);
+      const badge = totalCount
+        ? `<span class="cgpt-image-download-count" data-cgpt-image-download-label>${escapeHtml(labelText)}</span>`
         : '<span data-cgpt-image-download-label hidden></span>';
       button.innerHTML = `${icons.download}${badge}`;
+      button.classList.toggle('cgpt-image-download-done', totalCount > 0 && downloaded >= totalCount);
+      if (downloaded) setImageButtonProgress(button, downloaded, totalCount, false);
     }
   }
 
@@ -4810,12 +4951,15 @@
     const usableUrls = urls.filter((url) => !/^data:image\/svg/i.test(url));
     if (!usableUrls.length) return 0;
     let ok = 0;
+    if (onProgress) {
+      try { onProgress(0, usableUrls.length); } catch {}
+    }
     for (let index = 0; index < usableUrls.length; index += 1) {
-      if (onProgress) {
-        try { onProgress(index + 1, usableUrls.length); } catch {}
-      }
       const success = await gmDownload(usableUrls[index], directDownloadName(index, usableUrls[index]));
       if (success) ok += 1;
+      if (onProgress) {
+        try { onProgress(ok, usableUrls.length); } catch {}
+      }
       await sleep(220);
     }
     return ok;
@@ -4839,7 +4983,9 @@
     }
 
     const label = button.querySelector('[data-cgpt-image-download-label]');
-    const originalText = label?.textContent || imageButtonLabel(images.length);
+    let totalImages = Number(button.dataset.cgptImageTotal || 0)
+      || uniqueImageUrls(images).length
+      || images.length;
     button.disabled = true;
     setImageButtonStatus(button, '\u51c6\u5907\u2026');
 
@@ -4850,10 +4996,15 @@
         containerText: compactTitle(container.innerText || '').slice(0, 120),
       });
       downloaded = await directDownloadImages(images, (current, total) => {
-        setImageButtonStatus(button, `${current}/${total}`);
+        totalImages = total || totalImages;
+        setImageButtonProgress(button, current, totalImages, true);
       });
       if (!downloaded) {
         window.alert('\u4e0b\u8f7d\u5931\u8d25\u4e86\uff0c\u53ef\u80fd\u662f\u7f51\u7edc\u95ee\u9898\u6216\u8005\u56fe\u7247\u5730\u5740\u53d8\u4e86\u3002\u6253\u5f00\u63a7\u5236\u53f0\u53ef\u4ee5\u770b\u5230\u8be6\u7ec6\u65e5\u5fd7\u3002');
+      } else if (totalImages && downloaded >= totalImages) {
+        showImageDownloadToast(`图片下载完成：${downloaded}/${totalImages}`, true);
+      } else {
+        showImageDownloadToast(`图片下载完成：${downloaded}/${totalImages || downloaded}，有图片未成功`, false);
       }
     } catch (error) {
       console.warn('[ChatGPT \u56fe\u7247\u4e0b\u8f7d\u5feb\u6377\u6309\u94ae] \u4e0b\u8f7d\u5931\u8d25\uff1a', error);
@@ -4861,19 +5012,7 @@
     } finally {
       window.setTimeout(() => {
         button.disabled = false;
-        if (label) {
-          if (downloaded) {
-            label.hidden = false;
-            label.textContent = String(downloaded);
-            button.title = `\u5df2\u4e0b\u8f7d ${downloaded} \u5f20\u56fe\u7247`;
-          } else if (originalText) {
-            label.hidden = false;
-            label.textContent = originalText;
-          } else {
-            label.textContent = originalText;
-            label.hidden = true;
-          }
-        }
+        if (label) setImageButtonProgress(button, downloaded, totalImages, false);
       }, 600);
     }
   }
@@ -5129,6 +5268,16 @@
       }
       if (event.key === 'Escape' && !document.getElementById(PROMPT_PANEL_ID)?.hidden) {
         closePromptPanel();
+      }
+      const promptRow = event.target.closest?.(`#${PROMPT_PANEL_ID} .cgpt-prompt-row[data-cgpt-prompt-action="insert"]`);
+      if (
+        promptRow
+        && event.target === promptRow
+        && (event.key === 'Enter' || event.key === ' ')
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        insertPrompt(promptRow.dataset.promptId || '');
       }
     }, true);
 
