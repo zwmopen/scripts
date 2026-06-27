@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.8
+// @version      1.7.9
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -513,7 +513,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.8',
+      scriptVersion: '1.7.9',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -740,25 +740,29 @@
       #${PROMPT_BUTTON_ID} {
         flex: 0 0 auto;
         align-self: center;
-        height: 32px;
-        min-width: 58px;
-        padding: 0 10px;
+        height: auto;
+        min-height: 28px;
+        min-width: 0;
+        padding: 0 6px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         gap: 4px;
         border: 0;
         border-radius: 999px;
-        color: var(--text-secondary, currentColor);
+        color: var(--text-tertiary, var(--text-secondary, inherit));
         background: transparent;
-        font-size: 13px;
-        line-height: 1;
+        font: inherit;
+        font-size: inherit;
+        font-weight: inherit;
+        line-height: inherit;
         cursor: pointer;
         white-space: nowrap;
+        transform: translateY(1px);
       }
       #${PROMPT_BUTTON_ID}:hover,
       #${PROMPT_BUTTON_ID}[aria-expanded="true"] {
-        color: var(--text-primary, currentColor);
+        color: var(--text-secondary, inherit);
         background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
       }
       #${PROMPT_PANEL_ID} {
