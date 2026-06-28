@@ -13,6 +13,7 @@ Windows 小工具：把鼠标 `X2` 侧键绑定到微信输入法语音输入。
 - `watchdog.ps1`：守护脚本，发现后台监听不在时自动拉起。
 - `install-watchdog.ps1`：安装计划任务守护，每 5 分钟检查一次。
 - `uninstall-watchdog.ps1`：取消计划任务守护。
+- `run-hidden.vbs`：隐藏运行守护脚本，避免弹出蓝色 PowerShell 窗口。
 - `wechat-voice-x2-bridge.ps1`：核心脚本。
 - `SKILL.md`：技能说明，归类为“AI协作 / 人机协同 / 本地脚本型技能”。
 

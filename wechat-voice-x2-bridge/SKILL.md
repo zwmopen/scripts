@@ -28,6 +28,7 @@ D:\AICode\AI\skills\技能包\技能\AI协作\鼠标快速语音打字\scripts
 - `scripts\watchdog.ps1`：守护脚本，发现后台监听不在时自动拉起。
 - `scripts\install-watchdog.ps1`：安装计划任务守护，每 5 分钟检查一次。
 - `scripts\uninstall-watchdog.ps1`：取消计划任务守护。
+- `scripts\run-hidden.vbs`：隐藏运行 PowerShell，避免计划任务弹出蓝色窗口。
 - `scripts\wechat-voice-x2-bridge.ps1`：核心脚本。
 
 ## 运行规则
