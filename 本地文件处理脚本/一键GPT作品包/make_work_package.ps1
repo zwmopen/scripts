@@ -71,90 +71,6 @@ function New-TextFromCodePoints {
     return -join ($CodePoints | ForEach-Object { [char]$_ })
 }
 
-function Get-WorkPkgConfig {
-    param([string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return $null
-    }
-
-    try {
-        $json = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-        return $json | ConvertFrom-Json
-    } catch {
-        return $null
-    }
-}
-
-function Get-ConfigValue {
-    param(
-        [object]$Config,
-        [string]$Name,
-        [string]$Default
-    )
-
-    if ($null -eq $Config) {
-        return $Default
-    }
-
-    try {
-        $value = $Config.$Name
-        if ([string]::IsNullOrWhiteSpace($value)) {
-            return $Default
-        }
-
-        return [string]$value
-    } catch {
-        return $Default
-    }
-}
-
-function Get-ConfigBoolean {
-    param(
-        [object]$Config,
-        [string]$Name,
-        [bool]$Default
-    )
-
-    if ($null -eq $Config) {
-        return $Default
-    }
-
-    try {
-        $value = $Config.$Name
-        if ($null -eq $value) {
-            return $Default
-        }
-
-        return [System.Convert]::ToBoolean($value)
-    } catch {
-        return $Default
-    }
-}
-
-function Get-ConfigInt {
-    param(
-        [object]$Config,
-        [string]$Name,
-        [int]$Default
-    )
-
-    if ($null -eq $Config) {
-        return $Default
-    }
-
-    try {
-        $value = $Config.$Name
-        if ($null -eq $value) {
-            return $Default
-        }
-
-        return [System.Convert]::ToInt32($value)
-    } catch {
-        return $Default
-    }
-}
-
 function Show-Tip {
     param(
         [string]$Message,
@@ -731,26 +647,22 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $packageTime = Get-Date
 $stamp = $packageTime.ToString("yyyyMMdd_HHmmss")
 $textPrefix = "$([char]0x6587)$([char]0x6848)"
-$configPath = Join-Path $scriptDir "workpkg_config.json"
-$config = Get-WorkPkgConfig -Path $configPath
-$libraryName = Get-ConfigValue -Config $config -Name "library_name" -Default (New-TextFromCodePoints @(0x6210, 0x54C1, 0x5E93))
-$successMessage = Get-ConfigValue -Config $config -Name "success_message" -Default (New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305))
-$portfolioGroupedMessage = Get-ConfigValue -Config $config -Name "portfolio_grouped_message" -Default (New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305, 0xFF0C, 0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6))
-$portfolioZippedMessage = Get-ConfigValue -Config $config -Name "portfolio_zipped_message" -Default (New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305, 0xFF0C, 0x5DF2, 0x6574, 0x7406, 0x5E76, 0x538B, 0x7F29, 0x4F5C, 0x54C1, 0x96C6))
-$portfolioGroupDoneMessage = Get-ConfigValue -Config $config -Name "portfolio_group_done_message" -Default (New-TextFromCodePoints @(0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6))
-$portfolioZipDoneMessage = Get-ConfigValue -Config $config -Name "portfolio_zip_done_message" -Default (New-TextFromCodePoints @(0x5DF2, 0x751F, 0x6210, 0x005A, 0x0049, 0x0050, 0x538B, 0x7F29, 0x5305))
-$portfolioZipFailedMessage = Get-ConfigValue -Config $config -Name "portfolio_zip_failed_message" -Default (New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6, 0x538B, 0x7F29, 0x5931, 0x8D25))
-$noTextMessage = Get-ConfigValue -Config $config -Name "no_text_message" -Default (New-TextFromCodePoints @(0x8BF7, 0x5148, 0x590D, 0x5236, 0x6587, 0x6848))
-$noImageMessage = Get-ConfigValue -Config $config -Name "no_image_message" -Default (New-TextFromCodePoints @(0x8BF7, 0x5148, 0x4E0B, 0x8F7D, 0x4F5C, 0x54C1, 0x56FE))
-$duplicateTextMessage = Get-ConfigValue -Config $config -Name "duplicate_text_message" -Default (New-TextFromCodePoints @(0x8FD8, 0x662F, 0x4E0A, 0x4E00, 0x6761, 0x6587, 0x6848, 0xFF0C, 0x5148, 0x590D, 0x5236, 0x65B0, 0x6587, 0x6848))
-$duplicateExistingMessage = Get-ConfigValue -Config $config -Name "duplicate_existing_message" -Default (New-TextFromCodePoints @(0x8BE5, 0x4F5C, 0x54C1, 0x5DF2, 0x521B, 0x5EFA, 0x8FC7, 0xFF0C, 0x5DF2, 0x6E05, 0x7406, 0x672C, 0x6B21, 0x91CD, 0x590D, 0x4E0B, 0x8F7D))
-$imageExcludeNames = @("$(New-TextFromCodePoints @(0x5206, 0x9694, 0x56FE)).png")
-$portfolioAutoGroup = Get-ConfigBoolean -Config $config -Name "portfolio_auto_group" -Default $true
-$portfolioAutoZip = Get-ConfigBoolean -Config $config -Name "portfolio_auto_zip" -Default $true
-$portfolioBatchSize = Get-ConfigInt -Config $config -Name "portfolio_batch_size" -Default 14
-$portfolioPrefix = Get-ConfigValue -Config $config -Name "portfolio_prefix" -Default (New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6))
-$portfolioLogFolder = Get-ConfigValue -Config $config -Name "portfolio_log_folder" -Default "_portfolio_move_logs"
+$libraryName = New-TextFromCodePoints @(0x56E2, 0x5EFA, 0x6210, 0x54C1, 0x5E93)
 $libraryDir = Join-Path $scriptDir $libraryName
+$successMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305)
+$noImageMessage = New-TextFromCodePoints @(0x8BF7, 0x5148, 0x4E0B, 0x8F7D, 0x4F5C, 0x54C1, 0x56FE)
+$duplicateExistingMessage = New-TextFromCodePoints @(0x8BE5, 0x4F5C, 0x54C1, 0x5DF2, 0x521B, 0x5EFA, 0x8FC7, 0xFF0C, 0x5DF2, 0x6E05, 0x7406, 0x672C, 0x6B21, 0x91CD, 0x590D, 0x4E0B, 0x8F7D)
+$portfolioGroupedMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305, 0xFF0C, 0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6)
+$portfolioZippedMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305, 0xFF0C, 0x5DF2, 0x6574, 0x7406, 0x5E76, 0x538B, 0x7F29, 0x4F5C, 0x54C1, 0x96C6)
+$portfolioGroupDoneMessage = New-TextFromCodePoints @(0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6)
+$portfolioZipDoneMessage = New-TextFromCodePoints @(0x5DF2, 0x751F, 0x6210, 0x005A, 0x0049, 0x0050, 0x538B, 0x7F29, 0x5305)
+$portfolioZipFailedMessage = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6, 0x538B, 0x7F29, 0x5931, 0x8D25)
+$imageExcludeNames = @("$(New-TextFromCodePoints @(0x5206, 0x9694, 0x56FE)).png")
+$portfolioAutoGroup = $true
+$portfolioAutoZip = $true
+$portfolioBatchSize = 14
+$portfolioPrefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
+$portfolioLogFolder = "_portfolio_move_logs"
 $lockStream = $null
 $lockPath = Join-Path $scriptDir ".workpkg.lock"
 $lastHashPath = Join-Path $scriptDir ".workpkg_last_text.sha256"
@@ -774,7 +686,7 @@ try {
 
     $text = Get-ClipboardText
     if ($null -eq $text -or [string]::IsNullOrWhiteSpace($text)) {
-        Show-Tip -Message $noTextMessage
+        Show-Tip -Message (New-TextFromCodePoints @(0x8BF7, 0x5148, 0x590D, 0x5236, 0x6587, 0x6848))
         return
     }
 
