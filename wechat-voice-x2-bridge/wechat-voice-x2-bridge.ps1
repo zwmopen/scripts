@@ -21,6 +21,11 @@ public static class WeChatVoiceX2Bridge
     private const int XBUTTON2 = 2;
     private const ushort VK_CONTROL = 0x11;
     private const ushort VK_MENU = 0x12;
+    private const ushort VK_SHIFT = 0x10;
+    private const ushort VK_LWIN = 0x5B;
+    private const ushort VK_RWIN = 0x5C;
+    private const ushort VK_LCONTROL = 0xA2;
+    private const ushort VK_LMENU = 0xA4;
     private const ushort VK_O = 0x4F;
     private const ushort SC_CONTROL = 0x1D;
     private const ushort SC_MENU = 0x38;
@@ -84,14 +89,25 @@ public static class WeChatVoiceX2Bridge
 
     private static void SendCtrlAltO()
     {
-        keybd_event((byte)VK_CONTROL, (byte)SC_CONTROL, 0, UIntPtr.Zero);
-        keybd_event((byte)VK_MENU, (byte)SC_MENU, 0, UIntPtr.Zero);
+        ReleaseCommonModifiers();
+        Thread.Sleep(30);
+        keybd_event((byte)VK_LCONTROL, (byte)SC_CONTROL, 0, UIntPtr.Zero);
+        keybd_event((byte)VK_LMENU, (byte)SC_MENU, 0, UIntPtr.Zero);
         keybd_event((byte)VK_O, (byte)SC_O, 0, UIntPtr.Zero);
         Thread.Sleep(40);
         keybd_event((byte)VK_O, (byte)SC_O, KEYEVENTF_KEYUP, UIntPtr.Zero);
-        keybd_event((byte)VK_MENU, (byte)SC_MENU, KEYEVENTF_KEYUP, UIntPtr.Zero);
-        keybd_event((byte)VK_CONTROL, (byte)SC_CONTROL, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        keybd_event((byte)VK_LMENU, (byte)SC_MENU, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        keybd_event((byte)VK_LCONTROL, (byte)SC_CONTROL, KEYEVENTF_KEYUP, UIntPtr.Zero);
         Log("keybd_event sent LeftCtrl+LeftAlt+O.");
+    }
+
+    private static void ReleaseCommonModifiers()
+    {
+        ushort[] keys = new ushort[] { VK_CONTROL, VK_LCONTROL, VK_MENU, VK_LMENU, VK_SHIFT, VK_LWIN, VK_RWIN };
+        foreach (ushort key in keys)
+        {
+            keybd_event((byte)key, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        }
     }
 
     private static void Log(string text)
@@ -158,4 +174,3 @@ try {
 finally {
     Remove-Item -LiteralPath $pidPath -ErrorAction SilentlyContinue
 }
-
