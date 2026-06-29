@@ -1,3 +1,5 @@
+param([switch]$Restart)
+
 $ErrorActionPreference = 'SilentlyContinue'
 
 $scriptPath = Join-Path $PSScriptRoot 'wechat-voice-x2-bridge.ps1'
@@ -10,12 +12,20 @@ function Write-WatchdogLog {
 }
 
 $running = $false
+$pidText = ''
 if (Test-Path -LiteralPath $pidPath) {
     $pidText = (Get-Content -LiteralPath $pidPath -Raw).Trim()
     if ($pidText) {
         $proc = Get-Process -Id ([int]$pidText) -ErrorAction SilentlyContinue
         $running = [bool]$proc
     }
+}
+
+if ($Restart -and $running) {
+    Stop-Process -Id ([int]$pidText) -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 300
+    $running = $false
+    Write-WatchdogLog 'restart requested; stopped old bridge'
 }
 
 if (-not $running) {
