@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$taskNames = @('WeChat Voice X2 Bridge Watchdog', 'WeChat Voice X2 Bridge Refresh')
+$taskNames = @('WeChat Voice X2 Bridge Watchdog', 'WeChat Voice X2 Bridge Startup', 'WeChat Voice X2 Bridge Refresh')
 foreach ($taskName in $taskNames) {
     if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false

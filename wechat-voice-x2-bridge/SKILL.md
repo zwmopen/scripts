@@ -26,7 +26,7 @@ D:\AICode\AI\skills\技能包\技能\AI协作\鼠标快速语音打字\scripts
 - `scripts\install-startup.cmd`：安装当前用户开机自启动。
 - `scripts\uninstall-startup.cmd`：取消开机自启动。
 - `scripts\watchdog.ps1`：守护脚本，发现后台监听不在时自动拉起。
-- `scripts\install-watchdog.ps1`：安装计划任务守护；每 5 分钟检查一次，并在解锁/睡眠恢复后主动重启监听。
+- `scripts\install-watchdog.ps1`：安装计划任务守护；登录时启动，每 5 分钟检查一次，并在解锁/睡眠恢复后主动重启监听。
 - `scripts\uninstall-watchdog.ps1`：取消计划任务守护和恢复刷新任务。
 - `scripts\run-hidden.vbs`：隐藏运行 PowerShell，避免计划任务弹出蓝色窗口。
 - `scripts\wechat-voice-x2-bridge.ps1`：核心脚本。
@@ -35,7 +35,7 @@ D:\AICode\AI\skills\技能包\技能\AI协作\鼠标快速语音打字\scripts
 
 1. 保持微信输入法语音输入快捷键为 `左 Ctrl + 左 Alt + O`。
 2. 启动脚本后，按鼠标 `X2` 侧键即可唤起微信输入法语音输入。
-3. 默认推荐安装开机自启动和计划任务守护，这样重启、熄屏解锁、睡眠恢复后仍可直接使用。
+3. 默认推荐安装计划任务守护，这样登录、重启、熄屏解锁、睡眠恢复后仍可直接使用。
 4. 如果用户说“X2 没反应”，先检查脚本是否运行、PID 文件是否存在、日志是否记录 `XBUTTON2`。
 
 ## 本地运行文件

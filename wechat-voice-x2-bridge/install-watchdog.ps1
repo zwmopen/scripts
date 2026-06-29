@@ -8,6 +8,11 @@ $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"' + $runne
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description 'Keeps the mouse X2 WeChat voice typing bridge running.' -Force | Out-Null
 
+$startupTaskName = 'WeChat Voice X2 Bridge Startup'
+$startupAction = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"' + $runnerPath + '" watchdog.ps1 -Restart')
+$startupTrigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+Register-ScheduledTask -TaskName $startupTaskName -Action $startupAction -Trigger $startupTrigger -Settings $settings -Description 'Starts the mouse X2 WeChat voice typing bridge when the user logs on.' -Force | Out-Null
+
 $refreshTaskName = 'WeChat Voice X2 Bridge Refresh'
 $runnerXml = [Security.SecurityElement]::Escape($runnerPath)
 $userId = [Security.SecurityElement]::Escape("$env:USERDOMAIN\$env:USERNAME")
@@ -69,5 +74,7 @@ Remove-Item -LiteralPath $xmlPath -Force -ErrorAction SilentlyContinue
 
 Write-Host "Installed scheduled watchdog task:"
 Write-Host $taskName
+Write-Host "Installed scheduled startup task:"
+Write-Host $startupTaskName
 Write-Host "Installed scheduled refresh task:"
 Write-Host $refreshTaskName
