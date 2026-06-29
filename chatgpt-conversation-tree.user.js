@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.18
+// @version      1.7.19
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -516,7 +516,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.18',
+      scriptVersion: '1.7.19',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -3847,6 +3847,7 @@
       'open-folder-picker',
       icons.move
     );
+    const exportMdItem = buildNativeMenuItem(reference, '导出 MD', 'export-markdown', icons.download);
     const removeItem = grouped
       ? buildNativeMenuItem(reference, '移出分组', 'remove-from-folder', icons.out)
       : null;
@@ -3861,6 +3862,7 @@
       else menu.append(element);
     };
     insert(divider);
+    insert(exportMdItem);
     insert(moveItem);
     if (grouped) {
       insert(removeItem);
@@ -4164,6 +4166,124 @@
     anchor.click();
     anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function markdownFileName(title = '') {
+    const safe = compactTitle(title || document.title || 'chatgpt-conversation')
+      .replace(/[\\/:*?"<>|]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 70) || 'chatgpt-conversation';
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    return `${safe}-${stamp}.md`;
+  }
+
+  function markdownEscapeText(text = '') {
+    return String(text || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  function conversationMessageElements() {
+    const main = document.querySelector('main') || document.body;
+    return [...main.querySelectorAll('[data-message-author-role]')]
+      .filter((element) => element.closest?.('[data-message-author-role]') === element)
+      .filter((element) => {
+        const role = element.getAttribute('data-message-author-role') || '';
+        return /user|assistant|tool/i.test(role) && isElementVisible(element);
+      });
+  }
+
+  function markdownTextFromMessage(element) {
+    const clone = element.cloneNode(true);
+    clone.querySelectorAll?.([
+      'button',
+      'svg',
+      'script',
+      'style',
+      'textarea',
+      'input',
+      '[contenteditable="true"]',
+      `.${IMAGE_DOWNLOAD_SLOT_CLASS}`,
+      `.${TEXT_DOWNLOAD_SLOT_CLASS}`,
+      `.${WORK_PACKAGE_CLASS}`,
+      `#${APP_ID}`,
+      `#${MENU_ID}`,
+      `#${PROMPT_PANEL_ID}`,
+    ].join(',')).forEach((node) => node.remove());
+    return markdownEscapeText(clone.innerText || clone.textContent || '');
+  }
+
+  function buildConversationMarkdown(chatId = currentChatId()) {
+    const title = state.known[chatId]?.title
+      || compactTitle(document.title.replace(/\s*[-–]\s*ChatGPT\s*$/i, ''))
+      || 'ChatGPT 对话';
+    const url = chatId ? new URL(chatHref(chatId), location.href).href : location.href;
+    const messages = conversationMessageElements()
+      .map((element) => {
+        const role = element.getAttribute('data-message-author-role') || '';
+        const label = /user/i.test(role) ? '用户' : (/assistant/i.test(role) ? 'ChatGPT' : role || '消息');
+        const text = markdownTextFromMessage(element);
+        if (!text) return '';
+        return `## ${label}\n\n${text}`;
+      })
+      .filter(Boolean);
+    if (!messages.length) return { title, markdown: '' };
+    const header = [
+      `# ${title}`,
+      '',
+      `- 导出时间：${new Date().toLocaleString()}`,
+      `- 对话链接：${url}`,
+      '',
+      '---',
+      '',
+    ].join('\n');
+    return {
+      title,
+      markdown: `${header}${messages.join('\n\n---\n\n')}\n`,
+    };
+  }
+
+  function downloadMarkdownFile(title, markdown) {
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = markdownFileName(title);
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function exportConversationMarkdown(chatId = currentChatId()) {
+    const targetChatId = chatId || currentChatId();
+    const fallbackHref = targetChatId ? chatHref(targetChatId) : '';
+    dismissNativeMenu();
+    if (targetChatId && !isChatLocation(targetChatId)) {
+      showImageDownloadToast('正在打开对话...', true);
+      const opened = await openChatThroughNativeRow(targetChatId, fallbackHref);
+      if (!opened) {
+        window.alert('没有成功打开这个对话，暂时无法导出 MD。');
+        return false;
+      }
+    }
+    const ready = await waitForValue(() => (
+      (!targetChatId || isChatLocation(targetChatId)) && conversationMessageElements().length > 0
+    ), 6500, 120);
+    if (!ready) {
+      window.alert('没有找到可导出的对话内容。请先打开这个对话后再试一次。');
+      return false;
+    }
+    const { title, markdown } = buildConversationMarkdown(targetChatId || currentChatId());
+    if (!markdown) {
+      window.alert('没有找到可导出的对话内容。');
+      return false;
+    }
+    downloadMarkdownFile(title, markdown);
+    showImageDownloadToast('MD 导出完成', true);
+    return true;
   }
 
   function refreshWorkPackageButtons() {
@@ -5694,6 +5814,8 @@
         if (action === 'open-folder-picker' && chatId) {
           showMoveToFolderMenu(chatId, nativeAction);
           window.setTimeout(dismissNativeMenu, 0);
+        } else if (action === 'export-markdown' && chatId) {
+          void exportConversationMarkdown(chatId);
         } else if (action === 'remove-from-folder' && chatId) {
           const chatNode = findChatNode(chatId);
           if (chatNode) unclassifyChatNode(chatNode.id);
