@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.19
+// @version      1.7.20
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -516,7 +516,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.19',
+      scriptVersion: '1.7.20',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -2136,6 +2136,50 @@
     renderPromptPanel();
   }
 
+  function dispatchPasteLikeInput(input, text) {
+    try {
+      input.dispatchEvent(new InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        inputType: 'insertFromPaste',
+        data: text,
+      }));
+    } catch {}
+    try {
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        composed: true,
+        inputType: 'insertFromPaste',
+        data: text,
+      }));
+    } catch {
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+
+  function fastPasteIntoContentEditable(input, text) {
+    if (!input?.isContentEditable) return false;
+    input.focus();
+    const selection = window.getSelection();
+    if (!selection) return false;
+    if (!selection.rangeCount || !input.contains(selection.anchorNode)) {
+      const range = document.createRange();
+      range.selectNodeContents(input);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    const range = selection.rangeCount ? selection.getRangeAt(0) : document.createRange();
+    range.deleteContents();
+    range.insertNode(document.createTextNode(text));
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    dispatchPasteLikeInput(input, text);
+    return true;
+  }
+
   function insertTextIntoComposer(text) {
     const input = promptComposerInput();
     if (!input) {
@@ -2147,15 +2191,14 @@
       const start = input.selectionStart ?? input.value.length;
       const end = input.selectionEnd ?? input.value.length;
       input.setRangeText(text, start, end, 'end');
-      input.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        inputType: 'insertText',
-        data: text,
-      }));
+      dispatchPasteLikeInput(input, text);
       return true;
     }
     const selection = window.getSelection();
     if (selection && input.isContentEditable) {
+      if (String(text || '').length > 800 && fastPasteIntoContentEditable(input, text)) {
+        return true;
+      }
       if (!selection.rangeCount || !input.contains(selection.anchorNode)) {
         const range = document.createRange();
         range.selectNodeContents(input);
@@ -2164,11 +2207,7 @@
         selection.addRange(range);
       }
       const ok = document.execCommand?.('insertText', false, text);
-      input.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        inputType: 'insertText',
-        data: text,
-      }));
+      dispatchPasteLikeInput(input, text);
       if (ok) return true;
       const range = selection.rangeCount ? selection.getRangeAt(0) : document.createRange();
       range.deleteContents();
