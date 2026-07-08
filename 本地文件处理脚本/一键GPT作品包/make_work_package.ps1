@@ -115,12 +115,56 @@ public static class WorkPkgWindowTitle
     }
 }
 
+function ConvertFrom-WorkPkgBase64Utf8 {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ""
+    }
+
+    try {
+        $bytes = [Convert]::FromBase64String($Value.Trim())
+        return [System.Text.Encoding]::UTF8.GetString($bytes)
+    } catch {
+        return ""
+    }
+}
+
+function Get-GptConversationTitleFromClipboardHtml {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        if (-not [System.Windows.Forms.Clipboard]::ContainsText([System.Windows.Forms.TextDataFormat]::Html)) {
+            return ""
+        }
+
+        $html = [System.Windows.Forms.Clipboard]::GetText([System.Windows.Forms.TextDataFormat]::Html)
+        if ([string]::IsNullOrWhiteSpace($html)) {
+            return ""
+        }
+
+        $match = [regex]::Match($html, 'WORKPKG_GPT_TITLE_B64:([A-Za-z0-9+/=]+)')
+        if (-not $match.Success) {
+            return ""
+        }
+
+        $decoded = ConvertFrom-WorkPkgBase64Utf8 -Value $match.Groups[1].Value
+        return Get-NormalizedGptWindowTitle -WindowTitle $decoded
+    } catch {
+        return ""
+    }
+}
+
 function Get-GptConversationTitle {
     if (-not [string]::IsNullOrWhiteSpace($env:WORKPKG_GPT_TITLE)) {
         $fromEnv = Get-NormalizedGptWindowTitle -WindowTitle $env:WORKPKG_GPT_TITLE
         if (-not [string]::IsNullOrWhiteSpace($fromEnv)) {
             return $fromEnv
         }
+    }
+
+    $fromClipboardHtml = Get-GptConversationTitleFromClipboardHtml
+    if (-not [string]::IsNullOrWhiteSpace($fromClipboardHtml)) {
+        return $fromClipboardHtml
     }
 
     $candidateTitles = New-Object System.Collections.Generic.List[string]

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.20
+// @version      1.7.21
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -41,6 +41,7 @@
   const WORK_PACKAGE_CLASS = `${APP_ID}-work-package`;
   const IMAGE_DOWNLOAD_TOAST_ID = `${APP_ID}-image-download-toast`;
   const WORK_PACKAGE_PROTOCOL_URL = 'cgpt-workpkg://run';
+  const WORK_PACKAGE_TITLE_MARKER = 'WORKPKG_GPT_TITLE_B64:';
   // v1 曾被多个同名/改名后的脚本版本同时读写。1.0 起改用独立存储区，
   // 旧脚本即使仍在运行，也不能再覆盖新版数据。
   const STORAGE_KEY = `${APP_ID}:state:v3`;
@@ -516,7 +517,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.20',
+      scriptVersion: '1.7.21',
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -626,6 +627,109 @@
       .replaceAll('>', '&gt;')
       .replaceAll('"', '&quot;')
       .replaceAll("'", '&#039;');
+  }
+
+  function base64Utf8(value) {
+    const bytes = new TextEncoder().encode(String(value || ''));
+    let binary = '';
+    bytes.forEach((byte) => {
+      binary += String.fromCharCode(byte);
+    });
+    return btoa(binary);
+  }
+
+  function normalizeWorkPackageConversationTitle(value) {
+    let title = compactTitle(value);
+    title = title
+      .replace(/\s+[-\u2013\u2014]\s+(Microsoft Edge|Google Chrome|Chrome|Chromium|Brave|Mozilla Firefox)$/i, '')
+      .replace(/\s+[-\u2013\u2014]\s*(ChatGPT|OpenAI)\s*$/i, '')
+      .replace(/^\s*(ChatGPT|OpenAI)\s*[-\u2013\u2014]\s*/i, '');
+    title = compactTitle(title);
+    if (!title || /^(ChatGPT|OpenAI|New chat|\u65b0\u804a\u5929)$/i.test(title)) return '';
+    return title.slice(0, 80);
+  }
+
+  function currentWorkPackageConversationTitle() {
+    const chatId = currentChatId();
+    const candidates = [
+      chatId ? state.known?.[chatId]?.title : '',
+      document.querySelector('main h1')?.innerText || '',
+      document.title || '',
+    ];
+
+    for (const candidate of candidates) {
+      const title = normalizeWorkPackageConversationTitle(candidate);
+      if (title) return title;
+    }
+    return '';
+  }
+
+  function workPackageTitleMarker(title = currentWorkPackageConversationTitle()) {
+    const normalized = normalizeWorkPackageConversationTitle(title);
+    if (!normalized) return '';
+    return `<!--${WORK_PACKAGE_TITLE_MARKER}${base64Utf8(normalized)}-->`;
+  }
+
+  function stripWorkPackageTitleMarkers(html = '') {
+    return String(html || '').replace(/<!--WORKPKG_GPT_TITLE_B64:[A-Za-z0-9+/=]+-->/g, '');
+  }
+
+  function htmlFromPlainText(text = '') {
+    return escapeHtml(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>');
+  }
+
+  function selectedHtmlFragment() {
+    const selection = window.getSelection?.();
+    if (!selection || selection.rangeCount <= 0) return '';
+    const container = document.createElement('div');
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      container.append(selection.getRangeAt(index).cloneContents());
+    }
+    return container.innerHTML || '';
+  }
+
+  function installWorkPackageClipboardBridge() {
+    if (installWorkPackageClipboardBridge.installed) return;
+    installWorkPackageClipboardBridge.installed = true;
+    document.addEventListener('copy', (event) => {
+      const title = currentWorkPackageConversationTitle();
+      const marker = workPackageTitleMarker(title);
+      const selection = window.getSelection?.();
+      const text = selection?.toString?.() || '';
+      if (!event.clipboardData || !marker || !text.trim()) return;
+
+      const selectedHtml = selectedHtmlFragment();
+      const html = `${stripWorkPackageTitleMarkers(selectedHtml || htmlFromPlainText(text))}${marker}`;
+      event.clipboardData.setData('text/plain', text);
+      event.clipboardData.setData('text/html', html);
+      event.preventDefault();
+      addDiagnosticLog('workpkg:copy-title-marker', { title });
+    }, true);
+  }
+
+  async function stampWorkPackageTitleOnClipboard() {
+    const title = currentWorkPackageConversationTitle();
+    const marker = workPackageTitleMarker(title);
+    if (!marker || !navigator.clipboard?.readText || !navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+      return false;
+    }
+
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text || !text.trim()) return false;
+      const html = `${htmlFromPlainText(text)}${marker}`;
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+          'text/html': new Blob([html], { type: 'text/html' }),
+        }),
+      ]);
+      addDiagnosticLog('workpkg:clipboard-title-stamped', { title });
+      return true;
+    } catch (error) {
+      addDiagnosticLog('workpkg:clipboard-title-stamp-failed', { title, message: error?.message || String(error) });
+      return false;
+    }
   }
 
   function chatInfoFromHref(href) {
@@ -5223,7 +5327,7 @@
     button.setAttribute('aria-label', '打包作品');
   }
 
-  function triggerWorkPackageButton(button, event = null) {
+  async function triggerWorkPackageButton(button, event = null) {
     if (!button || button.disabled) return;
     event?.preventDefault?.();
     event?.stopPropagation?.();
@@ -5231,6 +5335,7 @@
     setWorkPackageButtonState(button, 'running');
     showImageDownloadToast('打包中...', true);
     try {
+      await stampWorkPackageTitleOnClipboard();
       const anchor = document.createElement('a');
       anchor.href = WORK_PACKAGE_PROTOCOL_URL;
       anchor.rel = 'noopener';
@@ -6177,6 +6282,7 @@
   if (!localStorage.getItem(STORAGE_KEY)) saveState(true);
   installConversationTreeDebugApi();
   registerUserscriptMenuCommands();
+  installWorkPackageClipboardBridge();
   bindImageDownloadEvents();
   installImageDownloadDebugApi();
   addDiagnosticLog('script:init');
