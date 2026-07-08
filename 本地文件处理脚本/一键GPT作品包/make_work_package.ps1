@@ -31,7 +31,10 @@ function Get-TitleLine {
 }
 
 function Get-SafeNamePart {
-    param([string]$Text)
+    param(
+        [string]$Text,
+        [int]$MaxLength = 60
+    )
 
     if ([string]::IsNullOrWhiteSpace($Text)) {
         return "untitled"
@@ -46,11 +49,111 @@ function Get-SafeNamePart {
         $safe = "untitled"
     }
 
-    if ($safe.Length -gt 60) {
-        $safe = $safe.Substring(0, 60).TrimEnd('.', ' ')
+    if ($MaxLength -gt 0 -and $safe.Length -gt $MaxLength) {
+        $safe = $safe.Substring(0, $MaxLength).TrimEnd('.', ' ')
     }
 
     return $safe
+}
+
+function Get-NormalizedGptWindowTitle {
+    param([string]$WindowTitle)
+
+    if ([string]::IsNullOrWhiteSpace($WindowTitle)) {
+        return ""
+    }
+
+    $title = $WindowTitle.Trim()
+    $title = $title -replace '\s+-\s+(Microsoft Edge|Google Chrome|Chrome|Chromium|Brave|Mozilla Firefox)$', ''
+    $title = $title -replace '\s+—\s+(Microsoft Edge|Google Chrome|Chrome|Chromium|Brave|Mozilla Firefox)$', ''
+    $title = $title -replace '^\s*ChatGPT\s*[-–—]\s*', ''
+    $title = $title -replace '\s*[-–—]\s*ChatGPT\s*$', ''
+    $title = $title.Trim()
+
+    if ([string]::IsNullOrWhiteSpace($title)) {
+        return ""
+    }
+
+    if ($title -match '^(ChatGPT|OpenAI|新聊天|New chat)$') {
+        return ""
+    }
+
+    return Get-SafeNamePart -Text $title -MaxLength 80
+}
+
+function Get-ForegroundWindowTitle {
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]"WorkPkgWindowTitle").Type) {
+            Add-Type -Language CSharp -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+
+public static class WorkPkgWindowTitle
+{
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+
+    public static string GetForegroundTitle()
+    {
+        IntPtr handle = GetForegroundWindow();
+        if (handle == IntPtr.Zero) return "";
+        StringBuilder buffer = new StringBuilder(1024);
+        GetWindowText(handle, buffer, buffer.Capacity);
+        return buffer.ToString();
+    }
+}
+'@
+        }
+
+        return [WorkPkgWindowTitle]::GetForegroundTitle()
+    } catch {
+        return ""
+    }
+}
+
+function Get-GptConversationTitle {
+    if (-not [string]::IsNullOrWhiteSpace($env:WORKPKG_GPT_TITLE)) {
+        $fromEnv = Get-NormalizedGptWindowTitle -WindowTitle $env:WORKPKG_GPT_TITLE
+        if (-not [string]::IsNullOrWhiteSpace($fromEnv)) {
+            return $fromEnv
+        }
+    }
+
+    $candidateTitles = New-Object System.Collections.Generic.List[string]
+    $foregroundTitle = Get-ForegroundWindowTitle
+    if (-not [string]::IsNullOrWhiteSpace($foregroundTitle)) {
+        $candidateTitles.Add($foregroundTitle)
+    }
+
+    foreach ($processName in @("msedge", "chrome", "brave", "firefox")) {
+        try {
+            $processes = @(Get-Process -Name $processName -ErrorAction SilentlyContinue | Where-Object {
+                -not [string]::IsNullOrWhiteSpace($_.MainWindowTitle)
+            } | Sort-Object StartTime -Descending)
+
+            foreach ($process in $processes) {
+                $candidateTitles.Add($process.MainWindowTitle)
+            }
+        } catch {
+        }
+    }
+
+    foreach ($candidate in @($candidateTitles | Select-Object -Unique)) {
+        if ($candidate -notmatch 'ChatGPT|OpenAI') {
+            continue
+        }
+
+        $normalized = Get-NormalizedGptWindowTitle -WindowTitle $candidate
+        if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+            return $normalized
+        }
+    }
+
+    return ""
 }
 
 function Write-ErrorLog {
@@ -735,12 +838,18 @@ try {
     }
 
     $title = Get-SafeNamePart -Text (Get-TitleLine -Text $text)
-    $targetDir = Join-Path $libraryDir "$stamp`_$title"
+    $gptConversationTitle = Get-GptConversationTitle
+    $folderTitle = $title
+    if (-not [string]::IsNullOrWhiteSpace($gptConversationTitle) -and $gptConversationTitle -ne $title) {
+        $folderTitle = Get-SafeNamePart -Text "$title+$gptConversationTitle" -MaxLength 130
+    }
+
+    $targetDir = Join-Path $libraryDir "$stamp`_$folderTitle"
     $packageId = $stamp
 
     $index = 2
     while (Test-Path -LiteralPath $targetDir) {
-        $targetDir = Join-Path $libraryDir "$stamp`_$title`_$index"
+        $targetDir = Join-Path $libraryDir "$stamp`_$folderTitle`_$index"
         $packageId = "$stamp`_$index"
         $index++
     }
@@ -803,6 +912,7 @@ try {
     if ($NoMessage) {
         Write-Output "OK"
         Write-Output "Folder=$finalTargetDir"
+        Write-Output "GptConversationTitle=$gptConversationTitle"
         Write-Output "Images=$($images.Count)"
         Write-Output "Txt=$([System.IO.Path]::GetFileName($txtPath))"
         if ($null -ne $portfolioResult) {
