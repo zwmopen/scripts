@@ -885,7 +885,7 @@ try {
     $gptConversationTitle = Get-GptConversationTitle
     $folderTitle = $title
     if (-not [string]::IsNullOrWhiteSpace($gptConversationTitle) -and $gptConversationTitle -ne $title) {
-        $folderTitle = Get-SafeNamePart -Text "$title+$gptConversationTitle" -MaxLength 130
+        $folderTitle = Get-SafeNamePart -Text "$title（$gptConversationTitle）" -MaxLength 130
     }
 
     $targetDir = Join-Path $libraryDir "$stamp`_$folderTitle"
