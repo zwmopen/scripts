@@ -4,6 +4,7 @@
 )
 
 $ErrorActionPreference = "Stop"
+$workPackageScriptVersion = "1.0.0"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 
 function Get-ClipboardText {
@@ -873,6 +874,7 @@ try {
         Show-Tip -Message $duplicateExistingMessage
         if ($NoMessage) {
             Write-Output "DUPLICATE"
+            Write-Output "Version=$workPackageScriptVersion"
             Write-Output "CleanedImages=$removedImages"
         }
         return
@@ -956,6 +958,7 @@ try {
 
     if ($NoMessage) {
         Write-Output "OK"
+        Write-Output "Version=$workPackageScriptVersion"
         Write-Output "Folder=$finalTargetDir"
         Write-Output "GptConversationTitle=$gptConversationTitle"
         Write-Output "Images=$($images.Count)"
