@@ -575,7 +575,8 @@ function Invoke-PortfolioAutoGroup {
         return $emptyResult
     }
 
-    $portfolioPattern = "^$([regex]::Escape($PortfolioPrefix))_(\d+)$"
+    $portfolioNameCore = $PortfolioPrefix.TrimStart('.')
+    $portfolioPattern = "^\.?$([regex]::Escape($portfolioNameCore))_(\d+)$"
     $allDirs = @(Get-ChildItem -LiteralPath $LibraryDir -Directory -Force -ErrorAction SilentlyContinue)
 
     $existingPortfolios = @($allDirs | Where-Object {
@@ -808,7 +809,7 @@ $imageExcludeNames = @("$(New-TextFromCodePoints @(0x5206, 0x9694, 0x56FE)).png"
 $portfolioAutoGroup = $true
 $portfolioAutoZip = $true
 $portfolioBatchSize = 14
-$portfolioPrefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
+$portfolioPrefix = ".$(New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6))"
 $portfolioLogFolder = "_portfolio_move_logs"
 $lockStream = $null
 $lockPath = Join-Path $scriptDir ".workpkg.lock"
