@@ -1,0 +1,50 @@
+name: Repository quality
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check JavaScript syntax
+        run: node --check chatgpt-conversation-tree.user.js
+
+      - name: Check JSON syntax
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for path in Path('.').rglob('*.json'):
+              if '.git' in path.parts:
+                  continue
+              with path.open('r', encoding='utf-8-sig') as fh:
+                  json.load(fh)
+              print(f'OK {path}')
+          PY
+
+      - name: Check whitespace errors
+        run: git diff --check
+
+      - name: Reject files larger than 50 MB
+        shell: bash
+        run: |
+          large_files=$(find . -type f -not -path './.git/*' -size +50M -print)
+          if [ -n "$large_files" ]; then
+            echo "Files larger than 50 MB are not allowed:"
+            echo "$large_files"
+            exit 1
+          fi
