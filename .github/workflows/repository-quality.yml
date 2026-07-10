@@ -22,18 +22,66 @@ jobs:
       - name: Check JavaScript syntax
         run: node --check chatgpt-conversation-tree.user.js
 
-      - name: Check JSON syntax
+      - name: Verify userscript version contract
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          text = Path('chatgpt-conversation-tree.user.js').read_text(encoding='utf-8-sig')
+          metadata = re.search(r'^//\s*@version\s+([^\s]+)', text, re.MULTILINE)
+          runtime = re.search(r"const\s+SCRIPT_VERSION\s*=\s*['\"]([^'\"]+)['\"]", text)
+          if not metadata or not runtime:
+              raise SystemExit('Cannot locate userscript metadata version and SCRIPT_VERSION')
+          if metadata.group(1) != runtime.group(1):
+              raise SystemExit(f'Version mismatch: metadata={metadata.group(1)} runtime={runtime.group(1)}')
+          print(f'Userscript version OK: {metadata.group(1)}')
+          PY
+
+      - name: Check PowerShell syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -Path . -Recurse -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Host "PowerShell syntax errors in $($_.FullName)"
+              $errors | ForEach-Object { Write-Host $_.Message }
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Check JSON and work package config
         shell: bash
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
+
           for path in Path('.').rglob('*.json'):
               if '.git' in path.parts:
                   continue
               with path.open('r', encoding='utf-8-sig') as fh:
-                  json.load(fh)
+                  data = json.load(fh)
               print(f'OK {path}')
+
+              if path.name == 'workpkg_config.json':
+                  required = {
+                      'library_name',
+                      'portfolio_auto_group',
+                      'portfolio_auto_zip',
+                      'portfolio_batch_size',
+                      'portfolio_prefix',
+                      'portfolio_log_folder',
+                  }
+                  missing = required - set(data)
+                  if missing:
+                      raise SystemExit(f'{path}: missing keys {sorted(missing)}')
+                  if not isinstance(data['portfolio_batch_size'], int) or data['portfolio_batch_size'] < 1:
+                      raise SystemExit(f'{path}: portfolio_batch_size must be a positive integer')
           PY
 
       - name: Check whitespace errors
