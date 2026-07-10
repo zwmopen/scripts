@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.7.21
+// @version      1.8.0
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -24,6 +24,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
+  const SCRIPT_VERSION = '1.8.0';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -47,7 +48,7 @@
   const STORAGE_KEY = `${APP_ID}:state:v3`;
   const LEGACY_STORAGE_KEY = `${APP_ID}:state:v1`;
   const BACKUP_PREFIX = `${APP_ID}:backup:`;
-  const MAX_BACKUPS = 20;
+  const MAX_BACKUPS = 8;
   const GM_STATE_KEY = 'state-v3';
   const GM_BACKUP_PREFIX = 'backup:';
   const UNGROUPED_COLLAPSED_KEY = 'ungrouped-collapsed';
@@ -122,6 +123,7 @@
   let queuedOpenChat = null;
   let openChatRequestSeq = 0;
   let diagnosticLogs = loadDiagnosticLogs();
+  let diagnosticSaveTimer = 0;
   let workPackageButtonVisible = (() => {
     try {
       return GM_getValue(WORK_PACKAGE_VISIBLE_KEY, true) !== false;
@@ -267,19 +269,19 @@
     const stamp = new Date().toISOString();
     const key = `${BACKUP_PREFIX}${stamp}`;
     const counts = countStateItems(candidate);
-    localStorage.setItem(key, JSON.stringify({
+    const payload = {
       savedAt: stamp,
       reason,
       counts,
       state: candidate,
-    }));
+    };
     try {
-      GM_setValue(`${GM_BACKUP_PREFIX}${stamp}`, {
-        savedAt: stamp,
-        reason,
-        counts,
-        state: candidate,
-      });
+      localStorage.setItem(key, JSON.stringify(payload));
+    } catch {
+      // 备份不能阻断主数据保存；空间不足时交给 GM 存储接管。
+    }
+    try {
+      GM_setValue(`${GM_BACKUP_PREFIX}${stamp}`, payload);
     } catch {
       // localStorage 备份仍然可用。
     }
@@ -442,7 +444,9 @@
     } catch {
       sources.push(null);
     }
-    const source = sources.find((candidate) => candidate && Array.isArray(candidate.items));
+    const source = sources
+      .filter((candidate) => candidate && Array.isArray(candidate.items))
+      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0];
     if (!source) return defaultPromptState();
     const items = source.items
       .map((item) => normalizePromptItem(item))
@@ -483,7 +487,12 @@
     }
   }
 
-  function saveDiagnosticLogs() {
+  function saveDiagnosticLogs(immediate = false) {
+    if (!immediate) {
+      clearTimeout(diagnosticSaveTimer);
+      diagnosticSaveTimer = window.setTimeout(() => saveDiagnosticLogs(true), 900);
+      return;
+    }
     try {
       localStorage.setItem(
         DIAGNOSTIC_LOG_KEY,
@@ -517,7 +526,7 @@
 
   function diagnosticSnapshot() {
     return {
-      scriptVersion: '1.7.21',
+      scriptVersion: SCRIPT_VERSION,
       pageUrl: location.href,
       pageTitle: document.title,
       appMounted: Boolean(host?.isConnected),
@@ -587,7 +596,7 @@
 
   function clearDiagnosticLogs() {
     diagnosticLogs = [];
-    saveDiagnosticLogs();
+    saveDiagnosticLogs(true);
     addDiagnosticLog('diagnostic:cleared');
   }
 
@@ -600,7 +609,7 @@
         copyLogs: () => copyDiagnosticLogs(),
         clearLogs: () => clearDiagnosticLogs(),
         preloadHistory: () => preloadAllHistoryChats(),
-        version: '1.7.0',
+        version: SCRIPT_VERSION,
       };
     } catch {
       // ignore
@@ -1722,10 +1731,10 @@
       host.id = APP_ID;
       host.className = 'list-none';
       host.setAttribute('aria-label', '最近对话分组');
-      host.dataset.cgptTreeVersion = '1.7.0';
+      host.dataset.cgptTreeVersion = SCRIPT_VERSION;
       nativeList.insertBefore(host, nativeList.firstChild);
     }
-    if (host?.isConnected) host.dataset.cgptTreeVersion = '1.7.0';
+    if (host?.isConnected) host.dataset.cgptTreeVersion = SCRIPT_VERSION;
 
     if (!parkingLot?.isConnected) {
       parkingLot = document.getElementById(PARKING_ID) || document.createElement('div');
@@ -1764,7 +1773,7 @@
     const source = `(() => {
       const EVENT_NAME = ${JSON.stringify(PAGE_OPEN_EVENT)};
       const APP_ID = ${JSON.stringify(APP_ID)};
-      const BRIDGE_VERSION = '1.7.0';
+      const BRIDGE_VERSION = ${JSON.stringify(SCRIPT_VERSION)};
       if (window.__cgptConversationTreeBridgeVersion === BRIDGE_VERSION) return;
       window.__cgptConversationTreeBridge = true;
       window.__cgptConversationTreeBridgeVersion = BRIDGE_VERSION;
@@ -1904,15 +1913,15 @@
       window.addEventListener(EVENT_NAME, (event) => {
         const chatId = event.detail?.chatId;
         if (!chatId) return;
-        openChat(chatId);
+        event.detail.result = openChat(chatId);
       }, true);
     })();`;
     try {
       const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-      if (pageWindow.__cgptConversationTreeBridgeVersion === '1.7.0') return;
+      if (pageWindow.__cgptConversationTreeBridgeVersion === SCRIPT_VERSION) return;
       if (typeof pageWindow.eval === 'function') {
         pageWindow.eval(source);
-        if (pageWindow.__cgptConversationTreeBridgeVersion === '1.7.0') {
+        if (pageWindow.__cgptConversationTreeBridgeVersion === SCRIPT_VERSION) {
           addDiagnosticLog('bridge:eval-success');
           return;
         }
@@ -3392,16 +3401,21 @@
         const result = pageWindow.__cgptConversationTreeOpenChat(chatId, href);
         addDiagnosticLog('open:bridge-call', { chatId, href, result });
         if (result?.ok) return true;
+        addDiagnosticLog('open:bridge-rejected', { chatId, href, result });
+        return false;
       }
-      pageWindow.dispatchEvent(new CustomEvent(PAGE_OPEN_EVENT, {
-        detail: { chatId, href },
-      }));
+      const event = new CustomEvent(PAGE_OPEN_EVENT, {
+        detail: { chatId, href, result: null },
+      });
+      pageWindow.dispatchEvent(event);
+      if (event.detail?.result?.ok) return true;
       addDiagnosticLog('open:bridge-event', {
         chatId,
         href,
         hasLiveAnchor: Boolean(liveNativeAnchorForChat(chatId)),
       });
-      return Boolean(liveNativeAnchorForChat(chatId));
+      // 发出事件不等于页面已经切换；调用方必须继续执行原生点击兜底。
+      return false;
     } catch (error) {
       addDiagnosticLog('open:bridge-error', {
         chatId,
@@ -3546,8 +3560,9 @@
     const href = chatHref(chatId, fallbackHref);
     const url = new URL(href, location.href);
     if (url.href === location.href || isChatLocation(chatId)) return;
-    addDiagnosticLog('open:hard-navigation-disabled', { chatId, href: url.href });
-    markFallbackChatOpening(chatId, 'failed');
+    addDiagnosticLog('open:hard-navigation-fallback', { chatId, href: url.href });
+    markFallbackChatOpening(chatId, 'opening');
+    window.location.assign(url.href);
   }
 
   function requestOpenChat(chatId, fallbackHref = '') {
@@ -3646,7 +3661,12 @@
         addDiagnosticLog('open:native-click-no-change-no-hard-navigation', { chatId, before });
         markFallbackChatOpening(chatId, 'failed');
       }
-      return true;
+      addDiagnosticLog('open:native-click-failed', {
+        chatId,
+        before,
+        after: location.href,
+      });
+      return false;
     }
 
     const href = chatHref(chatId, fallbackHref);

@@ -4,7 +4,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.0.0"
+$workPackageScriptVersion = "1.1.0"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 
 function Get-ClipboardText {
@@ -217,6 +217,37 @@ function New-TextFromCodePoints {
     param([int[]]$CodePoints)
 
     return -join ($CodePoints | ForEach-Object { [char]$_ })
+}
+
+function Get-WorkPackageConfig {
+    param([string]$Path)
+
+    $defaults = [pscustomobject]@{
+        library_name = New-TextFromCodePoints @(0x56E2, 0x5EFA, 0x6210, 0x54C1, 0x5E93)
+        portfolio_auto_group = $true
+        portfolio_auto_zip = $true
+        portfolio_batch_size = 14
+        portfolio_prefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
+        portfolio_log_folder = "_portfolio_move_logs"
+    }
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $defaults
+    }
+
+    try {
+        $loaded = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($property in $defaults.PSObject.Properties.Name) {
+            $value = $loaded.$property
+            if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) {
+                $defaults.$property = $value
+            }
+        }
+    } catch {
+        # 配置损坏时使用内置默认值，不能阻断作品包生成。
+    }
+
+    return $defaults
 }
 
 function Show-Tip {
@@ -796,7 +827,9 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $packageTime = Get-Date
 $stamp = $packageTime.ToString("yyyyMMdd_HHmmss")
 $textPrefix = "$([char]0x6587)$([char]0x6848)"
-$libraryName = New-TextFromCodePoints @(0x56E2, 0x5EFA, 0x6210, 0x54C1, 0x5E93)
+$configPath = Join-Path $scriptDir "workpkg_config.json"
+$config = Get-WorkPackageConfig -Path $configPath
+$libraryName = [string]$config.library_name
 $libraryDir = Join-Path $scriptDir $libraryName
 $successMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305)
 $noImageMessage = New-TextFromCodePoints @(0x8BF7, 0x5148, 0x4E0B, 0x8F7D, 0x4F5C, 0x54C1, 0x56FE)
@@ -807,14 +840,15 @@ $portfolioGroupDoneMessage = New-TextFromCodePoints @(0x5DF2, 0x6574, 0x7406, 0x
 $portfolioZipDoneMessage = New-TextFromCodePoints @(0x5DF2, 0x751F, 0x6210, 0x005A, 0x0049, 0x0050, 0x538B, 0x7F29, 0x5305)
 $portfolioZipFailedMessage = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6, 0x538B, 0x7F29, 0x5931, 0x8D25)
 $imageExcludeNames = @("$(New-TextFromCodePoints @(0x5206, 0x9694, 0x56FE)).png")
-$portfolioAutoGroup = $true
-$portfolioAutoZip = $true
-$portfolioBatchSize = 14
-$portfolioPrefix = ".$(New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6))"
-$portfolioLogFolder = "_portfolio_move_logs"
+$portfolioAutoGroup = [bool]$config.portfolio_auto_group
+$portfolioAutoZip = [bool]$config.portfolio_auto_zip
+$portfolioBatchSize = [Math]::Max(1, [int]$config.portfolio_batch_size)
+$portfolioPrefix = "." + ([string]$config.portfolio_prefix).TrimStart('.')
+$portfolioLogFolder = [string]$config.portfolio_log_folder
 $lockStream = $null
 $lockPath = Join-Path $scriptDir ".workpkg.lock"
 $lastHashPath = Join-Path $scriptDir ".workpkg_last_text.sha256"
+$stagingDir = $null
 
 try {
     if (Test-Path -LiteralPath $lockPath) {
@@ -901,10 +935,22 @@ try {
         $index++
     }
 
-    New-Item -ItemType Directory -Path $targetDir | Out-Null
+    $stagingDir = Join-Path $libraryDir ".workpkg_staging_$packageId"
+    $stagingIndex = 2
+    while (Test-Path -LiteralPath $stagingDir) {
+        $stagingDir = Join-Path $libraryDir ".workpkg_staging_$packageId`_$stagingIndex"
+        $stagingIndex++
+    }
+    New-Item -ItemType Directory -Path $stagingDir | Out-Null
+    try {
+        $stagingItem = Get-Item -LiteralPath $stagingDir -Force
+        $stagingItem.Attributes = $stagingItem.Attributes -bor [System.IO.FileAttributes]::Hidden
+    } catch {
+    }
+
     $mediaPrefix = "$title`_$packageId"
 
-    $txtPath = Join-Path $targetDir "$textPrefix`_$stamp.txt"
+    $txtPath = Join-Path $stagingDir "$textPrefix`_$stamp.txt"
     [System.IO.File]::WriteAllText($txtPath, $text, (New-Object System.Text.UTF8Encoding($false)))
     Set-FileTimes -Path $txtPath -Time $packageTime
 
@@ -914,10 +960,14 @@ try {
         $image = $images[$i]
         $sequence = ($i + 1).ToString($numberFormat)
         $newName = "$mediaPrefix`_$sequence$($image.Extension.ToLowerInvariant())"
-        $newPath = Join-Path $targetDir $newName
-        Move-Item -LiteralPath $image.FullName -Destination $newPath -Force
+        $newPath = Join-Path $stagingDir $newName
+        Move-Item -LiteralPath $image.FullName -Destination $newPath -ErrorAction Stop
         Set-FileTimes -Path $newPath -Time ($packageTime.AddSeconds($i + 1))
     }
+
+    Move-Item -LiteralPath $stagingDir -Destination $targetDir -ErrorAction Stop
+    $stagingDir = $null
+    $txtPath = Join-Path $targetDir "$textPrefix`_$stamp.txt"
 
     Save-LastTextHash -Path $lastHashPath -Hash $currentHash
 
@@ -978,6 +1028,12 @@ try {
         }
     }
 } catch {
+    if (-not [string]::IsNullOrWhiteSpace($stagingDir) -and (Test-Path -LiteralPath $stagingDir)) {
+        try {
+            Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+        } catch {
+        }
+    }
     try {
         Write-ErrorLog -Directory $scriptDir -Stamp $stamp -Message ("Make work package failed:`r`n" + $_.Exception.Message)
     } catch {
