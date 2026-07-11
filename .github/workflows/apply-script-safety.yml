@@ -18,17 +18,34 @@ jobs:
           ref: fix/script-dry-run-rollback
           fetch-depth: 0
 
-      - name: Apply staged patch
+      - name: Apply staged patch exactly
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p tests
+          : > tests/test_hardlink_cover_installer.py
+          : > tests/script-safety.tests.ps1
           cat .patches/script-safety.part* > /tmp/script-safety.patch
-          git apply --check /tmp/script-safety.patch
-          git apply /tmp/script-safety.patch
+          patch --batch --forward -p1 --dry-run < /tmp/script-safety.patch
+          patch --batch --forward -p1 < /tmp/script-safety.patch
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+
+      - name: Complete replacement rollback boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('本地文件处理脚本/素材处理脚本/同步-硬链接素材工作副本.ps1')
+          text = path.read_text(encoding='utf-8-sig')
+          old = '''    catch {\n        if ($tempPath -and (Test-Path -LiteralPath $tempPath -PathType Leaf)) {\n            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue\n        }\n        $action = "Fail"\n'''
+          new = '''    catch {\n        if ($tempPath -and (Test-Path -LiteralPath $tempPath -PathType Leaf)) {\n            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue\n        }\n        if ($backupPath -and (Test-Path -LiteralPath $backupPath -PathType Leaf) -and -not (Test-Path -LiteralPath $targetFile)) {\n            Move-Item -LiteralPath $backupPath -Destination $targetFile -ErrorAction SilentlyContinue\n        }\n        $action = "Fail"\n'''
+          if old not in text:
+              raise SystemExit('Cannot locate sync outer catch rollback boundary.')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
 
       - name: Run Python transaction tests
         run: |
@@ -57,7 +74,7 @@ jobs:
           from pathlib import Path
           checks = {
               '本地文件处理脚本/一键GPT作品包/make_work_package.ps1': ['Restore-StagedImages', 'Move-DuplicateDownloadImagesToQuarantine', '$packageCommitted'],
-              '本地文件处理脚本/素材处理脚本/同步-硬链接素材工作副本.ps1': ['ConfirmReplaceToken', 'ConfirmUndoToken', 'TestFailAfterBackup'],
+              '本地文件处理脚本/素材处理脚本/同步-硬链接素材工作副本.ps1': ['ConfirmReplaceToken', 'ConfirmUndoToken', 'TestFailAfterBackup', 'Move-Item -LiteralPath $backupPath -Destination $targetFile'],
               '本地文件处理脚本/素材处理脚本/评论在前改名工具/swap-like-comment-prefix.ps1': ['ConfirmApplyToken', 'ConfirmUndoToken', 'Invoke-RenameTransaction'],
               '本地文件处理脚本/素材处理脚本/安装-一键生成硬链接封面.py': ['.preview-hardlink-staging-', 'HARDLINK_TEST_FAIL_AFTER'],
           }
@@ -73,7 +90,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf .patches
+          rm -rf .patches .patches-git
           rm -f .github/workflows/apply-script-safety.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
