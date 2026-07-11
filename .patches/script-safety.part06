@@ -1,0 +1,77 @@
++        Type = if ($item.PSIsContainer) { "Directory" } else { "File" }
++    }) | Out-Null
++}
+ 
+-    try {
+-        if (-not $Preview) {
+-            Rename-Item -LiteralPath $item.FullName -NewName $newName -ErrorAction Stop
+-        }
+-        $renamed++
+-        $results.Add([pscustomobject]@{
+-            Status = if ($Preview) { "Preview" } else { "Renamed" }
+-            Reason = ""
+-            Type = if ($item.PSIsContainer) { "Directory" } else { "File" }
+-            OldPath = $item.FullName
+-            NewPath = $newPath
+-        })
+-    }
+-    catch {
+-        $errors++
+-        $results.Add([pscustomobject]@{
+-            Status = "Error"
+-            Reason = $_.Exception.Message
+-            Type = if ($item.PSIsContainer) { "Directory" } else { "File" }
+-            OldPath = $item.FullName
+-            NewPath = $newPath
+-        })
++if ($Mode -eq "Preview") {
++    foreach ($op in $ops) { Write-Host "PREVIEW: $($op.OldPath) -> $(Get-FinalPath -Operation $op -AllOperations $ops.ToArray())" }
++    Write-Host "Matched: $($items.Count)"
++    Write-Host "Would rename: $($ops.Count)"
++    return
++}
++
++if ($ConfirmApplyToken -ne "RENAME") { throw "Apply requires -ConfirmApplyToken RENAME." }
++New-Item -ItemType Directory -Path $logDir -Force | Out-Null
++$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
++$logPath = Join-Path $logDir "rename_like_comment_$timestamp.csv"
++Invoke-RenameTransaction -Operations $ops.ToArray()
++
++$results = foreach ($op in $ops) {
++    [pscustomobject]@{
++        Status = "Renamed"
++        Reason = ""
++        Type = $op.Type
++        OldPath = $op.OldPath
++        NewPath = $op.NewPath
++        FinalPath = Get-FinalPath -Operation $op -AllOperations $ops.ToArray()
+     }
+ }
+-
+ $results | Export-Csv -LiteralPath $logPath -NoTypeInformation -Encoding UTF8
+-
+-$actionLabel = if ($Preview) { "Previewed" } else { "Renamed" }
+-Write-Host "Root: $resolvedRoot"
+-Write-Host "Matched: $($items.Count)"
+-Write-Host "${actionLabel}: $renamed"
+-Write-Host "Skipped: $skipped"
+-Write-Host "Errors: $errors"
+-Write-Host "Log: $logPath"
+-
+-if ($errors -gt 0) {
+-    exit 1
+-}
++Write-Host "Renamed: $($ops.Count)"
++Write-Host "History: $logPath"
+--- a/本地文件处理脚本/素材处理脚本/评论在前改名工具/一键改名-评论在前.bat
++++ b/本地文件处理脚本/素材处理脚本/评论在前改名工具/一键改名-评论在前.bat
+@@ -1,5 +1,8 @@
+ @echo off
+ setlocal
+-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0swap-like-comment-prefix.ps1"
++chcp 65001 >nul
++powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0swap-like-comment-prefix.ps1" -Mode Preview
+ echo.
++echo 上面仅为预览，没有修改文件。
++echo 确认后请按 README 使用 Apply 和确认令牌。
+ pause
