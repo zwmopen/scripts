@@ -279,4 +279,4 @@ Write-Host "Replace: $($counts.Replace)"
 Write-Host "Skipped: $($counts.Exists)"
 Write-Host "Failed: $($counts.Failed)"
 if ($Mode -eq "Preview") { Write-Host "Preview only. Use -Mode Apply to make changes." } else { Write-Host "History: $historyFile" }
-if ($counts.Failed -gt 0) { exit 1 }
+if ($counts.Failed -gt 0) { throw "Material sync completed with $($counts.Failed) failed file(s). History: $historyFile" }
