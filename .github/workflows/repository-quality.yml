@@ -11,17 +11,14 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           package-manager-cache: false
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -33,7 +30,6 @@ jobs:
           python - <<'PY'
           import re
           from pathlib import Path
-
           text = Path('chatgpt-conversation-tree.user.js').read_text(encoding='utf-8-sig')
           metadata = re.search(r'^//\s*@version\s+([^\s]+)', text, re.MULTILINE)
           runtime = re.search(r"const\s+SCRIPT_VERSION\s*=\s*['\"]([^'\"]+)['\"]", text)
@@ -41,7 +37,6 @@ jobs:
               raise SystemExit('Cannot locate userscript metadata version and SCRIPT_VERSION')
           if metadata.group(1) != runtime.group(1):
               raise SystemExit(f'Version mismatch: metadata={metadata.group(1)} runtime={runtime.group(1)}')
-          print(f'Userscript version OK: {metadata.group(1)}')
           PY
 
       - name: Check PowerShell syntax
@@ -60,28 +55,56 @@ jobs:
           }
           if ($failed) { exit 1 }
 
+      - name: Check Python syntax and transaction tests
+        run: |
+          python -m py_compile "本地文件处理脚本/素材处理脚本/安装-一键生成硬链接封面.py"
+          python -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Verify destructive-operation safety contracts
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          files = {
+              'work package': Path('本地文件处理脚本/一键GPT作品包/make_work_package.ps1').read_text(encoding='utf-8-sig'),
+              'sync': Path('本地文件处理脚本/素材处理脚本/同步-硬链接素材工作副本.ps1').read_text(encoding='utf-8-sig'),
+              'rename': Path('本地文件处理脚本/素材处理脚本/评论在前改名工具/swap-like-comment-prefix.ps1').read_text(encoding='utf-8-sig'),
+              'installer': Path('本地文件处理脚本/素材处理脚本/安装-一键生成硬链接封面.py').read_text(encoding='utf-8-sig'),
+          }
+          required = {
+              'work package': ['[switch]$Preview', 'Restore-StagedImages', 'Move-DuplicateDownloadImagesToQuarantine', '$packageCommitted'],
+              'sync': ['ValidateSet("Preview", "Apply", "Undo")', 'ConfirmReplaceToken', 'ConfirmUndoToken', '.sync-history', 'TestFailAfterBackup'],
+              'rename': ['ValidateSet("Preview", "Apply", "Undo")', 'ConfirmApplyToken', 'ConfirmUndoToken', 'Invoke-RenameTransaction'],
+              'installer': ['--apply', '.preview-hardlink-staging-', '.preview-hardlink-backup-', 'HARDLINK_TEST_FAIL_AFTER'],
+          }
+          forbidden = {
+              'work package': ['function Remove-DuplicateDownloadImages'],
+              'rename': ['[switch]$Preview'],
+              'installer': ['clear_preview_files(preview_dir)'],
+          }
+          for label, markers in required.items():
+              for marker in markers:
+                  if marker not in files[label]:
+                      raise SystemExit(f'{label}: missing safety marker {marker}')
+          for label, markers in forbidden.items():
+              for marker in markers:
+                  if marker in files[label]:
+                      raise SystemExit(f'{label}: forbidden unsafe marker remains: {marker}')
+          PY
+
       - name: Check JSON and work package config
-        shell: bash
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-
           for path in Path('.').rglob('*.json'):
               if '.git' in path.parts:
                   continue
               with path.open('r', encoding='utf-8-sig') as fh:
                   data = json.load(fh)
-              print(f'OK {path}')
-
               if path.name == 'workpkg_config.json':
                   required = {
-                      'library_name',
-                      'portfolio_auto_group',
-                      'portfolio_auto_zip',
-                      'portfolio_batch_size',
-                      'portfolio_prefix',
-                      'portfolio_log_folder',
+                      'library_name', 'portfolio_auto_group', 'portfolio_auto_zip',
+                      'portfolio_batch_size', 'portfolio_prefix', 'portfolio_log_folder',
                   }
                   missing = required - set(data)
                   if missing:
@@ -93,12 +116,27 @@ jobs:
       - name: Check whitespace errors
         run: git diff --check
 
-      - name: Reject files larger than 50 MB
-        shell: bash
+      - name: Reject tracked files larger than 50 MB
         run: |
-          large_files=$(find . -type f -not -path './.git/*' -size +50M -print)
-          if [ -n "$large_files" ]; then
-            echo "Files larger than 50 MB are not allowed:"
-            echo "$large_files"
-            exit 1
-          fi
+          python - <<'PY'
+          import subprocess
+          from pathlib import Path
+          limit = 50 * 1024 * 1024
+          files = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+          large = []
+          for item in filter(None, files):
+              path = Path(item)
+              if path.is_file() and path.stat().st_size > limit:
+                  large.append(f'{item} ({path.stat().st_size} bytes)')
+          if large:
+              raise SystemExit('Files larger than 50 MB are not allowed:\n' + '\n'.join(large))
+          PY
+
+  windows-behavior:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run destructive-operation rollback tests
+        shell: pwsh
+        run: ./tests/script-safety.tests.ps1
