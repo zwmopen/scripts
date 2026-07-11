@@ -1,0 +1,306 @@
++        print(f"PREVIEW install: {bat}")
++        return updater, bat
++
++    if not overwrite and (updater.exists() or bat.exists()):
++        raise FileExistsError("Updater files already exist.")
++
++    backup_dir = target / ".hardlink-installer-backups" / time.strftime("%Y%m%d-%H%M%S")
++    originals: dict[Path, Path] = {}
++    temp_files: list[tuple[Path, Path]] = []
++
++    try:
++        for path, content in ((updater, UPDATER_SCRIPT), (bat, BAT_SCRIPT)):
+             if path.exists():
+-                raise FileExistsError(str(path))
+-
+-    updater.write_text(UPDATER_SCRIPT, encoding="utf-8")
+-    bat.write_text(BAT_SCRIPT, encoding="utf-8")
+-    return updater, bat
++                backup_dir.mkdir(parents=True, exist_ok=True)
++                backup_path = backup_dir / path.name
++                shutil.copy2(path, backup_path)
++                originals[path] = backup_path
++
++            file_descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=target)
++            os.close(file_descriptor)
++            temporary = Path(temp_name)
++            temporary.write_text(content, encoding="utf-8")
++            temp_files.append((temporary, path))
++
++        for temporary, path in temp_files:
++            os.replace(temporary, path)
++
++        return updater, bat
++    except Exception:
++        for temporary, _ in temp_files:
++            temporary.unlink(missing_ok=True)
++        for path, backup_path in originals.items():
++            if backup_path.exists():
++                shutil.copy2(backup_path, path)
++        raise
+ 
+ 
+ def main():
+-    parser = argparse.ArgumentParser(description="Install a double-click preview hardlink updater into a folder.")
+-    parser.add_argument("target", nargs="?", default=".", help="Target folder. Defaults to current working directory.")
+-    parser.add_argument("--no-overwrite", action="store_true", help="Do not overwrite existing updater files.")
+-    parser.add_argument("--run", action="store_true", help="Run the installed updater immediately.")
++    parser = argparse.ArgumentParser(description="Install a transactional preview hardlink updater.")
++    parser.add_argument("target", nargs="?", default=".")
++    parser.add_argument("--apply", action="store_true", help="Write installer files. Default is preview only.")
++    parser.add_argument("--no-overwrite", action="store_true")
++    parser.add_argument("--run", action="store_true")
+     args = parser.parse_args()
+ 
+     target = Path(args.target)
+-    updater, bat = install(target, overwrite=not args.no_overwrite)
++    updater, bat = install(target, apply=args.apply, overwrite=not args.no_overwrite)
++
++    if not args.apply:
++        print("Preview only. Re-run with --apply to install.")
++        return
++
+     print(f"已安装: {updater}")
+     print(f"已安装: {bat}")
+ 
+     if args.run:
+-        print("开始刷新预览硬链接...")
+-        result = subprocess.run([sys.executable, str(updater)], cwd=str(target))
++        result = subprocess.run(
++            [sys.executable, str(updater), "--mode", "Apply", "--confirm", "APPLY"],
++            cwd=str(target.resolve()),
++            check=False,
++        )
+         raise SystemExit(result.returncode)
+ 
+ 
+--- a/本地文件处理脚本/素材处理脚本/评论在前改名工具/README.md
++++ b/本地文件处理脚本/素材处理脚本/评论在前改名工具/README.md
+@@ -2,26 +2,41 @@
+ 
+ 用途：把当前文件夹及所有子文件夹里的文件、文件夹名称，从 `赞1评4` 改成 `评4赞1`，方便先看评论数。
+ 
+-## 一键使用
++## 默认行为：只预览
+ 
+-把整个 `评论在前改名工具` 文件夹放到要处理的素材目录里，双击：
++双击 `一键改名-评论在前.bat` 或直接运行脚本时，默认只列出改名计划，不修改文件。
+ 
+-```text
+-一键改名-评论在前.bat
++```powershell
++.\swap-like-comment-prefix.ps1 -Mode Preview
+ ```
+ 
+-它会处理这个工具所在文件夹下面的所有文件和文件夹，并在 `rename-logs` 里生成改名日志。
++## 确认执行
+ 
+-## 预览模式
+-
+-想先看会改哪些名字，可以打开 PowerShell 后运行：
++确认预览结果后，必须显式使用 Apply 模式和确认令牌：
+ 
+ ```powershell
+-.\swap-like-comment-prefix.ps1 -Preview
++.\swap-like-comment-prefix.ps1 -Mode Apply -ConfirmApplyToken RENAME
+ ```
++
++执行时会：
++
++- 先检查所有目标名称是否冲突；
++- 按最深路径优先执行；
++- 任一改名失败时，自动反向恢复已完成项目；
++- 在 `rename-logs` 中生成 CSV 历史。
++
++## Undo
++
++```powershell
++.\swap-like-comment-prefix.ps1 -Mode Undo `
++  -HistoryFile ".\rename-logs\rename_like_comment_时间.csv" `
++  -ConfirmUndoToken UNDO
++```
++
++Undo 会按反向顺序恢复目录和文件。
+ 
+ ## 规则
+ 
+-- `赞1评4xxx` -> `评4赞1xxx`
+-- `赞10评080个游戏` -> `评0赞10 80个游戏`
+-- 如果目标名称已经存在，会跳过，不覆盖原文件。
++- `赞1评4xxx` → `评4赞1xxx`
++- `赞10评080个游戏` → `评0赞10 80个游戏`
++- 如果目标名称已经存在，预检会直接停止，不覆盖原文件。
+--- a/本地文件处理脚本/素材处理脚本/评论在前改名工具/swap-like-comment-prefix.ps1
++++ b/本地文件处理脚本/素材处理脚本/评论在前改名工具/swap-like-comment-prefix.ps1
+@@ -1,120 +1,155 @@
+ param(
+     [string]$Root = $PSScriptRoot,
+-    [switch]$Preview
++    [ValidateSet("Preview", "Apply", "Undo")]
++    [string]$Mode = "Preview",
++    [string]$HistoryFile = "",
++    [string]$ConfirmApplyToken = "",
++    [string]$ConfirmUndoToken = "",
++    [int]$TestFailAfterRename = 0
+ )
+ 
+ $ErrorActionPreference = "Stop"
+ 
+ function Convert-Name {
+     param([string]$Name)
+-
+     $zan = [string][char]0x8D5E
+     $ping = [string][char]0x8BC4
+     $match = [regex]::Match($Name, "$zan(\d+)$ping(\d+)")
+-    if (-not $match.Success) {
+-        return $Name
+-    }
++    if (-not $match.Success) { return $Name }
+ 
+     $likes = $match.Groups[1].Value
+     $commentDigits = $match.Groups[2].Value
+     $prefix = $Name.Substring(0, $match.Index)
+     $suffix = $Name.Substring($match.Index + $match.Length)
+ 
+-    # If the comment count is 0 and the title starts with a number,
+-    # keep a space before that title number.
+     if ($commentDigits.Length -gt 1 -and $commentDigits.StartsWith("0")) {
+-        $comments = "0"
+-        $titleNumber = $commentDigits.Substring(1)
+-        return "$prefix$ping$comments$zan$likes $titleNumber$suffix"
++        return "$prefix$ping" + "0" + "$zan$likes " + $commentDigits.Substring(1) + $suffix
+     }
+ 
+     return "$prefix$ping$commentDigits$zan$likes$suffix"
+ }
+ 
++function Invoke-RenameTransaction {
++    param([object[]]$Operations)
++
++    $completed = New-Object System.Collections.Generic.List[object]
++    try {
++        foreach ($op in $Operations) {
++            Rename-Item -LiteralPath $op.OldPath -NewName ([System.IO.Path]::GetFileName($op.NewPath)) -ErrorAction Stop
++            $completed.Add($op) | Out-Null
++            if ($TestFailAfterRename -gt 0 -and $completed.Count -ge $TestFailAfterRename) {
++                throw "Simulated failure after $($completed.Count) rename(s)."
++            }
++        }
++    }
++    catch {
++        $rollback = $completed.ToArray()
++        [array]::Reverse($rollback)
++        foreach ($op in $rollback) {
++            if (Test-Path -LiteralPath $op.NewPath) {
++                Rename-Item -LiteralPath $op.NewPath -NewName ([System.IO.Path]::GetFileName($op.OldPath)) -ErrorAction SilentlyContinue
++            }
++        }
++        throw
++    }
++}
++
++function Get-FinalPath {
++    param([object]$Operation, [object[]]$AllOperations)
++
++    $path = $Operation.NewPath
++    $directoryOperations = @($AllOperations | Where-Object {
++        $_.Type -eq "Directory" -and $_.OldPath -ne $Operation.OldPath -and
++        $Operation.OldPath.StartsWith($_.OldPath + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
++    } | Sort-Object { $_.OldPath.Length } -Descending)
++
++    foreach ($directoryOp in $directoryOperations) {
++        if ($path.StartsWith($directoryOp.OldPath + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
++            $path = $directoryOp.NewPath + $path.Substring($directoryOp.OldPath.Length)
++        }
++    }
++    return $path
++}
++
+ $resolvedRoot = (Resolve-Path -LiteralPath $Root).Path
+ $logDir = Join-Path $resolvedRoot "rename-logs"
+-New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+ 
+-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+-$logPath = Join-Path $logDir "rename_like_comment_$timestamp.csv"
++if ($Mode -eq "Undo") {
++    if ($ConfirmUndoToken -ne "UNDO") { throw "Undo requires -ConfirmUndoToken UNDO." }
++    if ([string]::IsNullOrWhiteSpace($HistoryFile) -or -not (Test-Path -LiteralPath $HistoryFile -PathType Leaf)) {
++        throw "Undo requires a valid -HistoryFile."
++    }
++
++    $rows = @(Import-Csv -LiteralPath $HistoryFile | Where-Object { $_.Status -eq "Renamed" })
++    [array]::Reverse($rows)
++    $ops = New-Object System.Collections.Generic.List[object]
++    foreach ($row in $rows) {
++        if (-not (Test-Path -LiteralPath $row.NewPath)) { throw "Undo source is missing: $($row.NewPath)" }
++        if (Test-Path -LiteralPath $row.OldPath) { throw "Undo target already exists: $($row.OldPath)" }
++        $ops.Add([pscustomobject]@{
++            OldPath = $row.NewPath
++            NewPath = $row.OldPath
++            Type = $row.Type
++        }) | Out-Null
++    }
++
++    $originalTestValue = $TestFailAfterRename
++    $TestFailAfterRename = 0
++    Invoke-RenameTransaction -Operations $ops.ToArray()
++    $TestFailAfterRename = $originalTestValue
++    Write-Host "Undo completed: $HistoryFile"
++    return
++}
+ 
+ $zan = [string][char]0x8D5E
+ $ping = [string][char]0x8BC4
+ $pattern = "$zan\d+$ping\d+"
++$items = @(Get-ChildItem -LiteralPath $resolvedRoot -Recurse -Force -ErrorAction Stop |
++    Where-Object { $_.FullName -notlike "$logDir*" -and $_.Name -match $pattern } |
++    Sort-Object { $_.FullName.Length } -Descending)
+ 
+-$items = Get-ChildItem -LiteralPath $resolvedRoot -Recurse -Force -ErrorAction SilentlyContinue |
+-    Where-Object { $_.Name -match $pattern } |
+-    Sort-Object { $_.FullName.Length } -Descending
+-
+-$results = New-Object System.Collections.Generic.List[object]
+-$renamed = 0
+-$skipped = 0
+-$errors = 0
+-
++$ops = New-Object System.Collections.Generic.List[object]
++$plannedTargets = @{}
+ foreach ($item in $items) {
+     $newName = Convert-Name -Name $item.Name
++    if ($newName -eq $item.Name) { continue }
+ 
+-    if ($newName -eq $item.Name) {
+-        $skipped++
+-        $results.Add([pscustomobject]@{
+-            Status = "Skipped"
+-            Reason = "No change"
+-            Type = if ($item.PSIsContainer) { "Directory" } else { "File" }
+-            OldPath = $item.FullName
+-            NewPath = $item.FullName
+-        })
+-        continue
+-    }
++    $newPath = Join-Path ([System.IO.Path]::GetDirectoryName($item.FullName)) $newName
++    $targetKey = $newPath.ToLowerInvariant()
++    if ($plannedTargets.ContainsKey($targetKey)) { throw "Multiple items would map to: $newPath" }
++    $plannedTargets[$targetKey] = $true
++    if (Test-Path -LiteralPath $newPath) { throw "Target exists: $newPath" }
+ 
+-    $parentPath = [System.IO.Path]::GetDirectoryName($item.FullName)
+-    $newPath = Join-Path $parentPath $newName
+-    if (Test-Path -LiteralPath $newPath) {
+-        $skipped++
+-        $results.Add([pscustomobject]@{
+-            Status = "Skipped"
+-            Reason = "Target exists"
+-            Type = if ($item.PSIsContainer) { "Directory" } else { "File" }
+-            OldPath = $item.FullName
+-            NewPath = $newPath
+-        })
+-        continue
+-    }
++    $ops.Add([pscustomobject]@{
++        OldPath = $item.FullName
++        NewPath = $newPath
