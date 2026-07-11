@@ -1,0 +1,312 @@
++    [int]$TestFailAfterImageMove = 0
+ )
+ 
+ $ErrorActionPreference = "Stop"
+-$workPackageScriptVersion = "1.1.0"
++$workPackageScriptVersion = "1.2.0"
+ $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
+ 
+ function Get-ClipboardText {
+@@ -479,46 +481,53 @@
+     }
+ }
+ 
+-function Remove-DuplicateDownloadImages {
++function Move-DuplicateDownloadImagesToQuarantine {
+     param(
+         [object[]]$Images,
+         [string]$Directory,
+         [string]$Stamp
+     )
+ 
+-    $removed = 0
+-
++    $holdingDir = Join-Path $Directory ".workpkg_duplicate_downloads_$Stamp"
++    if (-not (Test-Path -LiteralPath $holdingDir)) {
++        New-Item -ItemType Directory -Path $holdingDir | Out-Null
++        try {
++            $holdingItem = Get-Item -LiteralPath $holdingDir -Force
++            $holdingItem.Attributes = $holdingItem.Attributes -bor [System.IO.FileAttributes]::Hidden
++        } catch {
++        }
++    }
++
++    $moved = 0
+     foreach ($image in $Images) {
++        $destination = Get-UniqueFilePath -Path (Join-Path $holdingDir $image.Name)
++        Move-Item -LiteralPath $image.FullName -Destination $destination -ErrorAction Stop
++        $moved++
++    }
++
++    return $moved
++}
++
++function Restore-StagedImages {
++    param([object[]]$MovedImages)
++
++    $restoreErrors = New-Object System.Collections.Generic.List[string]
++    foreach ($record in @($MovedImages) | Sort-Object Sequence -Descending) {
+         try {
+-            if ($NoMessage) {
+-                Remove-Item -LiteralPath $image.FullName -Force
+-            } else {
+-                Add-Type -AssemblyName Microsoft.VisualBasic
+-                [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
+-                    $image.FullName,
+-                    [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+-                    [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
+-                )
+-            }
+-
+-            $removed++
++            if (-not (Test-Path -LiteralPath $record.StagedPath -PathType Leaf)) {
++                continue
++            }
++            $restorePath = $record.OriginalPath
++            if (Test-Path -LiteralPath $restorePath) {
++                $restorePath = Get-UniqueFilePath -Path $restorePath
++            }
++            Move-Item -LiteralPath $record.StagedPath -Destination $restorePath -ErrorAction Stop
+         } catch {
+-            try {
+-                $holdingDir = Join-Path $Directory ".workpkg_duplicate_downloads_$Stamp"
+-                if (-not (Test-Path -LiteralPath $holdingDir)) {
+-                    New-Item -ItemType Directory -Path $holdingDir | Out-Null
+-                    $holdingItem = Get-Item -LiteralPath $holdingDir -Force
+-                    $holdingItem.Attributes = $holdingItem.Attributes -bor [System.IO.FileAttributes]::Hidden
+-                }
+-
+-                Move-Item -LiteralPath $image.FullName -Destination $holdingDir -Force
+-                $removed++
+-            } catch {
+-            }
+-        }
+-    }
+-
+-    return $removed
++            $restoreErrors.Add("$($record.StagedPath): $($_.Exception.Message)") | Out-Null
++        }
++    }
++
++    return $restoreErrors.ToArray()
+ }
+ 
+ function Get-PortfolioNumber {
+@@ -849,6 +858,8 @@
+ $lockPath = Join-Path $scriptDir ".workpkg.lock"
+ $lastHashPath = Join-Path $scriptDir ".workpkg_last_text.sha256"
+ $stagingDir = $null
++$movedImages = New-Object System.Collections.Generic.List[object]
++$packageCommitted = $false
+ 
+ try {
+     if (Test-Path -LiteralPath $lockPath) {
+@@ -903,7 +914,13 @@
+     }
+ 
+     if ($duplicateExists -or $lastHash -eq $currentHash) {
+-        $removedImages = Remove-DuplicateDownloadImages -Images $images -Directory $scriptDir -Stamp $stamp
++        if ($Preview) {
++            Write-Output "PREVIEW_DUPLICATE"
++            Write-Output "Version=$workPackageScriptVersion"
++            Write-Output "WouldQuarantineImages=$($images.Count)"
++            return
++        }
++        $removedImages = Move-DuplicateDownloadImagesToQuarantine -Images $images -Directory $scriptDir -Stamp $stamp
+         Clear-ClipboardAfterSuccess
+         Show-Tip -Message $duplicateExistingMessage
+         if ($NoMessage) {
+@@ -914,7 +931,7 @@
+         return
+     }
+ 
+-    if (-not (Test-Path -LiteralPath $libraryDir)) {
++    if (-not $Preview -and -not (Test-Path -LiteralPath $libraryDir)) {
+         New-Item -ItemType Directory -Path $libraryDir | Out-Null
+     }
+ 
+@@ -935,6 +952,15 @@
+         $index++
+     }
+ 
++    if ($Preview) {
++        Write-Output "PREVIEW"
++        Write-Output "Version=$workPackageScriptVersion"
++        Write-Output "Folder=$targetDir"
++        Write-Output "Images=$($images.Count)"
++        Write-Output "WouldMoveSourceImages=$($images.Count)"
++        return
++    }
++
+     $stagingDir = Join-Path $libraryDir ".workpkg_staging_$packageId"
+     $stagingIndex = 2
+     while (Test-Path -LiteralPath $stagingDir) {
+@@ -961,11 +987,21 @@
+         $sequence = ($i + 1).ToString($numberFormat)
+         $newName = "$mediaPrefix`_$sequence$($image.Extension.ToLowerInvariant())"
+         $newPath = Join-Path $stagingDir $newName
+-        Move-Item -LiteralPath $image.FullName -Destination $newPath -ErrorAction Stop
++        $originalPath = $image.FullName
++        Move-Item -LiteralPath $originalPath -Destination $newPath -ErrorAction Stop
++        $movedImages.Add([pscustomobject]@{
++            Sequence = $i
++            OriginalPath = $originalPath
++            StagedPath = $newPath
++        }) | Out-Null
+         Set-FileTimes -Path $newPath -Time ($packageTime.AddSeconds($i + 1))
++        if ($TestFailAfterImageMove -gt 0 -and $movedImages.Count -ge $TestFailAfterImageMove) {
++            throw "Simulated failure after moving $($movedImages.Count) image(s)."
++        }
+     }
+ 
+     Move-Item -LiteralPath $stagingDir -Destination $targetDir -ErrorAction Stop
++    $packageCommitted = $true
+     $stagingDir = $null
+     $txtPath = Join-Path $targetDir "$textPrefix`_$stamp.txt"
+ 
+@@ -1028,10 +1064,21 @@
+         }
+     }
+ } catch {
+-    if (-not [string]::IsNullOrWhiteSpace($stagingDir) -and (Test-Path -LiteralPath $stagingDir)) {
+-        try {
+-            Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+-        } catch {
++    $originalError = $_
++    if (-not $packageCommitted) {
++        $restoreErrors = Restore-StagedImages -MovedImages $movedImages.ToArray()
++        if (-not [string]::IsNullOrWhiteSpace($stagingDir) -and (Test-Path -LiteralPath $stagingDir)) {
++            try {
++                Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction Stop
++            } catch {
++                $restoreErrors += "Staging cleanup: $($_.Exception.Message)"
++            }
++        }
++        if (@($restoreErrors).Count -gt 0) {
++            try {
++                Write-ErrorLog -Directory $scriptDir -Stamp $stamp -Message ("Rollback incomplete:`r`n" + (@($restoreErrors) -join "`r`n"))
++            } catch {
++            }
+         }
+     }
+     try {
+@@ -1039,7 +1086,7 @@
+     } catch {
+     }
+ 
+-    throw
++    throw $originalError
+ } finally {
+     if ($null -ne $lockStream) {
+         $lockStream.Close()
+--- a/本地文件处理脚本/素材处理脚本/README.md
++++ b/本地文件处理脚本/素材处理脚本/README.md
+@@ -28,14 +28,18 @@
+    常用方式：
+ 
+    ```powershell
+-   python ".\安装-一键生成硬链接封面.py" "D:\你的素材文件夹" --run
++   # 默认只预览安装位置
++   python ".\安装-一键生成硬链接封面.py" "D:\你的素材文件夹"
++
++   # 确认后安装并运行事务式刷新
++   python ".\安装-一键生成硬链接封面.py" "D:\你的素材文件夹" --apply --run
+    ```
+ 
+ 3. `同步-硬链接素材工作副本.ps1`
+ 
+    从原素材目录同步一份“工作副本”到另一个目录。默认使用硬链接，几乎不占额外空间，适合拿来改文件名、移动、筛选、组装素材。
+ 
+-   重要提醒：硬链接文件改名、移动，不影响原路径；但如果直接修改图片、视频、文档的内容，原素材也会跟着变。要改内容时，用 `-SyncType Copy` 做真实复制。
++   重要提醒：硬链接文件改名、移动，不影响原路径；但如果直接修改图片、视频、文档的内容，原素材也会跟着变。要改内容时，用 `-SyncType Copy` 做真实复制。覆盖模式会先生成新文件，再把旧目标移入 `.sync-history`，失败会自动恢复。
+ 
+    常用方式：
+ 
+@@ -43,6 +47,12 @@
+    powershell -ExecutionPolicy Bypass -File ".\同步-硬链接素材工作副本.ps1" -SourcePath "D:\原素材" -TargetPath "D:\工作副本" -Mode Preview
+    powershell -ExecutionPolicy Bypass -File ".\同步-硬链接素材工作副本.ps1" -SourcePath "D:\原素材" -TargetPath "D:\工作副本" -Mode Apply
+    powershell -ExecutionPolicy Bypass -File ".\同步-硬链接素材工作副本.ps1" -SourcePath "D:\原素材" -TargetPath "D:\工作副本" -Mode Apply -SyncType Copy
++
++   # 覆盖旧目标必须明确确认；旧文件会先备份
++   powershell -ExecutionPolicy Bypass -File ".\同步-硬链接素材工作副本.ps1" -SourcePath "D:\原素材" -TargetPath "D:\工作副本" -Mode Apply -SyncType Copy -Replace -ConfirmReplaceToken REPLACE
++
++   # 按历史 CSV 恢复
++   powershell -ExecutionPolicy Bypass -File ".\同步-硬链接素材工作副本.ps1" -Mode Undo -HistoryFile "D:\工作副本\.sync-history\sync-history-xxxx.csv" -ConfirmUndoToken UNDO
+    ```
+ 
+ ## 收录原则
+--- a/本地文件处理脚本/素材处理脚本/同步-硬链接素材工作副本.ps1
++++ b/本地文件处理脚本/素材处理脚本/同步-硬链接素材工作副本.ps1
+@@ -2,180 +2,165 @@
+     [string]$SourcePath = "",
+     [string]$TargetPath = "",
+ 
+-    [ValidateSet("Preview", "Apply")]
++    [ValidateSet("Preview", "Apply", "Undo")]
+     [string]$Mode = "Preview",
+ 
+     [ValidateSet("Hardlink", "Copy")]
+     [string]$SyncType = "Hardlink",
+ 
+     [switch]$Replace,
+-    [switch]$IncludePreviewFolders
++    [switch]$IncludePreviewFolders,
++    [string]$HistoryFile = "",
++    [string]$ConfirmReplaceToken = "",
++    [string]$ConfirmUndoToken = "",
++    [switch]$TestFailAfterBackup
+ )
+ 
+ $ErrorActionPreference = "Stop"
+ 
+-function U {
+-    param([int]$CodePoint)
+-    return [string][char]$CodePoint
+-}
+-
+-function Test-IsWindows {
+-    return [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+-}
+-
+-function Normalize-FullPath {
+-    param([string]$Path)
+-    return [System.IO.Path]::GetFullPath($Path).TrimEnd("\")
+-}
++function U { param([int]$CodePoint) return [string][char]$CodePoint }
++function Test-IsWindows { return [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT }
++function Normalize-FullPath { param([string]$Path) return [System.IO.Path]::GetFullPath($Path).TrimEnd("\", "/") }
+ 
+ function Read-RequiredPath {
+-    param(
+-        [string]$Value,
+-        [string]$Prompt,
+-        [switch]$MustExist
+-    )
+-
+-    if ([string]::IsNullOrWhiteSpace($Value)) {
+-        $Value = Read-Host $Prompt
+-    }
+-
+-    if ([string]::IsNullOrWhiteSpace($Value)) {
+-        throw "Path is empty."
+-    }
+-
++    param([string]$Value, [string]$Prompt, [switch]$MustExist)
++    if ([string]::IsNullOrWhiteSpace($Value)) { $Value = Read-Host $Prompt }
++    if ([string]::IsNullOrWhiteSpace($Value)) { throw "Path is empty." }
+     $fullPath = Normalize-FullPath $Value
+-    if ($MustExist -and -not (Test-Path -LiteralPath $fullPath -PathType Container)) {
+-        throw "Directory does not exist: $fullPath"
+-    }
+-
++    if ($MustExist -and -not (Test-Path -LiteralPath $fullPath -PathType Container)) { throw "Directory does not exist: $fullPath" }
+     return $fullPath
+ }
+ 
+ function Test-PathInside {
+-    param(
+-        [string]$Parent,
+-        [string]$Child
+-    )
+-
+-    $parentFull = (Normalize-FullPath $Parent) + "\"
