@@ -28,14 +28,18 @@
    常用方式：
 
    ```powershell
-   python ".\安装-一键生成硬链接封面.py" "D:\你的素材文件夹" --run
+   # 默认只预览安装位置
+   python ".\安装-一键生成硬链接封面.py" "D:\你的素材文件夹"
+
+   # 确认后安装并运行事务式刷新
+   python ".\安装-一键生成硬链接封面.py" "D:\你的素材文件夹" --apply --run
    ```
 
 3. `同步-硬链接素材工作副本.ps1`
 
    从原素材目录同步一份“工作副本”到另一个目录。默认使用硬链接，几乎不占额外空间，适合拿来改文件名、移动、筛选、组装素材。
 
-   重要提醒：硬链接文件改名、移动，不影响原路径；但如果直接修改图片、视频、文档的内容，原素材也会跟着变。要改内容时，用 `-SyncType Copy` 做真实复制。
+   重要提醒：硬链接文件改名、移动，不影响原路径；但如果直接修改图片、视频、文档的内容，原素材也会跟着变。要改内容时，用 `-SyncType Copy` 做真实复制。覆盖模式会先生成新文件，再把旧目标移入 `.sync-history`，失败会自动恢复。
 
    常用方式：
 
@@ -43,6 +47,12 @@
    powershell -ExecutionPolicy Bypass -File ".\同步-硬链接素材工作副本.ps1" -SourcePath "D:\原素材" -TargetPath "D:\工作副本" -Mode Preview
    powershell -ExecutionPolicy Bypass -File ".\同步-硬链接素材工作副本.ps1" -SourcePath "D:\原素材" -TargetPath "D:\工作副本" -Mode Apply
    powershell -ExecutionPolicy Bypass -File ".\同步-硬链接素材工作副本.ps1" -SourcePath "D:\原素材" -TargetPath "D:\工作副本" -Mode Apply -SyncType Copy
+
+   # 覆盖旧目标必须明确确认；旧文件会先备份
+   powershell -ExecutionPolicy Bypass -File ".\同步-硬链接素材工作副本.ps1" -SourcePath "D:\原素材" -TargetPath "D:\工作副本" -Mode Apply -SyncType Copy -Replace -ConfirmReplaceToken REPLACE
+
+   # 按历史 CSV 恢复
+   powershell -ExecutionPolicy Bypass -File ".\同步-硬链接素材工作副本.ps1" -Mode Undo -HistoryFile "D:\工作副本\.sync-history\sync-history-xxxx.csv" -ConfirmUndoToken UNDO
    ```
 
 ## 收录原则

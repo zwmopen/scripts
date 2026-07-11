@@ -1,10 +1,12 @@
 ﻿param(
     [string]$ClipboardTextOverride,
-    [switch]$NoMessage
+    [switch]$NoMessage,
+    [switch]$Preview,
+    [int]$TestFailAfterImageMove = 0
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.1.0"
+$workPackageScriptVersion = "1.2.0"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 
 function Get-ClipboardText {
@@ -479,46 +481,53 @@ function Set-FileTimes {
     }
 }
 
-function Remove-DuplicateDownloadImages {
+function Move-DuplicateDownloadImagesToQuarantine {
     param(
         [object[]]$Images,
         [string]$Directory,
         [string]$Stamp
     )
 
-    $removed = 0
-
-    foreach ($image in $Images) {
+    $holdingDir = Join-Path $Directory ".workpkg_duplicate_downloads_$Stamp"
+    if (-not (Test-Path -LiteralPath $holdingDir)) {
+        New-Item -ItemType Directory -Path $holdingDir | Out-Null
         try {
-            if ($NoMessage) {
-                Remove-Item -LiteralPath $image.FullName -Force
-            } else {
-                Add-Type -AssemblyName Microsoft.VisualBasic
-                [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
-                    $image.FullName,
-                    [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
-                    [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
-                )
-            }
-
-            $removed++
+            $holdingItem = Get-Item -LiteralPath $holdingDir -Force
+            $holdingItem.Attributes = $holdingItem.Attributes -bor [System.IO.FileAttributes]::Hidden
         } catch {
-            try {
-                $holdingDir = Join-Path $Directory ".workpkg_duplicate_downloads_$Stamp"
-                if (-not (Test-Path -LiteralPath $holdingDir)) {
-                    New-Item -ItemType Directory -Path $holdingDir | Out-Null
-                    $holdingItem = Get-Item -LiteralPath $holdingDir -Force
-                    $holdingItem.Attributes = $holdingItem.Attributes -bor [System.IO.FileAttributes]::Hidden
-                }
-
-                Move-Item -LiteralPath $image.FullName -Destination $holdingDir -Force
-                $removed++
-            } catch {
-            }
         }
     }
 
-    return $removed
+    $moved = 0
+    foreach ($image in $Images) {
+        $destination = Get-UniqueFilePath -Path (Join-Path $holdingDir $image.Name)
+        Move-Item -LiteralPath $image.FullName -Destination $destination -ErrorAction Stop
+        $moved++
+    }
+
+    return $moved
+}
+
+function Restore-StagedImages {
+    param([object[]]$MovedImages)
+
+    $restoreErrors = New-Object System.Collections.Generic.List[string]
+    foreach ($record in @($MovedImages) | Sort-Object Sequence -Descending) {
+        try {
+            if (-not (Test-Path -LiteralPath $record.StagedPath -PathType Leaf)) {
+                continue
+            }
+            $restorePath = $record.OriginalPath
+            if (Test-Path -LiteralPath $restorePath) {
+                $restorePath = Get-UniqueFilePath -Path $restorePath
+            }
+            Move-Item -LiteralPath $record.StagedPath -Destination $restorePath -ErrorAction Stop
+        } catch {
+            $restoreErrors.Add("$($record.StagedPath): $($_.Exception.Message)") | Out-Null
+        }
+    }
+
+    return $restoreErrors.ToArray()
 }
 
 function Get-PortfolioNumber {
@@ -849,6 +858,8 @@ $lockStream = $null
 $lockPath = Join-Path $scriptDir ".workpkg.lock"
 $lastHashPath = Join-Path $scriptDir ".workpkg_last_text.sha256"
 $stagingDir = $null
+$movedImages = New-Object System.Collections.Generic.List[object]
+$packageCommitted = $false
 
 try {
     if (Test-Path -LiteralPath $lockPath) {
@@ -903,7 +914,13 @@ try {
     }
 
     if ($duplicateExists -or $lastHash -eq $currentHash) {
-        $removedImages = Remove-DuplicateDownloadImages -Images $images -Directory $scriptDir -Stamp $stamp
+        if ($Preview) {
+            Write-Output "PREVIEW_DUPLICATE"
+            Write-Output "Version=$workPackageScriptVersion"
+            Write-Output "WouldQuarantineImages=$($images.Count)"
+            return
+        }
+        $removedImages = Move-DuplicateDownloadImagesToQuarantine -Images $images -Directory $scriptDir -Stamp $stamp
         Clear-ClipboardAfterSuccess
         Show-Tip -Message $duplicateExistingMessage
         if ($NoMessage) {
@@ -914,7 +931,7 @@ try {
         return
     }
 
-    if (-not (Test-Path -LiteralPath $libraryDir)) {
+    if (-not $Preview -and -not (Test-Path -LiteralPath $libraryDir)) {
         New-Item -ItemType Directory -Path $libraryDir | Out-Null
     }
 
@@ -933,6 +950,15 @@ try {
         $targetDir = Join-Path $libraryDir "$stamp`_$folderTitle`_$index"
         $packageId = "$stamp`_$index"
         $index++
+    }
+
+    if ($Preview) {
+        Write-Output "PREVIEW"
+        Write-Output "Version=$workPackageScriptVersion"
+        Write-Output "Folder=$targetDir"
+        Write-Output "Images=$($images.Count)"
+        Write-Output "WouldMoveSourceImages=$($images.Count)"
+        return
     }
 
     $stagingDir = Join-Path $libraryDir ".workpkg_staging_$packageId"
@@ -961,11 +987,21 @@ try {
         $sequence = ($i + 1).ToString($numberFormat)
         $newName = "$mediaPrefix`_$sequence$($image.Extension.ToLowerInvariant())"
         $newPath = Join-Path $stagingDir $newName
-        Move-Item -LiteralPath $image.FullName -Destination $newPath -ErrorAction Stop
+        $originalPath = $image.FullName
+        Move-Item -LiteralPath $originalPath -Destination $newPath -ErrorAction Stop
+        $movedImages.Add([pscustomobject]@{
+            Sequence = $i
+            OriginalPath = $originalPath
+            StagedPath = $newPath
+        }) | Out-Null
         Set-FileTimes -Path $newPath -Time ($packageTime.AddSeconds($i + 1))
+        if ($TestFailAfterImageMove -gt 0 -and $movedImages.Count -ge $TestFailAfterImageMove) {
+            throw "Simulated failure after moving $($movedImages.Count) image(s)."
+        }
     }
 
     Move-Item -LiteralPath $stagingDir -Destination $targetDir -ErrorAction Stop
+    $packageCommitted = $true
     $stagingDir = $null
     $txtPath = Join-Path $targetDir "$textPrefix`_$stamp.txt"
 
@@ -1028,10 +1064,21 @@ try {
         }
     }
 } catch {
-    if (-not [string]::IsNullOrWhiteSpace($stagingDir) -and (Test-Path -LiteralPath $stagingDir)) {
-        try {
-            Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
-        } catch {
+    $originalError = $_
+    if (-not $packageCommitted) {
+        $restoreErrors = Restore-StagedImages -MovedImages $movedImages.ToArray()
+        if (-not [string]::IsNullOrWhiteSpace($stagingDir) -and (Test-Path -LiteralPath $stagingDir)) {
+            try {
+                Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction Stop
+            } catch {
+                $restoreErrors += "Staging cleanup: $($_.Exception.Message)"
+            }
+        }
+        if (@($restoreErrors).Count -gt 0) {
+            try {
+                Write-ErrorLog -Directory $scriptDir -Stamp $stamp -Message ("Rollback incomplete:`r`n" + (@($restoreErrors) -join "`r`n"))
+            } catch {
+            }
         }
     }
     try {
@@ -1039,7 +1086,7 @@ try {
     } catch {
     }
 
-    throw
+    throw $originalError
 } finally {
     if ($null -ne $lockStream) {
         $lockStream.Close()
