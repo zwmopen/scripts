@@ -1,0 +1,82 @@
+name: Apply script safety patch
+
+on:
+  pull_request:
+    paths:
+      - "APPLY_SCRIPT_SAFETY_TRIGGER.md"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'automation/apply-script-safety'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/script-dry-run-rollback
+          fetch-depth: 0
+
+      - name: Apply staged patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .patches/script-safety.part* > /tmp/script-safety.patch
+          git apply --check /tmp/script-safety.patch
+          git apply /tmp/script-safety.patch
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run Python transaction tests
+        run: |
+          python -m py_compile "本地文件处理脚本/素材处理脚本/安装-一键生成硬链接封面.py"
+          python -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Check PowerShell syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -Path . -Recurse -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Host "PowerShell syntax errors in $($_.FullName)"
+              $errors | ForEach-Object { Write-Host $_.Message }
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Verify patch safety markers
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          checks = {
+              '本地文件处理脚本/一键GPT作品包/make_work_package.ps1': ['Restore-StagedImages', 'Move-DuplicateDownloadImagesToQuarantine', '$packageCommitted'],
+              '本地文件处理脚本/素材处理脚本/同步-硬链接素材工作副本.ps1': ['ConfirmReplaceToken', 'ConfirmUndoToken', 'TestFailAfterBackup'],
+              '本地文件处理脚本/素材处理脚本/评论在前改名工具/swap-like-comment-prefix.ps1': ['ConfirmApplyToken', 'ConfirmUndoToken', 'Invoke-RenameTransaction'],
+              '本地文件处理脚本/素材处理脚本/安装-一键生成硬链接封面.py': ['.preview-hardlink-staging-', 'HARDLINK_TEST_FAIL_AFTER'],
+          }
+          for filename, markers in checks.items():
+              text = Path(filename).read_text(encoding='utf-8-sig')
+              for marker in markers:
+                  if marker not in text:
+                      raise SystemExit(f'{filename}: missing {marker}')
+          PY
+          git diff --check
+
+      - name: Commit verified patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .patches
+          rm -f .github/workflows/apply-script-safety.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: add dry-run, rollback, and undo safety"
+          git push origin HEAD:fix/script-dry-run-rollback
