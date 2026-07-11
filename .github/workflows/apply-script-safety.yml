@@ -37,7 +37,6 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-
           path = Path('本地文件处理脚本/素材处理脚本/同步-硬链接素材工作副本.ps1')
           text = path.read_text(encoding='utf-8-sig')
           old = '''    catch {\n        if ($tempPath -and (Test-Path -LiteralPath $tempPath -PathType Leaf)) {\n            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue\n        }\n        $action = "Fail"\n'''
@@ -86,14 +85,31 @@ jobs:
           PY
           git diff --check
 
-      - name: Commit verified patch
+      - name: Commit and push verified patch
+        id: commit-push
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          rm -rf .patches .patches-git
-          rm -f .github/workflows/apply-script-safety.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "fix: add dry-run, rollback, and undo safety"
-          git push origin HEAD:fix/script-dry-run-rollback
+          set -o pipefail
+          {
+            rm -rf .patches .patches-git
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git status --short
+            git commit -m "fix: add dry-run, rollback, and undo safety"
+            git push origin HEAD:fix/script-dry-run-rollback
+          } 2>&1 | tee "$GITHUB_WORKSPACE/script-safety-push.log"
+
+      - name: Upload push diagnostics
+        if: steps.commit-push.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: script-safety-push-${{ github.run_id }}
+          path: script-safety-push.log
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Stop after push failure
+        if: steps.commit-push.outcome == 'failure'
+        run: exit 1
