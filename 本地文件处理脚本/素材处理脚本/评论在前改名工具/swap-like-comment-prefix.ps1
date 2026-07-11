@@ -35,6 +35,13 @@ function Invoke-RenameTransaction {
     $completed = New-Object System.Collections.Generic.List[object]
     try {
         foreach ($op in $Operations) {
+            if (-not (Test-Path -LiteralPath $op.OldPath)) {
+                throw "Rename source is missing: $($op.OldPath)"
+            }
+            if (Test-Path -LiteralPath $op.NewPath) {
+                throw "Rename target already exists: $($op.NewPath)"
+            }
+
             Rename-Item -LiteralPath $op.OldPath -NewName ([System.IO.Path]::GetFileName($op.NewPath)) -ErrorAction Stop
             $completed.Add($op) | Out-Null
             if ($TestFailAfterRename -gt 0 -and $completed.Count -ge $TestFailAfterRename) {
@@ -84,8 +91,6 @@ if ($Mode -eq "Undo") {
     [array]::Reverse($rows)
     $ops = New-Object System.Collections.Generic.List[object]
     foreach ($row in $rows) {
-        if (-not (Test-Path -LiteralPath $row.NewPath)) { throw "Undo source is missing: $($row.NewPath)" }
-        if (Test-Path -LiteralPath $row.OldPath) { throw "Undo target already exists: $($row.OldPath)" }
         $ops.Add([pscustomobject]@{
             OldPath = $row.NewPath
             NewPath = $row.OldPath
