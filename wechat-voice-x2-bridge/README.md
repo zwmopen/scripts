@@ -16,6 +16,7 @@ Windows 小工具：把鼠标 `X2` 侧键绑定到微信输入法语音输入。
 - `run-hidden.vbs`：隐藏运行守护脚本，避免弹出蓝色 PowerShell 窗口。
 - `wechat-voice-x2-bridge.ps1`：核心脚本。
 - `SKILL.md`：技能说明，归类为“AI协作 / 人机协同 / 本地脚本型技能”。
+- `ASSET.md`：资产归档卡，记录触发链、部署方式、云端位置和恢复方法。
 
 ## 使用
 
