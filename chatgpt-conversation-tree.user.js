@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.9.0
+// @version      1.10.0
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -18,14 +18,14 @@
 // @grant        GM_unregisterMenuCommand
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
-// @connect      *
+// @connect      raw.githubusercontent.com
 // ==/UserScript==
 
 (() => {
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.9.0';
+  const SCRIPT_VERSION = '1.10.0';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -58,10 +58,16 @@
   const CLOUD_PROMPT_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/master/chatgpt-cloud-prompts.json';
   const CLOUD_PROMPT_CACHE_KEY = 'cloud-prompts-cache-v1';
   const CLOUD_PROMPT_CACHE_STORAGE_KEY = `${APP_ID}:cloud-prompts-cache:v1`;
+  const CLOUD_PROMPT_BACKUPS_KEY = 'cloud-prompts-backups-v1';
+  const CLOUD_PROMPT_LAST_ATTEMPT_KEY = 'cloud-prompts-last-attempt-v1';
+  const CLOUD_PROMPT_BACKUPS_STORAGE_KEY = `${APP_ID}:cloud-prompts-backups:v1`;
   const CLOUD_PROMPT_AUTO_SYNC_INTERVAL = 24 * 60 * 60 * 1000;
+  const MAX_CLOUD_PROMPT_BACKUPS = 5;
+  const MAX_CLOUD_PROMPT_RESPONSE_BYTES = 2 * 1024 * 1024;
   const DIAGNOSTIC_LOG_KEY = `${APP_ID}:diagnostic-log:v1`;
   const MAX_DIAGNOSTIC_LOGS = 220;
   const WORK_PACKAGE_VISIBLE_KEY = 'work-package-visible';
+  const HARD_NAVIGATION_FALLBACK_KEY = 'hard-navigation-fallback-enabled';
   const DRAG_MIME = `application/x-${APP_ID}`;
 
   const icons = {
@@ -118,6 +124,7 @@
   let pendingImportMode = 'merge';
   let promptState = loadPromptState();
   let cloudPromptState = loadCloudPromptState();
+  let cloudPromptSyncing = false;
   let cloudPromptSyncPromise = null;
   let editingPromptId = '';
   let pendingRecentMenuUntil = 0;
@@ -130,6 +137,7 @@
   let queuedOpenChat = null;
   let openChatRequestSeq = 0;
   let diagnosticLogs = loadDiagnosticLogs();
+  let hardNavigationFallbackEnabled = loadHardNavigationFallbackSetting();
   let diagnosticSaveTimer = 0;
   let workPackageButtonVisible = (() => {
     try {
@@ -145,6 +153,26 @@
       return false;
     }
   })();
+
+  function loadHardNavigationFallbackSetting() {
+    try {
+      return GM_getValue(HARD_NAVIGATION_FALLBACK_KEY, false) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function setHardNavigationFallbackEnabled(enabled) {
+    hardNavigationFallbackEnabled = Boolean(enabled);
+    try { GM_setValue(HARD_NAVIGATION_FALLBACK_KEY, hardNavigationFallbackEnabled); } catch {}
+    showImageDownloadToast(
+      hardNavigationFallbackEnabled
+        ? '已允许失败时整页跳转'
+        : '已关闭整页跳转，优先保持原生无刷新切换',
+      true
+    );
+    registerUserscriptMenuCommands();
+  }
 
   function loadState() {
     const modernSources = [];
@@ -567,6 +595,79 @@
     }
   }
 
+  function cloudPromptSnapshot(source = cloudPromptState) {
+    return {
+      schemaVersion: 1,
+      version: String(source?.version || ''),
+      items: (source?.items || []).map((item) => ({ ...item })),
+      updatedAt: Number(source?.updatedAt || 0),
+      syncedAt: Number(source?.syncedAt || 0),
+      backedUpAt: Date.now(),
+    };
+  }
+
+  function loadCloudPromptBackups() {
+    let raw = null;
+    try { raw = GM_getValue(CLOUD_PROMPT_BACKUPS_KEY, null); } catch {}
+    if (!Array.isArray(raw)) {
+      try { raw = JSON.parse(localStorage.getItem(CLOUD_PROMPT_BACKUPS_STORAGE_KEY) || 'null'); } catch {}
+    }
+    return (Array.isArray(raw) ? raw : [])
+      .map((item) => normalizeCloudPromptState(item))
+      .filter((item) => item.items.length)
+      .slice(0, MAX_CLOUD_PROMPT_BACKUPS);
+  }
+
+  function saveCloudPromptBackups(backups) {
+    const payload = backups.slice(0, MAX_CLOUD_PROMPT_BACKUPS).map((item) => cloudPromptSnapshot(item));
+    try { GM_setValue(CLOUD_PROMPT_BACKUPS_KEY, payload); } catch {}
+    try { localStorage.setItem(CLOUD_PROMPT_BACKUPS_STORAGE_KEY, JSON.stringify(payload)); } catch {}
+  }
+
+  function backupCloudPromptState(source = cloudPromptState) {
+    if (!source?.items?.length) return;
+    const snapshot = cloudPromptSnapshot(source);
+    const signature = `${snapshot.version}|${snapshot.updatedAt}|${snapshot.items.length}`;
+    const backups = loadCloudPromptBackups().filter((item) => (
+      `${item.version}|${item.updatedAt}|${item.items.length}` !== signature
+    ));
+    backups.unshift(snapshot);
+    saveCloudPromptBackups(backups);
+  }
+
+  function cloudPromptBackupCount() {
+    return loadCloudPromptBackups().length;
+  }
+
+  function cloudPromptStatusText() {
+    const lastSync = Number(cloudPromptState.syncedAt || 0);
+    const time = lastSync
+      ? new Date(lastSync).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      : '未同步';
+    return `本地 ${promptState.items.length} · 云端 ${cloudPromptState.items.length} · ${time}`;
+  }
+
+  function restorePreviousCloudPrompts() {
+    const backups = loadCloudPromptBackups();
+    const previous = backups.shift();
+    if (!previous) {
+      showImageDownloadToast('没有可恢复的云端提示词版本', false);
+      return false;
+    }
+    const current = cloudPromptSnapshot(cloudPromptState);
+    if (current.items.length) backups.push(current);
+    cloudPromptState = { ...previous, syncedAt: Date.now() };
+    saveCloudPromptState();
+    saveCloudPromptBackups(backups);
+    if (!document.getElementById(PROMPT_PANEL_ID)?.hidden) renderPromptPanel();
+    showImageDownloadToast(`已恢复云端提示词：${cloudPromptState.items.length} 条`, true);
+    addDiagnosticLog('prompt:cloud-restore', {
+      count: cloudPromptState.items.length,
+      version: cloudPromptState.version,
+    });
+    return true;
+  }
+
   function visiblePromptItems() {
     const localIds = new Set(promptState.items.map((item) => String(item.id)));
     const localContent = new Set(promptState.items.map((item) => `${item.title}\n${item.content}`));
@@ -596,7 +697,12 @@
               reject(new Error(`GitHub 返回 HTTP ${response.status}`));
               return;
             }
-            try { resolve(JSON.parse(response.responseText)); }
+            const body = String(response.responseText || '');
+            if (body.length > MAX_CLOUD_PROMPT_RESPONSE_BYTES) {
+              reject(new Error('云端提示词文件超过 2MB，已拒绝加载'));
+              return;
+            }
+            try { resolve(JSON.parse(body)); }
             catch { reject(new Error('云端提示词不是有效 JSON')); }
           },
           onerror: () => reject(new Error('无法连接 GitHub 云端提示词库')),
@@ -604,24 +710,59 @@
         });
       });
     }
-    return fetch(url, { cache: 'no-store' }).then((response) => {
+    return fetch(url, { cache: 'no-store' }).then(async (response) => {
       if (!response.ok) throw new Error(`GitHub 返回 HTTP ${response.status}`);
-      return response.json();
+      const body = await response.text();
+      if (body.length > MAX_CLOUD_PROMPT_RESPONSE_BYTES) {
+        throw new Error('云端提示词文件超过 2MB，已拒绝加载');
+      }
+      try { return JSON.parse(body); }
+      catch { throw new Error('云端提示词不是有效 JSON'); }
     });
   }
 
   async function syncCloudPrompts(manual = false) {
-    if (cloudPromptSyncPromise) return cloudPromptSyncPromise;
+    if (cloudPromptSyncPromise) {
+      if (manual) showImageDownloadToast('云端提示词正在同步…', true);
+      return cloudPromptSyncPromise;
+    }
+    cloudPromptSyncing = true;
+    try { GM_setValue(CLOUD_PROMPT_LAST_ATTEMPT_KEY, Date.now()); } catch {}
+    if (!document.getElementById(PROMPT_PANEL_ID)?.hidden) renderPromptPanel();
     cloudPromptSyncPromise = (async () => {
       try {
         const raw = await requestCloudPromptJson();
-        if (!raw || (!Array.isArray(raw.prompts) && !Array.isArray(raw.items))) {
-          throw new Error('云端文件缺少 prompts 数组');
+        const rawItems = Array.isArray(raw?.prompts) ? raw.prompts : raw?.items;
+        if (!Array.isArray(rawItems)) throw new Error('云端文件缺少 prompts 数组');
+        if (Number(raw.schemaVersion || 1) !== 1) throw new Error('不支持该云端提示词格式版本');
+        if (rawItems.length > 500) throw new Error('云端提示词超过 500 条，已拒绝加载');
+        if (rawItems.some((item) => String(item?.content || '').length > 50000)) {
+          throw new Error('单条云端提示词超过 50000 字，已拒绝加载');
         }
+
         const next = normalizeCloudPromptState({ ...raw, syncedAt: Date.now() });
+        if (next.items.length !== rawItems.length) {
+          throw new Error('云端提示词包含空白或无效条目，已拒绝覆盖缓存');
+        }
+        if (new Set(next.items.map((item) => item.sourceId)).size !== next.items.length) {
+          throw new Error('云端提示词 ID 重复，已拒绝覆盖缓存');
+        }
+
+        const currentCount = cloudPromptState.items.length;
+        const nextCount = next.items.length;
+        const suspiciousShrink = currentCount > 0 && (
+          nextCount === 0
+          || (currentCount >= 5 && nextCount < Math.ceil(currentCount * 0.5))
+        );
+        if (suspiciousShrink) {
+          const message = `云端提示词将从 ${currentCount} 条减少到 ${nextCount} 条。`;
+          if (!manual) throw new Error(`${message} 自动同步已拒绝，需手动确认`);
+          if (!window.confirm(`${message}\n确认同步并保留旧版本备份吗？`)) return false;
+        }
+
+        backupCloudPromptState(cloudPromptState);
         cloudPromptState = next;
         saveCloudPromptState();
-        if (!document.getElementById(PROMPT_PANEL_ID)?.hidden) renderPromptPanel();
         if (manual) showImageDownloadToast(`云端提示词已同步：${next.items.length} 条`, true);
         addDiagnosticLog('prompt:cloud-sync', { ok: true, count: next.items.length, version: next.version });
         return true;
@@ -631,20 +772,24 @@
         return false;
       } finally {
         cloudPromptSyncPromise = null;
+        cloudPromptSyncing = false;
+        if (!document.getElementById(PROMPT_PANEL_ID)?.hidden) renderPromptPanel();
       }
     })();
     return cloudPromptSyncPromise;
   }
-
   function scheduleCloudPromptSync() {
-    if (Date.now() - Number(cloudPromptState.syncedAt || 0) < CLOUD_PROMPT_AUTO_SYNC_INTERVAL) return;
+    let lastAttempt = 0;
+    try { lastAttempt = Number(GM_getValue(CLOUD_PROMPT_LAST_ATTEMPT_KEY, 0) || 0); } catch {}
+    const lastActivity = Math.max(Number(cloudPromptState.syncedAt || 0), lastAttempt);
+    if (Date.now() - lastActivity < CLOUD_PROMPT_AUTO_SYNC_INTERVAL) return;
     window.setTimeout(() => void syncCloudPrompts(false), 1200);
   }
 
   function exportCloudPromptFile() {
     const payload = {
       schemaVersion: 1,
-      version: new Date().toISOString().slice(0, 10).replace(/-/g, '.') + '.1',
+      version: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       prompts: promptState.items.map((item) => ({ ...item })),
     };
@@ -1115,6 +1260,10 @@
       }
       #${PROMPT_PANEL_ID} button:hover {
         background: var(--sidebar-surface-secondary, rgba(0,0,0,.06));
+      }
+      #${PROMPT_PANEL_ID} button:disabled {
+        opacity: .55;
+        cursor: progress;
       }
       #${PROMPT_PANEL_ID} .cgpt-prompt-primary {
         background: var(--sidebar-surface-secondary, rgba(0,0,0,.08));
@@ -2380,10 +2529,11 @@
     const editingContent = editing?.content || '';
     panel.innerHTML = `
       <div class="cgpt-prompt-head">
-        <span>提示词库 <small>本地 ${promptState.items.length} · 云端 ${cloudPromptState.items.length}</small></span>
+        <span>提示词库 <small>${cloudPromptStatusText()}</small></span>
         <span>
           <button data-cgpt-prompt-action="new">＋ 新增</button>
-          <button data-cgpt-prompt-action="sync-cloud">☁ 同步</button>
+          <button data-cgpt-prompt-action="sync-cloud" ${cloudPromptSyncing ? 'disabled' : ''}>${cloudPromptSyncing ? '同步中…' : '☁ 同步'}</button>
+          ${cloudPromptBackupCount() ? '<button data-cgpt-prompt-action="restore-cloud">↶ 回退</button>' : ''}
           <button data-cgpt-prompt-action="export-cloud">导出云端文件</button>
           <button data-cgpt-prompt-action="close">关闭</button>
         </span>
@@ -2897,6 +3047,7 @@
     if (!ensureMounted() || rendering) return;
 
     let changed = false;
+    let renderNeeded = false;
     const previousRows = nativeRows;
     const now = Date.now();
     const nextRows = new Map();
@@ -2925,6 +3076,7 @@
           lastSeen: now,
         };
         changed = true;
+        renderNeeded = true;
       } else if (!previous.lastSeen) {
         state.known[info.chatId] = {
           ...previous,
@@ -2973,13 +3125,16 @@
       sortTreeByRecent();
       sortPendingOnLoad = false;
       changed = true;
+      renderNeeded = true;
     }
 
     if (changed) saveState();
-    if (changed || rowsChanged || !host.firstElementChild) queueRender();
+    updateFallbackChatVisualState();
+    if (renderNeeded || rowsChanged || !host.firstElementChild) queueRender();
   }
 
   function scheduleScan() {
+    if (document.hidden) return;
     clearTimeout(scanTimer);
     scanTimer = window.setTimeout(() => runWhenIdle(scanNativeChats, 900), 240);
   }
@@ -3765,12 +3920,14 @@
     queuedOpenChat = { chatId, fallbackHref };
     if (openChatRunning) return;
     void drainOpenChatQueue();
-    window.setTimeout(() => {
-      if (requestSeq !== openChatRequestSeq) return;
-      if (isChatLocation(chatId)) return;
-      addDiagnosticLog('open:request-timeout-no-hard-navigation', { chatId, fallbackHref, requestSeq });
-      forceOpenChat(chatId, fallbackHref);
-    }, 9000);
+    if (hardNavigationFallbackEnabled) {
+      window.setTimeout(() => {
+        if (requestSeq !== openChatRequestSeq) return;
+        if (isChatLocation(chatId)) return;
+        addDiagnosticLog('open:request-timeout-hard-navigation', { chatId, fallbackHref, requestSeq });
+        forceOpenChat(chatId, fallbackHref);
+      }, 9000);
+    }
   }
 
   async function drainOpenChatQueue() {
@@ -3784,20 +3941,28 @@
             chatId: job.chatId,
             fallbackHref: job.fallbackHref,
           });
-          await openChatThroughNativeRow(job.chatId, job.fallbackHref);
+          const opened = await openChatThroughNativeRow(job.chatId, job.fallbackHref);
           addDiagnosticLog('open:queue-finish', {
             chatId: job.chatId,
+            opened,
             currentUrl: location.href,
             isCurrent: isChatLocation(job.chatId),
           });
+          if (!opened && !isChatLocation(job.chatId)) {
+            markFallbackChatOpening(job.chatId, 'failed');
+            showImageDownloadToast('该对话尚未加载，请先点“最近”右侧的加载按钮', false);
+            if (hardNavigationFallbackEnabled) forceOpenChat(job.chatId, job.fallbackHref);
+          }
           updateFallbackChatVisualState(job.chatId);
         } catch (error) {
-          console.warn('[ChatGPT 最近对话分组] 打开分组对话失败，改用硬跳转：', error);
+          console.warn('[ChatGPT 最近对话分组] 原生打开分组对话失败：', error);
           addDiagnosticLog('open:queue-error', {
             chatId: job.chatId,
             message: error?.message || String(error),
           });
-          forceOpenChat(job.chatId, job.fallbackHref);
+          markFallbackChatOpening(job.chatId, 'failed');
+          showImageDownloadToast('原生切换失败，已保持当前页面', false);
+          if (hardNavigationFallbackEnabled) forceOpenChat(job.chatId, job.fallbackHref);
         }
         await sleep(520);
       }
@@ -4675,7 +4840,12 @@
     };
     addMenu('导出 ChatGPT 辅助器数据（分组+提示词）', () => exportGroupData());
     addMenu('同步 GitHub 云端提示词', () => void syncCloudPrompts(true));
+    addMenu('恢复上一版云端提示词', () => restorePreviousCloudPrompts());
     addMenu('导出本地提示词为云端文件', () => exportCloudPromptFile());
+    addMenu(
+      hardNavigationFallbackEnabled ? '关闭失败时整页跳转' : '允许失败时整页跳转（当前关闭）',
+      () => setHardNavigationFallbackEnabled(!hardNavigationFallbackEnabled)
+    );
     addMenu('打开提示词库', () => {
       ensurePromptButton();
       const button = document.getElementById(PROMPT_BUTTON_ID);
@@ -6200,6 +6370,8 @@
           insertPrompt(promptId);
         } else if (action === 'sync-cloud') {
           void syncCloudPrompts(true);
+        } else if (action === 'restore-cloud') {
+          restorePreviousCloudPrompts();
         } else if (action === 'export-cloud') {
           exportCloudPromptFile();
         } else if (action === 'save') {
@@ -6465,25 +6637,56 @@
   }
 
   const observer = new MutationObserver((mutations) => {
+    if (document.hidden) return;
     if (pendingNativeMenuChatId) augmentNativeConversationMenu();
     if (Date.now() <= pendingRecentMenuUntil) augmentNativeRecentMenu();
     if (rendering || Date.now() < ignoreMutationsUntil) return;
-    const externalChange = mutations.some((mutation) => {
+
+    let scanHistory = false;
+    let scanImages = false;
+    let scanComposer = false;
+    for (const mutation of mutations) {
       const target = mutation.target.nodeType === 1
         ? mutation.target
         : mutation.target.parentElement;
-      return !target?.closest?.(`#${APP_ID}, #${HEADER_ID}, #${MENU_ID}, #${PROMPT_PANEL_ID}, #${PROMPT_BUTTON_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`);
-    });
-    if (externalChange) {
-      scheduleScan();
-      scheduleImageDownloadButtons();
-      schedulePromptButton();
+      if (!target || target.closest?.(`#${APP_ID}, #${HEADER_ID}, #${MENU_ID}, #${PROMPT_PANEL_ID}, #${PROMPT_BUTTON_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) {
+        continue;
+      }
+
+      const rootReplacement = target === document.documentElement
+        || target === document.body
+        || [...mutation.addedNodes].some((node) => (
+          node.nodeType === 1
+          && (node.matches?.('main, nav, aside, #history') || node.querySelector?.('main, nav, aside, #history'))
+        ));
+      const touchesHistory = rootReplacement
+        || target.closest?.('nav, aside, #history')
+        || historyRoot?.contains?.(target)
+        || target.contains?.(historyRoot);
+      const touchesMain = rootReplacement || target.closest?.('main');
+      const touchesComposer = touchesMain || target.closest?.('form, [data-testid*="composer"]');
+
+      scanHistory ||= Boolean(touchesHistory);
+      scanImages ||= Boolean(touchesMain);
+      scanComposer ||= Boolean(touchesComposer);
+      if (scanHistory && scanImages && scanComposer) break;
     }
+
+    if (scanHistory) scheduleScan();
+    if (scanImages) scheduleImageDownloadButtons();
+    if (scanComposer) schedulePromptButton();
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    scheduleScan();
+    scheduleImageDownloadButtons();
+    schedulePromptButton(80);
+  });
   let previousUrl = location.href;
   window.setInterval(() => {
+    if (document.hidden) return;
     if (location.href !== previousUrl) {
       previousUrl = location.href;
       updateFallbackChatVisualState();
@@ -6491,8 +6694,9 @@
       scheduleImageDownloadButtons();
       schedulePromptButton(80);
     }
-  }, 600);
+  }, 850);
   window.setInterval(() => {
+    if (document.hidden) return;
     syncLegacyChanges();
     schedulePromptButton(400);
   }, 6000);

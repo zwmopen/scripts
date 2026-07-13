@@ -37,6 +37,17 @@ jobs:
               raise SystemExit('Cannot locate userscript metadata version and SCRIPT_VERSION')
           if metadata.group(1) != runtime.group(1):
               raise SystemExit(f'Version mismatch: metadata={metadata.group(1)} runtime={runtime.group(1)}')
+          required_contracts = [
+              'restorePreviousCloudPrompts',
+              'suspiciousShrink',
+              'HARD_NAVIGATION_FALLBACK_KEY',
+              'if (document.hidden) return;',
+          ]
+          missing = [item for item in required_contracts if item not in text]
+          if missing:
+              raise SystemExit(f'Missing ChatGPT helper safety contracts: {missing}')
+          if '// @connect      *' in text:
+              raise SystemExit('Userscript must not request unrestricted @connect permission')
           PY
 
       - name: Check PowerShell syntax
