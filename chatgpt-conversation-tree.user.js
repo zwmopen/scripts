@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.8.0
+// @version      1.9.0
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -16,6 +16,7 @@
 // @grant        GM_download
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
+// @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      *
 // ==/UserScript==
@@ -24,7 +25,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.8.0';
+  const SCRIPT_VERSION = '1.9.0';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -54,6 +55,10 @@
   const UNGROUPED_COLLAPSED_KEY = 'ungrouped-collapsed';
   const PROMPT_STORAGE_KEY = `${APP_ID}:prompts:v1`;
   const GM_PROMPT_KEY = 'prompts-v1';
+  const CLOUD_PROMPT_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/master/chatgpt-cloud-prompts.json';
+  const CLOUD_PROMPT_CACHE_KEY = 'cloud-prompts-cache-v1';
+  const CLOUD_PROMPT_CACHE_STORAGE_KEY = `${APP_ID}:cloud-prompts-cache:v1`;
+  const CLOUD_PROMPT_AUTO_SYNC_INTERVAL = 24 * 60 * 60 * 1000;
   const DIAGNOSTIC_LOG_KEY = `${APP_ID}:diagnostic-log:v1`;
   const MAX_DIAGNOSTIC_LOGS = 220;
   const WORK_PACKAGE_VISIBLE_KEY = 'work-package-visible';
@@ -112,6 +117,8 @@
   let renameRun = null;
   let pendingImportMode = 'merge';
   let promptState = loadPromptState();
+  let cloudPromptState = loadCloudPromptState();
+  let cloudPromptSyncPromise = null;
   let editingPromptId = '';
   let pendingRecentMenuUntil = 0;
   let recentMenuAugmented = false;
@@ -476,6 +483,180 @@
     } catch (error) {
       console.warn('[ChatGPT 辅助器] 提示词保存失败：', error);
     }
+  }
+
+  function defaultCloudPromptState() {
+    return {
+      schemaVersion: 1,
+      version: '',
+      items: [],
+      updatedAt: 0,
+      syncedAt: 0,
+    };
+  }
+
+  function promptTimestamp(value, fallback = Date.now()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    const parsed = Date.parse(String(value || ''));
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  function normalizeCloudPromptItem(item, index = 0) {
+    const title = compactTitle(item?.title || '').slice(0, 160);
+    const content = String(item?.content || '').trim().slice(0, 50000);
+    if (!title && !content) return null;
+    const sourceId = String(
+      item?.sourceId || String(item?.id || `item-${index + 1}`).replace(/^cloud:/, '')
+    ).slice(0, 240);
+    const updatedAt = promptTimestamp(item?.updatedAt, Date.now());
+    return {
+      id: `cloud:${sourceId}`,
+      sourceId,
+      source: 'cloud',
+      title: title || compactTitle(content).slice(0, 28) || '未命名云端提示词',
+      content,
+      createdAt: promptTimestamp(item?.createdAt, updatedAt),
+      updatedAt,
+    };
+  }
+
+  function normalizeCloudPromptState(source) {
+    if (!source || typeof source !== 'object') return defaultCloudPromptState();
+    const rawItems = Array.isArray(source.prompts) ? source.prompts : source.items;
+    if (!Array.isArray(rawItems)) return defaultCloudPromptState();
+    return {
+      schemaVersion: 1,
+      version: String(source.version || ''),
+      items: rawItems
+        .slice(0, 500)
+        .map((item, index) => normalizeCloudPromptItem(item, index))
+        .filter(Boolean),
+      updatedAt: promptTimestamp(source.updatedAt, 0),
+      syncedAt: promptTimestamp(source.syncedAt, 0),
+    };
+  }
+
+  function loadCloudPromptState() {
+    const sources = [];
+    try {
+      sources.push(GM_getValue(CLOUD_PROMPT_CACHE_KEY, null));
+    } catch {}
+    try {
+      sources.push(JSON.parse(localStorage.getItem(CLOUD_PROMPT_CACHE_STORAGE_KEY) || 'null'));
+    } catch {}
+    const source = sources
+      .filter((candidate) => candidate && (Array.isArray(candidate.items) || Array.isArray(candidate.prompts)))
+      .sort((a, b) => promptTimestamp(b.syncedAt, 0) - promptTimestamp(a.syncedAt, 0))[0];
+    return normalizeCloudPromptState(source);
+  }
+
+  function saveCloudPromptState() {
+    const payload = {
+      schemaVersion: 1,
+      version: cloudPromptState.version,
+      items: cloudPromptState.items.map((item) => ({ ...item })),
+      updatedAt: cloudPromptState.updatedAt,
+      syncedAt: cloudPromptState.syncedAt,
+    };
+    try { GM_setValue(CLOUD_PROMPT_CACHE_KEY, payload); } catch {}
+    try {
+      localStorage.setItem(CLOUD_PROMPT_CACHE_STORAGE_KEY, JSON.stringify(payload));
+    } catch (error) {
+      console.warn('[ChatGPT 辅助器] 云端提示词缓存失败：', error);
+    }
+  }
+
+  function visiblePromptItems() {
+    const localIds = new Set(promptState.items.map((item) => String(item.id)));
+    const localContent = new Set(promptState.items.map((item) => `${item.title}\n${item.content}`));
+    const cloudItems = cloudPromptState.items.filter((item) => (
+      !localIds.has(item.sourceId) && !localContent.has(`${item.title}\n${item.content}`)
+    ));
+    return [...promptState.items, ...cloudItems];
+  }
+
+  function findPromptItem(promptId) {
+    return promptState.items.find((item) => item.id === promptId)
+      || cloudPromptState.items.find((item) => item.id === promptId)
+      || null;
+  }
+
+  function requestCloudPromptJson() {
+    const url = `${CLOUD_PROMPT_URL}?ts=${Date.now()}`;
+    if (typeof GM_xmlhttpRequest === 'function') {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url,
+          timeout: 15000,
+          headers: { Accept: 'application/json' },
+          onload(response) {
+            if (response.status < 200 || response.status >= 300) {
+              reject(new Error(`GitHub 返回 HTTP ${response.status}`));
+              return;
+            }
+            try { resolve(JSON.parse(response.responseText)); }
+            catch { reject(new Error('云端提示词不是有效 JSON')); }
+          },
+          onerror: () => reject(new Error('无法连接 GitHub 云端提示词库')),
+          ontimeout: () => reject(new Error('连接 GitHub 云端提示词库超时')),
+        });
+      });
+    }
+    return fetch(url, { cache: 'no-store' }).then((response) => {
+      if (!response.ok) throw new Error(`GitHub 返回 HTTP ${response.status}`);
+      return response.json();
+    });
+  }
+
+  async function syncCloudPrompts(manual = false) {
+    if (cloudPromptSyncPromise) return cloudPromptSyncPromise;
+    cloudPromptSyncPromise = (async () => {
+      try {
+        const raw = await requestCloudPromptJson();
+        if (!raw || (!Array.isArray(raw.prompts) && !Array.isArray(raw.items))) {
+          throw new Error('云端文件缺少 prompts 数组');
+        }
+        const next = normalizeCloudPromptState({ ...raw, syncedAt: Date.now() });
+        cloudPromptState = next;
+        saveCloudPromptState();
+        if (!document.getElementById(PROMPT_PANEL_ID)?.hidden) renderPromptPanel();
+        if (manual) showImageDownloadToast(`云端提示词已同步：${next.items.length} 条`, true);
+        addDiagnosticLog('prompt:cloud-sync', { ok: true, count: next.items.length, version: next.version });
+        return true;
+      } catch (error) {
+        addDiagnosticLog('prompt:cloud-sync', { ok: false, error: String(error?.message || error) });
+        if (manual) window.alert(`云端提示词同步失败：${error?.message || error}\n已继续使用本地缓存。`);
+        return false;
+      } finally {
+        cloudPromptSyncPromise = null;
+      }
+    })();
+    return cloudPromptSyncPromise;
+  }
+
+  function scheduleCloudPromptSync() {
+    if (Date.now() - Number(cloudPromptState.syncedAt || 0) < CLOUD_PROMPT_AUTO_SYNC_INTERVAL) return;
+    window.setTimeout(() => void syncCloudPrompts(false), 1200);
+  }
+
+  function exportCloudPromptFile() {
+    const payload = {
+      schemaVersion: 1,
+      version: new Date().toISOString().slice(0, 10).replace(/-/g, '.') + '.1',
+      updatedAt: new Date().toISOString(),
+      prompts: promptState.items.map((item) => ({ ...item })),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'chatgpt-cloud-prompts.json';
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function loadDiagnosticLogs() {
@@ -975,6 +1156,17 @@
         text-overflow: ellipsis;
         white-space: nowrap;
         font-weight: 600;
+      }
+      .cgpt-prompt-cloud-badge {
+        display: inline-flex;
+        margin-left: 6px;
+        padding: 1px 5px;
+        border-radius: 999px;
+        color: #2563eb;
+        background: rgba(37, 99, 235, .1);
+        font-size: 11px;
+        font-weight: 500;
+        vertical-align: 1px;
       }
       .cgpt-prompt-preview,
       .cgpt-prompt-empty {
@@ -2162,34 +2354,37 @@
 
   function renderPromptPanel() {
     const panel = ensurePromptPanel();
+    const visibleItems = visiblePromptItems();
     const editing = editingPromptId
       ? promptState.items.find((item) => item.id === editingPromptId)
       : null;
     const editorTitle = editingPromptId === 'new' ? '新建提示词' : '编辑提示词';
-    const list = promptState.items.length ? promptState.items.map((item) => `
+    const list = visibleItems.length ? visibleItems.map((item) => `
       <div class="cgpt-prompt-row"
            data-cgpt-prompt-action="insert"
            data-prompt-id="${escapeHtml(item.id)}"
            role="button"
            tabindex="0"
-           title="插入并发送：${escapeHtml(item.title)}">
+           title="插入输入框：${escapeHtml(item.title)}">
         <div class="cgpt-prompt-insert">
-          <span class="cgpt-prompt-title">${escapeHtml(item.title)}</span>
+          <span class="cgpt-prompt-title">${escapeHtml(item.title)}${item.source === 'cloud' ? '<span class="cgpt-prompt-cloud-badge">云端</span>' : ''}</span>
           <span class="cgpt-prompt-preview">${escapeHtml(item.content || '空内容')}</span>
         </div>
-        <span class="cgpt-prompt-row-actions">
+        ${item.source === 'cloud' ? '' : `<span class="cgpt-prompt-row-actions">
           <button data-cgpt-prompt-action="edit" data-prompt-id="${escapeHtml(item.id)}">编辑</button>
           <button class="cgpt-danger" data-cgpt-prompt-action="delete" data-prompt-id="${escapeHtml(item.id)}">删除</button>
-        </span>
-      </div>`).join('') : '<div class="cgpt-prompt-empty">还没有提示词。点“新增”创建一个；之后点击任意提示词，会插入输入框并直接发送。</div>';
+        </span>`}
+      </div>`).join('') : '<div class="cgpt-prompt-empty">还没有提示词。点“新增”创建，或点“同步云端”从 GitHub 拉取。</div>';
 
     const editingTitle = editing?.title || '';
     const editingContent = editing?.content || '';
     panel.innerHTML = `
       <div class="cgpt-prompt-head">
-        <span>提示词库 <small>${promptState.items.length} 条</small></span>
+        <span>提示词库 <small>本地 ${promptState.items.length} · 云端 ${cloudPromptState.items.length}</small></span>
         <span>
           <button data-cgpt-prompt-action="new">＋ 新增</button>
+          <button data-cgpt-prompt-action="sync-cloud">☁ 同步</button>
+          <button data-cgpt-prompt-action="export-cloud">导出云端文件</button>
           <button data-cgpt-prompt-action="close">关闭</button>
         </span>
       </div>
@@ -2456,17 +2651,14 @@
   }
 
   function insertPrompt(promptId) {
-    const item = promptState.items.find((candidate) => candidate.id === promptId);
+    const item = findPromptItem(promptId);
     if (!item) return;
     const ok = insertTextIntoComposer(item.content);
     if (ok) {
       closePromptPanel();
-      window.setTimeout(async () => {
-        const submitted = await submitComposerAfterPrompt();
-        addDiagnosticLog('prompt:insert-submit', { promptId, title: item.title, ok, submitted });
-      }, 80);
+      addDiagnosticLog('prompt:insert', { promptId, title: item.title, source: item.source || 'local', ok });
     } else {
-      addDiagnosticLog('prompt:insert-submit', { promptId, title: item.title, ok, submitted: false });
+      addDiagnosticLog('prompt:insert', { promptId, title: item.title, source: item.source || 'local', ok });
     }
   }
 
@@ -4482,6 +4674,8 @@
       if (id != null) userscriptMenuCommandIds.push(id);
     };
     addMenu('导出 ChatGPT 辅助器数据（分组+提示词）', () => exportGroupData());
+    addMenu('同步 GitHub 云端提示词', () => void syncCloudPrompts(true));
+    addMenu('导出本地提示词为云端文件', () => exportCloudPromptFile());
     addMenu('打开提示词库', () => {
       ensurePromptButton();
       const button = document.getElementById(PROMPT_BUTTON_ID);
@@ -6004,6 +6198,10 @@
           deletePrompt(promptId);
         } else if (action === 'insert') {
           insertPrompt(promptId);
+        } else if (action === 'sync-cloud') {
+          void syncCloudPrompts(true);
+        } else if (action === 'export-cloud') {
+          exportCloudPromptFile();
         } else if (action === 'save') {
           upsertPromptFromPanel();
         } else if (action === 'cancel') {
@@ -6308,5 +6506,6 @@
   addDiagnosticLog('script:init');
   scanNativeChats();
   ensurePromptButton();
+  scheduleCloudPromptSync();
   scheduleImageDownloadButtons();
 })();
