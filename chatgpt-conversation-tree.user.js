@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.11.0
+// @version      1.11.1
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -25,7 +25,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.11.0';
+  const SCRIPT_VERSION = '1.11.1';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -1006,8 +1006,11 @@
     return `<!--${WORK_PACKAGE_TITLE_MARKER}${base64Utf8(normalized)}-->`;
   }
 
+  let workPackageAccountName = '';
+  let workPackageAccountLookupPromise = null;
+
   function normalizeWorkPackageAccountName(value) {
-    const ignored = /^(ChatGPT|OpenAI|Plus|Pro|Team|Business|Enterprise|Free|Upgrade|升级|设置|Settings|Log out|退出|Open profile menu|Profile|Account|账号|个人资料)$/i;
+    const ignored = /^(ChatGPT|OpenAI|Plus|Pro|Team|Business|Enterprise|Free|Upgrade|升级|设置|Settings|Log out|退出|Open profile menu|Profile|Account|账号|个人资料|个人资料图片|头像|Profile picture|User avatar)$/i;
     const lines = String(value || '').split(/\r?\n/);
     for (const rawLine of lines) {
       const line = compactTitle(rawLine);
@@ -1017,7 +1020,34 @@
     return '';
   }
 
+  async function refreshWorkPackageAccountName() {
+    if (workPackageAccountLookupPromise) return workPackageAccountLookupPromise;
+    workPackageAccountLookupPromise = (async () => {
+      try {
+        const response = await fetch('/api/auth/session', {
+          credentials: 'include',
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+        });
+        if (!response.ok) return workPackageAccountName;
+        const session = await response.json();
+        const name = normalizeWorkPackageAccountName(session?.user?.name);
+        if (name) workPackageAccountName = name;
+      } catch (error) {
+        addDiagnosticLog('workpkg:account-name-fetch-failed', {
+          message: error?.message || String(error),
+        });
+      }
+      return workPackageAccountName;
+    })().finally(() => {
+      workPackageAccountLookupPromise = null;
+    });
+    return workPackageAccountLookupPromise;
+  }
+
   function currentWorkPackageAccountName() {
+    if (workPackageAccountName) return workPackageAccountName;
+    refreshWorkPackageAccountName();
     const selectors = [
       '[data-testid="accounts-profile-button"]',
       '[data-testid="profile-button"]',
@@ -1039,7 +1069,10 @@
       ];
       for (const candidate of candidates) {
         const name = normalizeWorkPackageAccountName(candidate);
-        if (name) return name;
+        if (name) {
+          workPackageAccountName = name;
+          return name;
+        }
       }
     }
     return '未识别账号';
@@ -6766,6 +6799,7 @@
   if (!localStorage.getItem(STORAGE_KEY)) saveState(true);
   installConversationTreeDebugApi();
   registerUserscriptMenuCommands();
+  refreshWorkPackageAccountName();
   installWorkPackageClipboardBridge();
   bindImageDownloadEvents();
   installImageDownloadDebugApi();
