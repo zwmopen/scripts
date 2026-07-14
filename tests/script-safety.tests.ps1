@@ -43,9 +43,17 @@ try {
     Assert-Equal 2 (@(Get-ChildItem -LiteralPath $workDir -File | Where-Object { $_.Extension -in @('.png','.jpg') }).Count) "failed package must restore all original images"
     Assert-Equal 0 (@(Get-ChildItem -LiteralPath (Join-Path $workDir "团建成品库") -Directory -Force -ErrorAction SilentlyContinue | Where-Object Name -like '.workpkg_staging_*').Count) "failed package must remove staging directories"
 
-    $successOutput = @(& $workScript -ClipboardTextOverride $text -NoMessage)
+    $metadataJson = '{"accountName":"测试账号","conversationUrl":"https://chatgpt.com/c/test-conversation-id"}'
+    $successOutput = @(& $workScript -ClipboardTextOverride $text -ConversationMetadataJsonOverride $metadataJson -NoMessage)
     Assert-True ($successOutput -contains "OK") "work package success marker is missing"
     Assert-Equal 0 (@(Get-ChildItem -LiteralPath $workDir -File | Where-Object { $_.Extension -in @('.png','.jpg') }).Count) "successful package should move source images into the package"
+    $provenanceFiles = @(Get-ChildItem -LiteralPath (Join-Path $workDir "团建成品库") -File -Recurse -Force | Where-Object { $_.Name -like "GPT*.json" })
+    Assert-Equal 1 $provenanceFiles.Count "work package provenance JSON is missing"
+    $provenance = Get-Content -LiteralPath $provenanceFiles[0].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-Equal "测试账号" $provenance.accountName "provenance account name mismatch"
+    Assert-Equal "https://chatgpt.com/c/test-conversation-id" $provenance.conversationUrl "provenance conversation URL mismatch"
+    $packagedText = @(Get-ChildItem -LiteralPath (Join-Path $workDir "团建成品库") -File -Filter "文案_*.txt" -Recurse -Force | Select-Object -First 1)
+    Assert-Equal $text ([System.IO.File]::ReadAllText($packagedText[0].FullName)) "provenance metadata must not alter clipboard copy text"
 
     [System.IO.File]::WriteAllBytes((Join-Path $workDir "duplicate.png"), [byte[]](7,8,9))
     $duplicateOutput = @(& $workScript -ClipboardTextOverride $text -NoMessage)

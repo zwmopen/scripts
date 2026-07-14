@@ -1,13 +1,15 @@
 ﻿param(
     [string]$ClipboardTextOverride,
+    [string]$ConversationMetadataJsonOverride,
     [switch]$NoMessage,
     [switch]$Preview,
     [int]$TestFailAfterImageMove = 0
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.2.0"
+$workPackageScriptVersion = "1.3.0"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
+$conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
 function Get-ClipboardText {
     if ($clipboardTextOverrideSpecified) {
@@ -154,6 +156,69 @@ function Get-GptConversationTitleFromClipboardHtml {
         return Get-NormalizedGptWindowTitle -WindowTitle $decoded
     } catch {
         return ""
+    }
+}
+
+function ConvertFrom-GptConversationMetadataJson {
+    param([string]$Json)
+
+    if ([string]::IsNullOrWhiteSpace($Json)) {
+        return $null
+    }
+
+    try {
+        $source = $Json | ConvertFrom-Json
+        $accountName = ([string]$source.accountName).Trim()
+        $conversationUrl = ([string]$source.conversationUrl).Trim()
+
+        if ($accountName.Length -gt 120) {
+            $accountName = $accountName.Substring(0, 120)
+        }
+
+        $parsedUri = $null
+        $validUrl = [Uri]::TryCreate($conversationUrl, [UriKind]::Absolute, [ref]$parsedUri)
+        if (-not $validUrl -or $parsedUri.Scheme -ne "https" -or $parsedUri.Host -notin @("chatgpt.com", "chat.openai.com")) {
+            $conversationUrl = ""
+        }
+
+        if ([string]::IsNullOrWhiteSpace($accountName) -and [string]::IsNullOrWhiteSpace($conversationUrl)) {
+            return $null
+        }
+
+        return [pscustomobject][ordered]@{
+            accountName = $accountName
+            conversationUrl = $conversationUrl
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Get-GptConversationMetadata {
+    if ($conversationMetadataOverrideSpecified) {
+        return ConvertFrom-GptConversationMetadataJson -Json $ConversationMetadataJsonOverride
+    }
+
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        if (-not [System.Windows.Forms.Clipboard]::ContainsText([System.Windows.Forms.TextDataFormat]::Html)) {
+            return $null
+        }
+
+        $html = [System.Windows.Forms.Clipboard]::GetText([System.Windows.Forms.TextDataFormat]::Html)
+        if ([string]::IsNullOrWhiteSpace($html)) {
+            return $null
+        }
+
+        $match = [regex]::Match($html, 'WORKPKG_GPT_META_B64:([A-Za-z0-9+/=]+)')
+        if (-not $match.Success) {
+            return $null
+        }
+
+        $decoded = ConvertFrom-WorkPkgBase64Utf8 -Value $match.Groups[1].Value
+        return ConvertFrom-GptConversationMetadataJson -Json $decoded
+    } catch {
+        return $null
     }
 }
 
@@ -937,6 +1002,7 @@ try {
 
     $title = Get-SafeNamePart -Text (Get-TitleLine -Text $text)
     $gptConversationTitle = Get-GptConversationTitle
+    $gptConversationMetadata = Get-GptConversationMetadata
     $folderTitle = $title
     if (-not [string]::IsNullOrWhiteSpace($gptConversationTitle) -and $gptConversationTitle -ne $title) {
         $folderTitle = Get-SafeNamePart -Text "$title（$gptConversationTitle）" -MaxLength 130
@@ -979,6 +1045,18 @@ try {
     $txtPath = Join-Path $stagingDir "$textPrefix`_$stamp.txt"
     [System.IO.File]::WriteAllText($txtPath, $text, (New-Object System.Text.UTF8Encoding($false)))
     Set-FileTimes -Path $txtPath -Time $packageTime
+
+    if ($null -ne $gptConversationMetadata) {
+        $provenanceFileName = "GPT" + (New-TextFromCodePoints @(0x4F1A, 0x8BDD, 0x6EAF, 0x6E90)) + ".json"
+        $provenancePath = Join-Path $stagingDir $provenanceFileName
+        $provenance = [ordered]@{
+            accountName = [string]$gptConversationMetadata.accountName
+            conversationUrl = [string]$gptConversationMetadata.conversationUrl
+        }
+        $provenanceJson = $provenance | ConvertTo-Json
+        [System.IO.File]::WriteAllText($provenancePath, $provenanceJson, (New-Object System.Text.UTF8Encoding($false)))
+        Set-FileTimes -Path $provenancePath -Time $packageTime
+    }
 
     $numberFormat = "D$([Math]::Max(2, $images.Count.ToString().Length))"
 

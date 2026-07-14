@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.10.0
+// @version      1.11.0
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -25,7 +25,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.10.0';
+  const SCRIPT_VERSION = '1.11.0';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -44,6 +44,7 @@
   const IMAGE_DOWNLOAD_TOAST_ID = `${APP_ID}-image-download-toast`;
   const WORK_PACKAGE_PROTOCOL_URL = 'cgpt-workpkg://run';
   const WORK_PACKAGE_TITLE_MARKER = 'WORKPKG_GPT_TITLE_B64:';
+  const WORK_PACKAGE_METADATA_MARKER = 'WORKPKG_GPT_META_B64:';
   // v1 曾被多个同名/改名后的脚本版本同时读写。1.0 起改用独立存储区，
   // 旧脚本即使仍在运行，也不能再覆盖新版数据。
   const STORAGE_KEY = `${APP_ID}:state:v3`;
@@ -1005,8 +1006,69 @@
     return `<!--${WORK_PACKAGE_TITLE_MARKER}${base64Utf8(normalized)}-->`;
   }
 
-  function stripWorkPackageTitleMarkers(html = '') {
-    return String(html || '').replace(/<!--WORKPKG_GPT_TITLE_B64:[A-Za-z0-9+/=]+-->/g, '');
+  function normalizeWorkPackageAccountName(value) {
+    const ignored = /^(ChatGPT|OpenAI|Plus|Pro|Team|Business|Enterprise|Free|Upgrade|升级|设置|Settings|Log out|退出|Open profile menu|Profile|Account|账号|个人资料)$/i;
+    const lines = String(value || '').split(/\r?\n/);
+    for (const rawLine of lines) {
+      const line = compactTitle(rawLine);
+      if (!line || ignored.test(line) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(line)) continue;
+      return line.slice(0, 120);
+    }
+    return '';
+  }
+
+  function currentWorkPackageAccountName() {
+    const selectors = [
+      '[data-testid="accounts-profile-button"]',
+      '[data-testid="profile-button"]',
+      '[data-testid*="account"][data-testid*="profile"]',
+      'button[aria-label*="profile" i]',
+      'button[aria-label*="account" i]',
+      'button[aria-label*="个人资料"]',
+      'button[aria-label*="账号"]',
+    ];
+    const roots = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
+    for (const root of roots) {
+      const candidates = [
+        root.getAttribute('data-user-name'),
+        root.querySelector('[data-user-name]')?.getAttribute('data-user-name'),
+        root.innerText,
+        root.querySelector('img[alt]')?.getAttribute('alt'),
+        root.getAttribute('title'),
+        root.getAttribute('aria-label'),
+      ];
+      for (const candidate of candidates) {
+        const name = normalizeWorkPackageAccountName(candidate);
+        if (name) return name;
+      }
+    }
+    return '未识别账号';
+  }
+
+  function currentWorkPackageConversationUrl() {
+    const chatId = currentChatId();
+    if (!chatId) return '';
+    return `${location.origin}/c/${encodeURIComponent(chatId)}`;
+  }
+
+  function workPackageMetadataMarker() {
+    const conversationUrl = currentWorkPackageConversationUrl();
+    if (!conversationUrl) return '';
+    const metadata = {
+      accountName: currentWorkPackageAccountName(),
+      conversationUrl,
+    };
+    return `<!--${WORK_PACKAGE_METADATA_MARKER}${base64Utf8(JSON.stringify(metadata))}-->`;
+  }
+
+  function workPackageClipboardMarkers(title = currentWorkPackageConversationTitle()) {
+    return `${workPackageTitleMarker(title)}${workPackageMetadataMarker()}`;
+  }
+
+  function stripWorkPackageMarkers(html = '') {
+    return String(html || '')
+      .replace(/<!--WORKPKG_GPT_TITLE_B64:[A-Za-z0-9+/=]+-->/g, '')
+      .replace(/<!--WORKPKG_GPT_META_B64:[A-Za-z0-9+/=]+-->/g, '');
   }
 
   function htmlFromPlainText(text = '') {
@@ -1028,38 +1090,38 @@
     installWorkPackageClipboardBridge.installed = true;
     document.addEventListener('copy', (event) => {
       const title = currentWorkPackageConversationTitle();
-      const marker = workPackageTitleMarker(title);
+      const markers = workPackageClipboardMarkers(title);
       const selection = window.getSelection?.();
       const text = selection?.toString?.() || '';
-      if (!event.clipboardData || !marker || !text.trim()) return;
+      if (!event.clipboardData || !markers || !text.trim()) return;
 
       const selectedHtml = selectedHtmlFragment();
-      const html = `${stripWorkPackageTitleMarkers(selectedHtml || htmlFromPlainText(text))}${marker}`;
+      const html = `${stripWorkPackageMarkers(selectedHtml || htmlFromPlainText(text))}${markers}`;
       event.clipboardData.setData('text/plain', text);
       event.clipboardData.setData('text/html', html);
       event.preventDefault();
-      addDiagnosticLog('workpkg:copy-title-marker', { title });
+      addDiagnosticLog('workpkg:copy-metadata-marker', { title, conversationUrl: currentWorkPackageConversationUrl() });
     }, true);
   }
 
   async function stampWorkPackageTitleOnClipboard() {
     const title = currentWorkPackageConversationTitle();
-    const marker = workPackageTitleMarker(title);
-    if (!marker || !navigator.clipboard?.readText || !navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    const markers = workPackageClipboardMarkers(title);
+    if (!markers || !navigator.clipboard?.readText || !navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
       return false;
     }
 
     try {
       const text = await navigator.clipboard.readText();
       if (!text || !text.trim()) return false;
-      const html = `${htmlFromPlainText(text)}${marker}`;
+      const html = `${htmlFromPlainText(text)}${markers}`;
       await navigator.clipboard.write([
         new ClipboardItem({
           'text/plain': new Blob([text], { type: 'text/plain' }),
           'text/html': new Blob([html], { type: 'text/html' }),
         }),
       ]);
-      addDiagnosticLog('workpkg:clipboard-title-stamped', { title });
+      addDiagnosticLog('workpkg:clipboard-metadata-stamped', { title, conversationUrl: currentWorkPackageConversationUrl() });
       return true;
     } catch (error) {
       addDiagnosticLog('workpkg:clipboard-title-stamp-failed', { title, message: error?.message || String(error) });
