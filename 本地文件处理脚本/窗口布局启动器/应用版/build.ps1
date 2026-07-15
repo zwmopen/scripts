@@ -4,7 +4,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src = Join-Path $root "src\WindowLayoutLauncher.cs"
 $icon = Join-Path $root "assets\app.ico"
 $release = Join-Path $root "release"
-$out = Join-Path $release "窗口布局启动器_3.0.exe"
+$out = Join-Path $release "窗口布局启动器.exe"
 $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 
 if (-not (Test-Path -LiteralPath $csc)) {
