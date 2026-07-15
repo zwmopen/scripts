@@ -16,7 +16,7 @@ namespace WindowLayoutLauncher
 {
     static class Program
     {
-        public const string Version = "3.0.2";
+        public const string Version = "3.0.3";
         public const string AppName = "窗口布局启动器";
         public const string RepoUrl = "https://github.com/zwmopen/scripts/tree/master/本地文件处理脚本/窗口布局启动器/应用版";
         public const string VersionCheckUrl = "https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/本地文件处理脚本/窗口布局启动器/应用版/version.json";
@@ -1793,14 +1793,28 @@ namespace WindowLayoutLauncher
 
         private void ShowMainWindow()
         {
-            ShowInTaskbar = true;
-            Show();
             WindowState = FormWindowState.Normal;
+            Show();
+            BringToFront();
             Activate();
+        }
+
+        private void HideToTray()
+        {
+            // Changing ShowInTaskbar while visible recreates the native window and causes a flash.
+            Hide();
+            WindowState = FormWindowState.Normal;
         }
 
         protected override void WndProc(ref Message m)
         {
+            const int WmSysCommand = 0x0112;
+            const int ScClose = 0xF060;
+            if (!allowExit && m.Msg == WmSysCommand && ((int)m.WParam & 0xFFF0) == ScClose)
+            {
+                HideToTray();
+                return;
+            }
             if (m.Msg == Program.ShowMainWindowMessage)
             {
                 BeginInvoke((Action)(() => ShowMainWindow()));
@@ -1813,8 +1827,7 @@ namespace WindowLayoutLauncher
             base.OnResize(e);
             if (WindowState == FormWindowState.Minimized)
             {
-                ShowInTaskbar = false;
-                Hide();
+                HideToTray();
             }
         }
 
@@ -1825,8 +1838,7 @@ namespace WindowLayoutLauncher
                 e.CloseReason != CloseReason.ApplicationExitCall)
             {
                 e.Cancel = true;
-                ShowInTaskbar = false;
-                Hide();
+                HideToTray();
                 return;
             }
             if (trayIcon != null) trayIcon.Visible = false;
