@@ -1,6 +1,6 @@
 {
-  "version": "3.0.0",
+  "version": "3.0.1",
   "download_url": "https://github.com/zwmopen/scripts/raw/refs/heads/master/本地文件处理脚本/窗口布局启动器/应用版/release/窗口布局启动器.exe",
-  "release_notes": "3.0：新增布局预览、任务模式、托盘常驻、健康检查、多显示器自动适配、首次向导和 Git 云同步；增强已打开窗口复用；兼容旧布局 JSON。",
+  "release_notes": "3.0.1：移除 Git 云端同步；新增重复启动唤醒现有窗口、快捷键和托盘资源清理；保留布局预览、任务模式、健康检查、多显示器适配和 JSON 分享。",
   "published_at": "2026-07-15"
 }

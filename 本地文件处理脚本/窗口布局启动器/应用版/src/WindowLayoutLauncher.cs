@@ -16,10 +16,12 @@ namespace WindowLayoutLauncher
 {
     static class Program
     {
-        public const string Version = "3.0.0";
+        public const string Version = "3.0.1";
         public const string AppName = "窗口布局启动器";
         public const string RepoUrl = "https://github.com/zwmopen/scripts/tree/master/本地文件处理脚本/窗口布局启动器/应用版";
         public const string VersionCheckUrl = "https://raw.githubusercontent.com/zwmopen/scripts/master/本地文件处理脚本/窗口布局启动器/应用版/version.json";
+        public static readonly int ShowMainWindowMessage = Native.RegisterWindowMessage("WindowLayoutLauncher.ShowMainWindow.v3");
+        private static Mutex appMutex;
 
         [STAThread]
         static void Main(string[] args)
@@ -29,6 +31,17 @@ namespace WindowLayoutLauncher
                 TrySetDpiAwareness();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
+
+                if (args.Length == 0)
+                {
+                    bool createdNew;
+                    appMutex = new Mutex(true, "Local\\WindowLayoutLauncher.v3", out createdNew);
+                    if (!createdNew)
+                    {
+                        ActivateExistingInstance();
+                        return;
+                    }
+                }
 
                 var manager = new LayoutManager(AppDomain.CurrentDomain.BaseDirectory);
                 if (args.Length >= 2 && string.Equals(args[0], "--restore", StringComparison.OrdinalIgnoreCase))
@@ -46,6 +59,25 @@ namespace WindowLayoutLauncher
                 {
                     MessageBox.Show("窗口布局启动器遇到错误，已写入 crash.log。", "窗口布局启动器", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
+            }
+        }
+
+        private static void ActivateExistingInstance()
+        {
+            IntPtr found = IntPtr.Zero;
+            Native.EnumWindows((hWnd, lParam) =>
+            {
+                int length = Native.GetWindowTextLength(hWnd);
+                if (length <= 0) return true;
+                var title = new StringBuilder(length + 1);
+                Native.GetWindowText(hWnd, title, title.Capacity);
+                if (!string.Equals(title.ToString(), AppName, StringComparison.Ordinal)) return true;
+                found = hWnd;
+                return false;
+            }, IntPtr.Zero);
+            if (found != IntPtr.Zero)
+            {
+                Native.PostMessage(found, ShowMainWindowMessage, IntPtr.Zero, IntPtr.Zero);
             }
         }
 
@@ -259,8 +291,6 @@ namespace WindowLayoutLauncher
         private readonly string layoutDir;
 
         public string LayoutDir { get { return layoutDir; } }
-        public string BaseDir { get { return baseDir; } }
-
         public LayoutManager(string baseDir)
         {
             this.baseDir = baseDir;
@@ -1263,6 +1293,12 @@ namespace WindowLayoutLauncher
         [DllImport("user32.dll")]
         public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
 
+        [DllImport("user32.dll")]
+        public static extern int RegisterWindowMessage(string lpString);
+
+        [DllImport("user32.dll")]
+        public static extern bool PostMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
+
         [DllImport("dwmapi.dll")]
         public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
@@ -1486,6 +1522,7 @@ namespace WindowLayoutLauncher
             BackColor = UiTheme.WindowBottom;
             Font = new Font("Microsoft YaHei UI", 9F);
             DoubleBuffered = true;
+            KeyPreview = true;
             TrySetWindowIcon();
             Shown += (s, e) => CenterOnPrimaryScreen();
 
@@ -1557,31 +1594,45 @@ namespace WindowLayoutLauncher
             listBox.DrawItem += DrawLayoutItem;
             listBox.DoubleClick += (s, e) => RestoreSelected();
             listBox.SelectedIndexChanged += (s, e) => UpdateSelectedLayoutUi();
+            listBox.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode == Keys.Enter)
+                {
+                    RestoreSelected();
+                    e.Handled = true;
+                    e.SuppressKeyPress = true;
+                }
+                else if (e.KeyCode == Keys.F5)
+                {
+                    RefreshLayouts();
+                    e.Handled = true;
+                }
+            };
             card.Controls.Add(listBox);
 
             var actionScroll = new Panel();
             actionScroll.Dock = DockStyle.Fill;
             actionScroll.BackColor = Color.Transparent;
             actionScroll.AutoScroll = true;
-            actionScroll.AutoScrollMinSize = new Size(0, 432);
+            actionScroll.AutoScrollMinSize = new Size(0, 412);
             actionScroll.Margin = new Padding(0);
             body.Controls.Add(actionScroll, 1, 0);
 
             var actions = new TableLayoutPanel();
             actions.Dock = DockStyle.Top;
-            actions.Height = 432;
+            actions.Height = 412;
             actions.BackColor = Color.Transparent;
             actions.AutoScroll = false;
             actions.ColumnCount = 1;
             actions.RowCount = 9;
             actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 8F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 12F));
             actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 144F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 8F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 12F));
             actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 72F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 8F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 108F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 8F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 12F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 72F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 12F));
             actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
             actionScroll.Controls.Add(actions);
 
@@ -1605,8 +1656,8 @@ namespace WindowLayoutLauncher
             actions.Controls.Add(shareGroup, 0, 4);
 
             var fileGroup = AddActionGroup(
-                new[] { "云端同步", "布局文件夹", "刷新" },
-                new EventHandler[] { (s, e) => SyncCloud(), (s, e) => Process.Start("explorer.exe", manager.LayoutDir), (s, e) => RefreshLayouts() });
+                new[] { "打开布局文件夹", "刷新布局" },
+                new EventHandler[] { (s, e) => Process.Start("explorer.exe", manager.LayoutDir), (s, e) => RefreshLayouts() });
             fileGroup.Dock = DockStyle.Fill;
             fileGroup.Margin = new Padding(0);
             actions.Controls.Add(fileGroup, 0, 6);
@@ -1634,6 +1685,20 @@ namespace WindowLayoutLauncher
             root.Controls.Add(statusLabel, 0, 4);
 
             Shown += OnFirstShown;
+            KeyDown += (s, e) =>
+            {
+                if (e.Control && e.KeyCode == Keys.N)
+                {
+                    SaveNew();
+                    e.Handled = true;
+                    e.SuppressKeyPress = true;
+                }
+                else if (e.KeyCode == Keys.F5)
+                {
+                    RefreshLayouts();
+                    e.Handled = true;
+                }
+            };
         }
 
         private void OnFirstShown(object sender, EventArgs e)
@@ -1651,62 +1716,6 @@ namespace WindowLayoutLauncher
                     }
                 }
             }
-        }
-
-        private void AutoCheckUpdate()
-        {
-            try
-            {
-                var lastCheckPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "last_update_check.txt");
-                var shouldCheck = true;
-                if (File.Exists(lastCheckPath))
-                {
-                    try
-                    {
-                        var text = File.ReadAllText(lastCheckPath);
-                        DateTime lastTime;
-                        if (DateTime.TryParse(text, out lastTime))
-                        {
-                            if ((DateTime.Now - lastTime).TotalHours < 6)
-                            {
-                                shouldCheck = false;
-                            }
-                        }
-                    }
-                    catch { }
-                }
-
-                if (!shouldCheck) return;
-
-                string error;
-                var info = UpdateChecker.CheckForUpdate(out error);
-                if (info == null) return;
-
-                try
-                {
-                    File.WriteAllText(lastCheckPath, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-                }
-                catch { }
-
-                if (!UpdateChecker.IsNewerVersion(info.Version, Program.Version)) return;
-
-                var result = MessageBox.Show(this,
-                    "发现新版本 v" + info.Version + "\n\n" +
-                    (info.ReleaseNotes ?? "暂无更新说明") + "\n\n" +
-                    "是否立即更新？",
-                    "发现新版本 - " + Program.AppName,
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Information);
-
-                if (result == DialogResult.Yes)
-                {
-                    using (var about = new AboutForm())
-                    {
-                        about.ShowDialog(this);
-                    }
-                }
-            }
-            catch { }
         }
 
         private void ShowAbout()
@@ -1790,6 +1799,15 @@ namespace WindowLayoutLauncher
             Activate();
         }
 
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == Program.ShowMainWindowMessage)
+            {
+                BeginInvoke((Action)(() => ShowMainWindow()));
+            }
+            base.WndProc(ref m);
+        }
+
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
@@ -1813,6 +1831,25 @@ namespace WindowLayoutLauncher
             }
             if (trayIcon != null) trayIcon.Visible = false;
             base.OnFormClosing(e);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (trayIcon != null)
+                {
+                    trayIcon.Visible = false;
+                    trayIcon.Dispose();
+                    trayIcon = null;
+                }
+                if (trayMenu != null)
+                {
+                    trayMenu.Dispose();
+                    trayMenu = null;
+                }
+            }
+            base.Dispose(disposing);
         }
 
         protected override void OnPaintBackground(PaintEventArgs e)
@@ -2222,163 +2259,6 @@ namespace WindowLayoutLauncher
             }
         }
 
-        private void SyncCloud()
-        {
-            try
-            {
-                var service = new GitLayoutSync(manager.BaseDir, manager.LayoutDir);
-                if (!service.HasConfiguration)
-                {
-                    var remote = PromptForm.Ask("设置云端同步", "粘贴 Git 仓库地址（支持 GitHub 私有仓库）：", "https://github.com/你的名字/窗口布局.git");
-                    if (string.IsNullOrWhiteSpace(remote))
-                    {
-                        statusLabel.Text = "已取消云端同步设置。";
-                        return;
-                    }
-                    service.Configure(remote.Trim());
-                }
-
-                statusLabel.Text = "正在同步布局到云端...";
-                Refresh();
-                var message = service.Sync();
-                RefreshLayouts();
-                statusLabel.Text = message;
-            }
-            catch (Exception ex)
-            {
-                statusLabel.Text = "云端同步失败：" + ex.Message;
-            }
-        }
-    }
-
-    [DataContract]
-    public class GitSyncConfig
-    {
-        [DataMember(Name = "remote_url")]
-        public string RemoteUrl { get; set; }
-    }
-
-    public class GitLayoutSync
-    {
-        private readonly string baseDir;
-        private readonly string layoutDir;
-        private readonly string configPath;
-        private readonly string repoDir;
-
-        public GitLayoutSync(string baseDir, string layoutDir)
-        {
-            this.baseDir = baseDir;
-            this.layoutDir = layoutDir;
-            configPath = Path.Combine(baseDir, "cloud-sync.json");
-            repoDir = Path.Combine(baseDir, "cloud-layouts-repo");
-        }
-
-        public bool HasConfiguration
-        {
-            get { return File.Exists(configPath) && !string.IsNullOrWhiteSpace(ReadConfig().RemoteUrl); }
-        }
-
-        public void Configure(string remoteUrl)
-        {
-            if (string.IsNullOrWhiteSpace(remoteUrl)) throw new InvalidOperationException("仓库地址不能为空。");
-            var config = new GitSyncConfig { RemoteUrl = remoteUrl.Trim() };
-            using (var stream = File.Create(configPath))
-            {
-                new DataContractJsonSerializer(typeof(GitSyncConfig)).WriteObject(stream, config);
-            }
-        }
-
-        public string Sync()
-        {
-            var config = ReadConfig();
-            if (string.IsNullOrWhiteSpace(config.RemoteUrl)) throw new InvalidOperationException("还没有设置云端仓库。 ");
-            EnsureGitAvailable();
-
-            if (!Directory.Exists(Path.Combine(repoDir, ".git")))
-            {
-                if (Directory.Exists(repoDir) && Directory.GetFileSystemEntries(repoDir).Length > 0)
-                    throw new InvalidOperationException("云端同步目录已被占用：" + repoDir);
-                RunGit(baseDir, "clone " + Quote(config.RemoteUrl) + " " + Quote(repoDir), false);
-            }
-            else
-            {
-                RunGit(repoDir, "pull --rebase", false);
-            }
-
-            var cloudLayouts = Path.Combine(repoDir, "layouts");
-            Directory.CreateDirectory(cloudLayouts);
-            Directory.CreateDirectory(layoutDir);
-            int downloaded = MergeNewer(cloudLayouts, layoutDir);
-            int uploaded = MergeNewer(layoutDir, cloudLayouts);
-            RunGit(repoDir, "add layouts", true);
-            var status = RunGit(repoDir, "status --porcelain", true);
-            if (!string.IsNullOrWhiteSpace(status))
-            {
-                RunGit(repoDir, "commit -m \"Sync window layouts\"", false);
-                RunGit(repoDir, "push -u origin HEAD", false);
-            }
-            return "云端同步完成：下载 " + downloaded + "，上传 " + uploaded + "。";
-        }
-
-        private GitSyncConfig ReadConfig()
-        {
-            if (!File.Exists(configPath)) return new GitSyncConfig();
-            using (var stream = File.OpenRead(configPath))
-            {
-                return (GitSyncConfig)new DataContractJsonSerializer(typeof(GitSyncConfig)).ReadObject(stream);
-            }
-        }
-
-        private static int MergeNewer(string source, string target)
-        {
-            int count = 0;
-            if (!Directory.Exists(source)) return count;
-            Directory.CreateDirectory(target);
-            foreach (var file in Directory.GetFiles(source, "*.json"))
-            {
-                var destination = Path.Combine(target, Path.GetFileName(file));
-                if (!File.Exists(destination) || File.GetLastWriteTimeUtc(file) > File.GetLastWriteTimeUtc(destination).AddSeconds(1))
-                {
-                    File.Copy(file, destination, true);
-                    File.SetLastWriteTimeUtc(destination, File.GetLastWriteTimeUtc(file));
-                    count++;
-                }
-            }
-            return count;
-        }
-
-        private static void EnsureGitAvailable()
-        {
-            RunGit(Environment.CurrentDirectory, "--version", false);
-        }
-
-        private static string RunGit(string workingDir, string arguments, bool allowFailure)
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "git.exe",
-                Arguments = arguments,
-                WorkingDirectory = workingDir,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-            using (var process = Process.Start(psi))
-            {
-                var output = process.StandardOutput.ReadToEnd();
-                var error = process.StandardError.ReadToEnd();
-                process.WaitForExit(30000);
-                if (process.ExitCode != 0 && !allowFailure)
-                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "Git 同步失败。" : error.Trim());
-                return (output + "\n" + error).Trim();
-            }
-        }
-
-        private static string Quote(string value)
-        {
-            return "\"" + (value ?? "").Replace("\"", "\\\"") + "\"";
-        }
     }
 
     [DataContract]
