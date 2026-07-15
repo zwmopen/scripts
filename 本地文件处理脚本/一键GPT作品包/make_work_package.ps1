@@ -7,7 +7,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.3.0"
+$workPackageScriptVersion = "1.3.1"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -458,7 +458,7 @@ function Get-PackagedTextFiles {
     }
 
     $folders = @(Get-ChildItem -LiteralPath $Directory -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -match '^\d{8}_\d{6}_'
+        $_.Name -match '^\.?\d{8}_\d{6}_'
     })
 
     foreach ($folder in $folders) {
@@ -692,7 +692,7 @@ function Invoke-PortfolioAutoGroup {
     $workFolders = @($allDirs | Where-Object {
         $_.Name -notmatch $portfolioPattern -and
         $_.Name -ne $LogFolderName -and
-        $_.Name -match '^\d{8}_\d{6}_'
+        $_.Name -match '^\.?\d{8}_\d{6}_'
     } | Sort-Object Name)
 
     if ($workFolders.Count -lt $BatchSize) {
@@ -917,7 +917,7 @@ $imageExcludeNames = @("$(New-TextFromCodePoints @(0x5206, 0x9694, 0x56FE)).png"
 $portfolioAutoGroup = [bool]$config.portfolio_auto_group
 $portfolioAutoZip = [bool]$config.portfolio_auto_zip
 $portfolioBatchSize = [Math]::Max(1, [int]$config.portfolio_batch_size)
-$portfolioPrefix = "." + ([string]$config.portfolio_prefix).TrimStart('.')
+$portfolioPrefix = ([string]$config.portfolio_prefix).TrimStart('.')
 $portfolioLogFolder = [string]$config.portfolio_log_folder
 $lockStream = $null
 $lockPath = Join-Path $scriptDir ".workpkg.lock"
@@ -1008,12 +1008,12 @@ try {
         $folderTitle = Get-SafeNamePart -Text "$title（$gptConversationTitle）" -MaxLength 130
     }
 
-    $targetDir = Join-Path $libraryDir "$stamp`_$folderTitle"
+    $targetDir = Join-Path $libraryDir ".$stamp`_$folderTitle"
     $packageId = $stamp
 
     $index = 2
     while (Test-Path -LiteralPath $targetDir) {
-        $targetDir = Join-Path $libraryDir "$stamp`_$folderTitle`_$index"
+        $targetDir = Join-Path $libraryDir ".$stamp`_$folderTitle`_$index"
         $packageId = "$stamp`_$index"
         $index++
     }
