@@ -1,6 +1,6 @@
 {
-  "version": "3.0.3",
+  "version": "3.0.4",
   "download_url": "https://github.com/zwmopen/scripts/raw/refs/heads/master/本地文件处理脚本/窗口布局启动器/应用版/release/窗口布局启动器.exe",
-  "release_notes": "3.0.3：关闭或最小化主窗口时改为静默进入托盘，避免任务栏状态切换导致窗口闪烁。",
+  "release_notes": "3.0.4：保存工作布局时忽略 SpeedBall 悬浮工具，避免恢复布局时因权限限制出现移动失败弹窗。",
   "published_at": "2026-07-15"
 }

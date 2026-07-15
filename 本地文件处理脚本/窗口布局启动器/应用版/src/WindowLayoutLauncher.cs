@@ -16,7 +16,7 @@ namespace WindowLayoutLauncher
 {
     static class Program
     {
-        public const string Version = "3.0.3";
+        public const string Version = "3.0.4";
         public const string AppName = "窗口布局启动器";
         public const string RepoUrl = "https://github.com/zwmopen/scripts/tree/master/本地文件处理脚本/窗口布局启动器/应用版";
         public const string VersionCheckUrl = "https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/本地文件处理脚本/窗口布局启动器/应用版/version.json";
@@ -988,7 +988,8 @@ namespace WindowLayoutLauncher
                 "ApplicationFrameHost",
                 "SystemSettings",
                 "RuntimeBroker",
-                "LockApp"
+                "LockApp",
+                "SpeedBall"
             };
 
             if (ignoredProcesses.Contains(processName)) return true;
