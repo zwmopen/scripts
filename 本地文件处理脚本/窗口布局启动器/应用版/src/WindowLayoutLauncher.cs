@@ -16,7 +16,7 @@ namespace WindowLayoutLauncher
 {
     static class Program
     {
-        public const string Version = "3.0.1";
+        public const string Version = "3.0.2";
         public const string AppName = "窗口布局启动器";
         public const string RepoUrl = "https://github.com/zwmopen/scripts/tree/master/本地文件处理脚本/窗口布局启动器/应用版";
         public const string VersionCheckUrl = "https://raw.githubusercontent.com/zwmopen/scripts/master/本地文件处理脚本/窗口布局启动器/应用版/version.json";
@@ -2284,10 +2284,14 @@ namespace WindowLayoutLauncher
             error = null;
             try
             {
+                EnableModernTls();
                 var url = Program.VersionCheckUrl;
-                var request = System.Net.HttpWebRequest.Create(url);
+                var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(url);
                 request.Timeout = 8000;
+                request.ReadWriteTimeout = 8000;
                 request.Method = "GET";
+                request.UserAgent = "WindowLayoutLauncher/" + Program.Version;
+                request.AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate;
                 request.Headers.Add("Cache-Control", "no-cache");
 
                 using (var response = request.GetResponse())
@@ -2359,8 +2363,10 @@ namespace WindowLayoutLauncher
         {
             try
             {
+                EnableModernTls();
                 using (var client = new System.Net.WebClient())
                 {
+                    client.Headers[System.Net.HttpRequestHeader.UserAgent] = "WindowLayoutLauncher/" + Program.Version;
                     var done = false;
                     client.DownloadProgressChanged += (s, e) =>
                     {
@@ -2387,6 +2393,12 @@ namespace WindowLayoutLauncher
             {
                 return ex.Message;
             }
+        }
+
+        private static void EnableModernTls()
+        {
+            const System.Net.SecurityProtocolType tls12 = (System.Net.SecurityProtocolType)3072;
+            System.Net.ServicePointManager.SecurityProtocol = System.Net.ServicePointManager.SecurityProtocol | tls12;
         }
 
         public static bool ApplyUpdate(string newExePath)

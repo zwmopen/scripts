@@ -1,6 +1,6 @@
 {
-  "version": "3.0.1",
+  "version": "3.0.2",
   "download_url": "https://github.com/zwmopen/scripts/raw/refs/heads/master/本地文件处理脚本/窗口布局启动器/应用版/release/窗口布局启动器.exe",
-  "release_notes": "3.0.1：移除 Git 云端同步；新增重复启动唤醒现有窗口、快捷键和托盘资源清理；保留布局预览、任务模式、健康检查、多显示器适配和 JSON 分享。",
+  "release_notes": "3.0.2：修复连接 GitHub 时提示无法创建 SSL/TLS 安全通道的问题；版本检查和更新下载统一使用 TLS 1.2。",
   "published_at": "2026-07-15"
 }
