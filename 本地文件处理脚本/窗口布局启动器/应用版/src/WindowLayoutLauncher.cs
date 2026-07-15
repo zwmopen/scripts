@@ -19,7 +19,7 @@ namespace WindowLayoutLauncher
         public const string Version = "3.0.2";
         public const string AppName = "窗口布局启动器";
         public const string RepoUrl = "https://github.com/zwmopen/scripts/tree/master/本地文件处理脚本/窗口布局启动器/应用版";
-        public const string VersionCheckUrl = "https://raw.githubusercontent.com/zwmopen/scripts/master/本地文件处理脚本/窗口布局启动器/应用版/version.json";
+        public const string VersionCheckUrl = "https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/本地文件处理脚本/窗口布局启动器/应用版/version.json";
         public static readonly int ShowMainWindowMessage = Native.RegisterWindowMessage("WindowLayoutLauncher.ShowMainWindow.v3");
         private static Mutex appMutex;
 
@@ -2285,14 +2285,16 @@ namespace WindowLayoutLauncher
             try
             {
                 EnableModernTls();
-                var url = Program.VersionCheckUrl;
+                var url = Program.VersionCheckUrl + "?t=" + DateTime.UtcNow.Ticks;
                 var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(url);
                 request.Timeout = 8000;
                 request.ReadWriteTimeout = 8000;
                 request.Method = "GET";
                 request.UserAgent = "WindowLayoutLauncher/" + Program.Version;
                 request.AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate;
+                request.CachePolicy = new System.Net.Cache.RequestCachePolicy(System.Net.Cache.RequestCacheLevel.NoCacheNoStore);
                 request.Headers.Add("Cache-Control", "no-cache");
+                request.Headers.Add("Pragma", "no-cache");
 
                 using (var response = request.GetResponse())
                 using (var stream = response.GetResponseStream())
