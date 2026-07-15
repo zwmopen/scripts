@@ -1481,8 +1481,8 @@ namespace WindowLayoutLauncher
             AutoScaleMode = AutoScaleMode.None;
             Text = "窗口布局启动器";
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(820, 620);
-            MinimumSize = new Size(640, 480);
+            ClientSize = new Size(820, 650);
+            MinimumSize = new Size(640, 500);
             BackColor = UiTheme.WindowBottom;
             Font = new Font("Microsoft YaHei UI", 9F);
             DoubleBuffered = true;
@@ -1559,26 +1559,35 @@ namespace WindowLayoutLauncher
             listBox.SelectedIndexChanged += (s, e) => UpdateSelectedLayoutUi();
             card.Controls.Add(listBox);
 
+            var actionScroll = new Panel();
+            actionScroll.Dock = DockStyle.Fill;
+            actionScroll.BackColor = Color.Transparent;
+            actionScroll.AutoScroll = true;
+            actionScroll.AutoScrollMinSize = new Size(0, 432);
+            actionScroll.Margin = new Padding(0);
+            body.Controls.Add(actionScroll, 1, 0);
+
             var actions = new TableLayoutPanel();
-            actions.Dock = DockStyle.Fill;
+            actions.Dock = DockStyle.Top;
+            actions.Height = 432;
             actions.BackColor = Color.Transparent;
-            actions.AutoScroll = true;
+            actions.AutoScroll = false;
             actions.ColumnCount = 1;
             actions.RowCount = 9;
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 6F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 128F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 6F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 68F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 6F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 98F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 6F));
-            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
-            body.Controls.Add(actions, 1, 0);
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 8F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 144F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 8F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 72F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 8F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 108F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 8F));
+            actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            actionScroll.Controls.Add(actions);
 
             openButton = AddButton(actions, "打开布局", 0, 0, true, (s, e) => RestoreSelected());
             openButton.Dock = DockStyle.Top;
-            openButton.Margin = new Padding(12, 0, 12, 0);
+            openButton.Margin = new Padding(8, 0, 8, 0);
             actions.Controls.Add(openButton, 0, 0);
 
             var manageGroup = AddActionGroup(
@@ -1604,16 +1613,16 @@ namespace WindowLayoutLauncher
 
             var aboutButton = AddButton(actions, "关于 / 检查更新", 0, 0, false, (s, e) => ShowAbout());
             aboutButton.Dock = DockStyle.Top;
-            aboutButton.Margin = new Padding(12, 0, 12, 0);
-            aboutButton.Height = 32;
+            aboutButton.Margin = new Padding(8, 0, 8, 0);
+            aboutButton.Height = 34;
             actions.Controls.Add(aboutButton, 0, 8);
-            actions.HorizontalScroll.Enabled = false;
-            actions.HorizontalScroll.Visible = false;
-            actions.HorizontalScroll.Maximum = 0;
-            actions.SizeChanged += (s, e) =>
+            actionScroll.HorizontalScroll.Enabled = false;
+            actionScroll.HorizontalScroll.Visible = false;
+            actionScroll.HorizontalScroll.Maximum = 0;
+            actionScroll.SizeChanged += (s, e) =>
             {
-                actions.HorizontalScroll.Maximum = 0;
-                actions.HorizontalScroll.Visible = false;
+                actionScroll.HorizontalScroll.Maximum = 0;
+                actionScroll.HorizontalScroll.Visible = false;
             };
 
             statusLabel = new Label();
@@ -1845,19 +1854,24 @@ namespace WindowLayoutLauncher
             return button;
         }
 
-        private GlassPanel AddActionGroup(string[] labels, EventHandler[] handlers)
+        private Control AddActionGroup(string[] labels, EventHandler[] handlers)
         {
-            var group = new GlassPanel();
-            group.Width = 150;
-            group.Height = 8 + labels.Length * 30;
-            group.Radius = 18;
-            group.FillColor = UiTheme.Panel;
+            var group = new TableLayoutPanel();
+            group.BackColor = Color.Transparent;
+            group.ColumnCount = 1;
+            group.RowCount = labels.Length;
+            group.Margin = new Padding(0);
+            for (int i = 0; i < labels.Length; i++)
+            {
+                group.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+            }
 
             for (int i = 0; i < labels.Length; i++)
             {
-                var button = AddButton(group, labels[i], 10, 5 + i * 30, false, handlers[i]);
-                button.Width = 128;
-                button.Height = 28;
+                var button = AddButton(group, labels[i], 0, 0, false, handlers[i]);
+                button.Dock = DockStyle.Fill;
+                button.Margin = new Padding(6, 2, 6, 2);
+                group.Controls.Add(button, 0, i);
             }
             return group;
         }
