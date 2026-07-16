@@ -1,23 +1,42 @@
 name: CodexRadar model monitor
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/codexradar-monitor.yml"
+      - "tools/codexradar-monitor/**"
   schedule:
     # GitHub cron uses UTC. These correspond to 09:10, 15:10 and 18:10 in Asia/Shanghai.
     - cron: "10 1,7,10 * * *"
   workflow_dispatch:
 
 permissions:
-  contents: write
-  issues: write
+  contents: read
 
 concurrency:
-  group: codexradar-model-monitor
+  group: codexradar-model-monitor-${{ github.event_name }}
   cancel-in-progress: false
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run parser tests
+        run: python3 tools/codexradar-monitor/test_monitor.py
+
   monitor:
+    if: github.event_name != 'pull_request'
+    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
 
     env:
       CODEXRADAR_ISSUE_NUMBER: "9"
@@ -30,9 +49,6 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
-
-      - name: Run parser tests
-        run: python3 tools/codexradar-monitor/test_monitor.py
 
       - name: Fetch and rank current models
         run: python3 tools/codexradar-monitor/monitor.py
