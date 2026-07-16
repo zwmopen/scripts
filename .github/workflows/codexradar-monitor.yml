@@ -1,6 +1,12 @@
 name: CodexRadar model monitor
 
 on:
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/codexradar-monitor.yml"
+      - "tools/codexradar-monitor/**"
   pull_request:
     paths:
       - ".github/workflows/codexradar-monitor.yml"
