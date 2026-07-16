@@ -1,6 +1,6 @@
 {
-  "version": "3.0.4",
+  "version": "3.0.5",
   "download_url": "https://github.com/zwmopen/scripts/raw/refs/heads/master/本地文件处理脚本/窗口布局启动器/应用版/release/窗口布局启动器.exe",
-  "release_notes": "3.0.4：保存工作布局时忽略 SpeedBall 悬浮工具，避免恢复布局时因权限限制出现移动失败弹窗。",
+  "release_notes": "3.0.5：修复从任务栏快速双击启动器时窗口闪现后消失；加强单实例启动等待与快速最小化防抖。",
   "published_at": "2026-07-15"
 }

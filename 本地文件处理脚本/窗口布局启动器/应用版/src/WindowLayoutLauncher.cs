@@ -16,7 +16,7 @@ namespace WindowLayoutLauncher
 {
     static class Program
     {
-        public const string Version = "3.0.4";
+        public const string Version = "3.0.5";
         public const string AppName = "窗口布局启动器";
         public const string RepoUrl = "https://github.com/zwmopen/scripts/tree/master/本地文件处理脚本/窗口布局启动器/应用版";
         public const string VersionCheckUrl = "https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/本地文件处理脚本/窗口布局启动器/应用版/version.json";
@@ -64,20 +64,25 @@ namespace WindowLayoutLauncher
 
         private static void ActivateExistingInstance()
         {
-            IntPtr found = IntPtr.Zero;
-            Native.EnumWindows((hWnd, lParam) =>
+            for (int attempt = 0; attempt < 20; attempt++)
             {
-                int length = Native.GetWindowTextLength(hWnd);
-                if (length <= 0) return true;
-                var title = new StringBuilder(length + 1);
-                Native.GetWindowText(hWnd, title, title.Capacity);
-                if (!string.Equals(title.ToString(), AppName, StringComparison.Ordinal)) return true;
-                found = hWnd;
-                return false;
-            }, IntPtr.Zero);
-            if (found != IntPtr.Zero)
-            {
-                Native.PostMessage(found, ShowMainWindowMessage, IntPtr.Zero, IntPtr.Zero);
+                IntPtr found = IntPtr.Zero;
+                Native.EnumWindows((hWnd, lParam) =>
+                {
+                    int length = Native.GetWindowTextLength(hWnd);
+                    if (length <= 0) return true;
+                    var title = new StringBuilder(length + 1);
+                    Native.GetWindowText(hWnd, title, title.Capacity);
+                    if (!string.Equals(title.ToString(), AppName, StringComparison.Ordinal)) return true;
+                    found = hWnd;
+                    return false;
+                }, IntPtr.Zero);
+                if (found != IntPtr.Zero)
+                {
+                    Native.PostMessage(found, ShowMainWindowMessage, IntPtr.Zero, IntPtr.Zero);
+                    return;
+                }
+                Thread.Sleep(100);
             }
         }
 
@@ -1504,10 +1509,12 @@ namespace WindowLayoutLauncher
         private ContextMenuStrip trayMenu;
         private bool allowExit;
         private string pendingTaskMode;
+        private DateTime ignoreMinimizeUntilUtc;
 
         public MainForm(LayoutManager manager)
         {
             this.manager = manager;
+            ignoreMinimizeUntilUtc = DateTime.UtcNow.AddMilliseconds(1200);
             Initialize();
             RefreshLayouts();
             InitializeTray();
@@ -1794,6 +1801,7 @@ namespace WindowLayoutLauncher
 
         private void ShowMainWindow()
         {
+            ignoreMinimizeUntilUtc = DateTime.UtcNow.AddMilliseconds(1200);
             WindowState = FormWindowState.Normal;
             Show();
             BringToFront();
@@ -1811,9 +1819,15 @@ namespace WindowLayoutLauncher
         {
             const int WmSysCommand = 0x0112;
             const int ScClose = 0xF060;
-            if (!allowExit && m.Msg == WmSysCommand && ((int)m.WParam & 0xFFF0) == ScClose)
+            const int ScMinimize = 0xF020;
+            int systemCommand = m.Msg == WmSysCommand ? ((int)m.WParam & 0xFFF0) : 0;
+            if (!allowExit && systemCommand == ScClose)
             {
                 HideToTray();
+                return;
+            }
+            if (systemCommand == ScMinimize && DateTime.UtcNow < ignoreMinimizeUntilUtc)
+            {
                 return;
             }
             if (m.Msg == Program.ShowMainWindowMessage)
