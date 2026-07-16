@@ -1,0 +1,103 @@
+{
+  "schema_version": "1.0",
+  "source": {
+    "url": "https://codexradar.com/",
+    "site_updated_label": "7月15日17:22",
+    "site_updated_at": "2026-07-15T17:22:00+08:00",
+    "observed_at": "2026-07-16T09:03:57+08:00"
+  },
+  "recommendations": {
+    "strongest": {
+      "name": "Luna max",
+      "passed": 9,
+      "total": 10,
+      "iq": 135.0,
+      "cost_usd": 16.3,
+      "duration_hours": 4.0
+    },
+    "value_pick": {
+      "name": "Sol low",
+      "passed": 8,
+      "total": 10,
+      "iq": 120.0,
+      "cost_usd": 10.7,
+      "duration_hours": 1.0
+    },
+    "signature": "Luna max|Sol low",
+    "value_rule": "Among models within one passed task of the strongest result and IQ >= 90, choose the lowest cost per passed task; use cost and duration as tie-breakers."
+  },
+  "models": [
+    {
+      "name": "Sol max",
+      "passed": 6,
+      "total": 10,
+      "iq": 90.0,
+      "cost_usd": 51.4,
+      "duration_hours": 4.2
+    },
+    {
+      "name": "Sol xhigh",
+      "passed": 7,
+      "total": 10,
+      "iq": 105.0,
+      "cost_usd": 32.6,
+      "duration_hours": 2.8
+    },
+    {
+      "name": "Sol high",
+      "passed": 7,
+      "total": 10,
+      "iq": 105.0,
+      "cost_usd": 25.0,
+      "duration_hours": 2.6
+    },
+    {
+      "name": "Sol medium",
+      "passed": 6,
+      "total": 10,
+      "iq": 90.0,
+      "cost_usd": 16.6,
+      "duration_hours": 1.6
+    },
+    {
+      "name": "Sol low",
+      "passed": 8,
+      "total": 10,
+      "iq": 120.0,
+      "cost_usd": 10.7,
+      "duration_hours": 1.0
+    },
+    {
+      "name": "Terra max",
+      "passed": 7,
+      "total": 10,
+      "iq": 105.0,
+      "cost_usd": 34.0,
+      "duration_hours": 4.6
+    },
+    {
+      "name": "Terra high",
+      "passed": 5,
+      "total": 10,
+      "iq": 75.0,
+      "cost_usd": 9.3,
+      "duration_hours": 2.0
+    },
+    {
+      "name": "Luna max",
+      "passed": 9,
+      "total": 10,
+      "iq": 135.0,
+      "cost_usd": 16.3,
+      "duration_hours": 4.0
+    },
+    {
+      "name": "Luna high",
+      "passed": 5,
+      "total": 10,
+      "iq": 75.0,
+      "cost_usd": 6.7,
+      "duration_hours": 2.2
+    }
+  ]
+}
