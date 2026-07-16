@@ -35,6 +35,9 @@ jobs:
       - name: Run parser tests
         run: python3 tools/codexradar-monitor/test_monitor.py
 
+      - name: Run long-term recommendation tests
+        run: python3 tools/codexradar-monitor/test_long_term.py
+
   monitor:
     if: github.event_name != 'pull_request'
     needs: test
@@ -59,7 +62,10 @@ jobs:
       - name: Fetch and rank current models
         run: python3 tools/codexradar-monitor/monitor.py
 
-      - name: Comment when the recommendation changes
+      - name: Build seven-day stable recommendation
+        run: python3 tools/codexradar-monitor/long_term.py
+
+      - name: Comment when the current recommendation changes
         shell: bash
         run: |
           if [[ -s "$CODEXRADAR_NOTIFICATION_PATH" ]]; then
@@ -67,7 +73,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --body-file "$CODEXRADAR_NOTIFICATION_PATH"
           else
-            echo "Recommendation unchanged; no Issue comment needed."
+            echo "Current recommendation unchanged; no Issue comment needed."
           fi
 
       - name: Commit new radar snapshot
