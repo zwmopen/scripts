@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 import tempfile
 import unittest
 from datetime import datetime
@@ -14,6 +15,7 @@ MODULE_PATH = Path(__file__).with_name("monitor.py")
 SPEC = importlib.util.spec_from_file_location("codexradar_monitor", MODULE_PATH)
 assert SPEC and SPEC.loader
 monitor = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = monitor
 SPEC.loader.exec_module(monitor)
 
 SAMPLE_HTML = """
