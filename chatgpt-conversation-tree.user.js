@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.11.1
+// @version      1.11.2
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -5587,19 +5587,32 @@
     return urls;
   }
 
+  // ChatGPT keeps the non-selected items of an image carousel mounted but
+  // hidden (and sometimes at 0x0). They still carry the real image URL and
+  // belong to the same downloadable group, so visibility must not decide
+  // whether they are counted or downloaded.
+  function groupImageElements(scope = document) {
+    const root = scope === document ? (document.querySelector('main') || document.body) : scope;
+    return [...root.querySelectorAll('img')].filter((img) => {
+      if (img.closest?.(`#${APP_ID}, #${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return false;
+      if (img.closest?.('#history, nav, aside, [role="navigation"]')) return false;
+      if (img.closest?.('[data-radix-menu-content], [data-radix-popper-content-wrapper]')) return false;
+      return Boolean(imageUrlForDirectDownload(img));
+    });
+  }
+
   function imageGroupElements(container, images = []) {
     return [...new Set([
       ...images,
-      ...broadImageElements(container || document, 24),
+      ...groupImageElements(container || document),
     ].filter((img) => img?.isConnected))];
   }
 
   function imageGroupUniqueCount(container, images = []) {
     const candidates = imageGroupElements(container, images);
-    const elementCount = candidates.length;
     const urlCount = uniqueImageUrls(candidates).length;
     const declaredCount = inferDeclaredImageCount(container, null);
-    return Math.max(elementCount, urlCount, declaredCount);
+    return Math.max(urlCount || candidates.length, declaredCount);
   }
 
   function logImageDownloadStep(step, detail = {}) {
@@ -6120,7 +6133,7 @@
   async function directDownloadImagesFromContainer(container, seedImages = []) {
     const allImages = [
       ...seedImages,
-      ...broadImageElements(container || document, 24),
+      ...groupImageElements(container || document),
     ];
     const urls = [];
     const seen = new Set();
@@ -6241,7 +6254,7 @@
       images = button.__cgptImageDownloadImages.filter((img) => img?.isConnected);
     }
     if (!images.length) {
-      images = broadImageElements(container, 24);
+      images = groupImageElements(container);
     }
     if (!images.length) {
       window.alert('\u8fd9\u4e2a\u56de\u590d\u91cc\u6682\u65f6\u6ca1\u6709\u627e\u5230\u53ef\u4e0b\u8f7d\u7684\u56fe\u7247\u3002');

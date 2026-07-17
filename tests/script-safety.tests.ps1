@@ -140,6 +140,12 @@ try {
     Assert-True (Test-Path -LiteralPath $oldParent) "rename undo must restore parent"
     Assert-True (Test-Path -LiteralPath $oldChild) "rename undo must restore child"
 
+    # Userscript image groups: carousel images may be mounted but hidden/off-screen.
+    # Group counting and direct download must include those source-bearing images.
+    $userscript = [System.IO.File]::ReadAllText((Join-Path $repoRoot "chatgpt-conversation-tree.user.js"))
+    Assert-True ($userscript -match 'function\s+groupImageElements\s*\(') "userscript needs a hidden-carousel image collector"
+    Assert-True ($userscript -match 'groupImageElements\(container\s*\|\|\s*document') "direct download must scan the full image group, including hidden carousel items"
+
     Write-Host "All script safety behavior tests passed."
 }
 finally {
