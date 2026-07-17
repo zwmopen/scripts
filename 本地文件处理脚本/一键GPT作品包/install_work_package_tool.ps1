@@ -38,9 +38,10 @@ $toolName = New-TextFromCodePoints @(0x4E00, 0x952E, 0x751F, 0x6210, 0x4F5C, 0x5
 $usageName = New-TextFromCodePoints @(0x4F7F, 0x7528, 0x8BF4, 0x660E, 0x2D, 0x4E00, 0x952E, 0x4F5C, 0x54C1, 0x5305)
 
 $coreSource = Join-Path $PSScriptRoot "make_work_package.ps1"
+$entrySource = Join-Path $PSScriptRoot "${toolName}.vbs"
 $usageSource = Join-Path $PSScriptRoot "usage_zh.md"
 $coreDest = Join-Path $TargetFolder "make_work_package.ps1"
-$entryDest = Join-Path $TargetFolder "$toolName.vbs"
+$entryDest = Join-Path $TargetFolder "${toolName}.vbs"
 $configDest = Join-Path $TargetFolder "workpkg_config.json"
 $usageDest = Join-Path $TargetFolder "$usageName.md"
 
@@ -73,17 +74,12 @@ $config = [ordered]@{
 $json = $config | ConvertTo-Json -Depth 3
 [System.IO.File]::WriteAllText($configDest, $json, (New-Object System.Text.UTF8Encoding($true)))
 
-$vbs = @'
-Set shell = CreateObject("WScript.Shell")
-Set fso = CreateObject("Scripting.FileSystemObject")
+if (-not (Test-Path -LiteralPath $entrySource -PathType Leaf)) {
+    throw "VBS launcher template is missing: $entrySource"
+}
 
-scriptPath = fso.GetParentFolderName(WScript.ScriptFullName) & "\make_work_package.ps1"
-command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " & Chr(34) & scriptPath & Chr(34)
-
-shell.Run command, 0, False
-'@
-
-[System.IO.File]::WriteAllText($entryDest, $vbs, (New-Object System.Text.UTF8Encoding($true)))
+# 直接复制仓库内无 BOM 的模板，避免 PowerShell 改写 VBS 编码。
+Copy-Item -LiteralPath $entrySource -Destination $entryDest -Force
 
 if (Test-Path -LiteralPath $usageSource) {
     Copy-Item -LiteralPath $usageSource -Destination $usageDest -Force
