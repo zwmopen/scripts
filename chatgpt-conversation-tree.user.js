@@ -5587,12 +5587,19 @@
     return urls;
   }
 
-  function imageGroupUniqueCount(container, images = []) {
-    const candidates = [
+  function imageGroupElements(container, images = []) {
+    return [...new Set([
       ...images,
       ...broadImageElements(container || document, 24),
-    ];
-    return uniqueImageUrls(candidates).length;
+    ].filter((img) => img?.isConnected))];
+  }
+
+  function imageGroupUniqueCount(container, images = []) {
+    const candidates = imageGroupElements(container, images);
+    const elementCount = candidates.length;
+    const urlCount = uniqueImageUrls(candidates).length;
+    const declaredCount = inferDeclaredImageCount(container, null);
+    return Math.max(elementCount, urlCount, declaredCount);
   }
 
   function logImageDownloadStep(step, detail = {}) {
@@ -5851,7 +5858,8 @@
         container.append(slot);
       }
     }
-    const count = imageGroupUniqueCount(container, images) || images.length;
+    const groupElements = imageGroupElements(container, images);
+    const count = imageGroupUniqueCount(container, images) || groupElements.length || images.length;
     let button = slot.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
     if (!button) {
       button = document.createElement('button');
@@ -5881,10 +5889,7 @@
     }
     button.onclick = (event) => triggerImageDownloadButton(button, event);
     button.__cgptImageDownloadContainer = container;
-    button.__cgptImageDownloadImages = [
-      ...images,
-      ...broadImageElements(container, 24),
-    ];
+    button.__cgptImageDownloadImages = groupElements;
     const declaredCount = Number(button.dataset.cgptExactCount || 0)
       || count
       || inferDeclaredImageCount(container, preferredActionRow || slot.parentElement);
@@ -5895,6 +5900,7 @@
     }
     button.dataset.cgptImageTotal = String(totalCount || '');
     button.dataset.cgptImageCount = String(totalCount || '');
+    button.dataset.cgptImageElementCount = String(groupElements.length);
     button.title = declaredCount > 1
       ? `\u4e0b\u8f7d\u672c\u7ec4\u4e2d\u7684 ${declaredCount} \u5f20\u56fe\u7247`
       : '\u4e0b\u8f7d\u672c\u7ec4\u56fe\u7247';
@@ -5919,8 +5925,14 @@
         existingSlot?.remove();
         return;
       }
-      if (existingSlot) return;
-      ensureImageDownloadButton(group.container, group.images, row);
+      const existingButton = existingSlot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
+      const currentElements = imageGroupElements(group.container, group.images);
+      const currentCount = imageGroupUniqueCount(group.container, group.images) || currentElements.length;
+      const previousElementCount = Number(existingButton?.dataset.cgptImageElementCount || 0);
+      const previousCount = Number(existingButton?.dataset.cgptImageCount || 0);
+      if (!existingButton || previousElementCount !== currentElements.length || previousCount !== currentCount) {
+        ensureImageDownloadButton(group.container, group.images, row);
+      }
     });
     refreshTextDownloadButtons();
   }
