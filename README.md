@@ -25,6 +25,8 @@
 
 文件：`chatgpt-conversation-tree.user.js`
 
+安装、浏览器权限和故障排查：[`CHATGPT-HELPER-USAGE.md`](CHATGPT-HELPER-USAGE.md)
+
 功能包括：
 
 - 将 ChatGPT 最近对话按目录分组；
@@ -35,6 +37,8 @@
 - 与本地作品包生成流程衔接；
 - 支持 GitHub 云端提示词、离线缓存、防空保护和版本回滚；
 - 分组对话默认只走原生无刷新切换，失败时不会强制刷新整页。
+
+> Chrome 138 及以上版本必须在 Tampermonkey 的扩展详情中开启“允许用户脚本”。如果脚本突然完全不显示，应优先检查这个开关；仅开启 Tampermonkey 总开关还不够。
 
 ### 团建作品包工作流
 
