@@ -11,12 +11,13 @@ using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using System.Runtime.InteropServices.ComTypes;
 
 namespace WindowLayoutLauncher
 {
     static class Program
     {
-        public const string Version = "3.0.6";
+        public const string Version = "3.0.8";
         public const string AppName = "窗口布局启动器";
         public const string RepoUrl = "https://github.com/zwmopen/scripts/tree/master/本地文件处理脚本/窗口布局启动器/应用版";
         public const string VersionCheckUrl = "https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/本地文件处理脚本/窗口布局启动器/应用版/version.json";
@@ -29,6 +30,7 @@ namespace WindowLayoutLauncher
             try
             {
                 TrySetDpiAwareness();
+                TaskbarIntegration.Initialize();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
 
@@ -1315,6 +1317,270 @@ namespace WindowLayoutLauncher
         public static extern int SetProcessDpiAwareness(int awareness);
     }
 
+    public static class TaskbarIntegration
+    {
+        private const string AppId = "Zwm.WindowLayoutLauncher";
+
+        private static readonly PropertyKey AppIdKey = new PropertyKey(
+            new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
+        private static readonly PropertyKey TitleKey = new PropertyKey(
+            new Guid("F29F85E0-4FF9-1068-AB91-08002B27B3D9"), 2);
+
+        public static void Initialize()
+        {
+            try
+            {
+                SetCurrentProcessExplicitAppUserModelID(AppId);
+            }
+            catch
+            {
+            }
+        }
+
+        public static void UpdateJumpList(IEnumerable<LayoutSummary> layouts)
+        {
+            try
+            {
+                EnsureShortcutIdentities();
+
+                ICustomDestinationList destination = (ICustomDestinationList)new DestinationList();
+                destination.SetAppID(AppId);
+                uint maxSlots;
+                object removed;
+                Guid objectArrayId = typeof(IObjectArray).GUID;
+                destination.BeginList(out maxSlots, ref objectArrayId, out removed);
+                ReleaseComObject(removed);
+
+                var layoutList = (layouts ?? Enumerable.Empty<LayoutSummary>())
+                    .Where(x => x != null && !string.IsNullOrWhiteSpace(x.Name))
+                    .Take(maxSlots == 0 ? 12 : (int)maxSlots)
+                    .ToList();
+                if (layoutList.Count > 0)
+                {
+                    IObjectCollection collection = (IObjectCollection)new EnumerableObjectCollection();
+                    foreach (var layout in layoutList)
+                    {
+                        string label = string.IsNullOrWhiteSpace(layout.TaskMode)
+                            ? layout.Name
+                            : layout.TaskMode + "  |  " + layout.Name;
+                        collection.AddObject(CreateLink(label, "--restore \"" + layout.Name.Replace("\"", "\\\"") + "\""));
+                    }
+                    destination.AppendCategory("已保存布局", (IObjectArray)collection);
+                    ReleaseComObject(collection);
+                }
+
+                IObjectCollection tasks = (IObjectCollection)new EnumerableObjectCollection();
+                tasks.AddObject(CreateLink("打开布局中心", ""));
+                destination.AddUserTasks((IObjectArray)tasks);
+                ReleaseComObject(tasks);
+
+                destination.CommitList();
+                ReleaseComObject(destination);
+            }
+            catch
+            {
+            }
+        }
+
+        private static object CreateLink(string title, string arguments)
+        {
+            IShellLinkW link = (IShellLinkW)new ShellLink();
+            string exe = Application.ExecutablePath;
+            link.SetPath(exe);
+            link.SetArguments(arguments ?? "");
+            link.SetWorkingDirectory(AppDomain.CurrentDomain.BaseDirectory);
+            link.SetIconLocation(exe, 0);
+            link.SetDescription(title);
+            SetStringProperty((IPropertyStore)link, TitleKey, title);
+            return link;
+        }
+
+        private static void EnsureShortcutIdentities()
+        {
+            var folders = new List<string>();
+            folders.Add(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory));
+            folders.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Microsoft", "Internet Explorer", "Quick Launch", "User Pinned", "TaskBar"));
+
+            foreach (var folder in folders.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) continue;
+                foreach (var shortcut in Directory.GetFiles(folder, "*.lnk"))
+                {
+                    UpdateShortcutIdentity(shortcut);
+                }
+            }
+        }
+
+        private static void UpdateShortcutIdentity(string shortcutPath)
+        {
+            IShellLinkW link = null;
+            try
+            {
+                link = (IShellLinkW)new ShellLink();
+                IPersistFile file = (IPersistFile)link;
+                file.Load(shortcutPath, 2);
+                var target = new StringBuilder(1024);
+                link.GetPath(target, target.Capacity, IntPtr.Zero, 0);
+                if (!string.Equals(FullPath(target.ToString()), FullPath(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                SetStringProperty((IPropertyStore)link, AppIdKey, AppId);
+                file.Save(shortcutPath, true);
+            }
+            catch
+            {
+            }
+            finally
+            {
+                ReleaseComObject(link);
+            }
+        }
+
+        private static string FullPath(string path)
+        {
+            try { return Path.GetFullPath(path ?? "").TrimEnd('\\'); }
+            catch { return path ?? ""; }
+        }
+
+        private static void SetStringProperty(IPropertyStore store, PropertyKey key, string value)
+        {
+            PropVariant variant = PropVariant.FromString(value ?? "");
+            try
+            {
+                store.SetValue(ref key, ref variant);
+                store.Commit();
+            }
+            finally
+            {
+                variant.Clear();
+            }
+        }
+
+        private static void ReleaseComObject(object value)
+        {
+            if (value != null && Marshal.IsComObject(value))
+            {
+                try { Marshal.FinalReleaseComObject(value); }
+                catch { }
+            }
+        }
+
+        [DllImport("shell32.dll")]
+        private static extern int SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string appId);
+
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        private struct PropertyKey
+        {
+            public Guid FormatId;
+            public uint PropertyId;
+
+            public PropertyKey(Guid formatId, uint propertyId)
+            {
+                FormatId = formatId;
+                PropertyId = propertyId;
+            }
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        private struct PropVariant
+        {
+            [FieldOffset(0)] public ushort VariantType;
+            [FieldOffset(8)] public IntPtr PointerValue;
+
+            public static PropVariant FromString(string value)
+            {
+                return new PropVariant
+                {
+                    VariantType = 31,
+                    PointerValue = Marshal.StringToCoTaskMemUni(value)
+                };
+            }
+
+            public void Clear()
+            {
+                PropVariantClear(ref this);
+            }
+        }
+
+        [DllImport("ole32.dll")]
+        private static extern int PropVariantClear(ref PropVariant value);
+
+        [ComImport, Guid("6332DEBF-87B5-4670-90C0-5E57B408A49E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface ICustomDestinationList
+        {
+            void SetAppID([MarshalAs(UnmanagedType.LPWStr)] string appId);
+            void BeginList(out uint maxSlots, ref Guid interfaceId, [MarshalAs(UnmanagedType.Interface)] out object removedItems);
+            void AppendCategory([MarshalAs(UnmanagedType.LPWStr)] string category, IObjectArray items);
+            void AppendKnownCategory(uint category);
+            void AddUserTasks(IObjectArray tasks);
+            void CommitList();
+            void GetRemovedDestinations(ref Guid interfaceId, [MarshalAs(UnmanagedType.Interface)] out object removedItems);
+            void DeleteList([MarshalAs(UnmanagedType.LPWStr)] string appId);
+            void AbortList();
+        }
+
+        [ComImport, Guid("92CA9DCD-5622-4BBA-A805-5E9F541BD8C9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IObjectArray
+        {
+            void GetCount(out uint count);
+            void GetAt(uint index, ref Guid interfaceId, [MarshalAs(UnmanagedType.Interface)] out object value);
+        }
+
+        [ComImport, Guid("5632B1A4-E38A-400A-928A-D4CD63230295"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IObjectCollection
+        {
+            void GetCount(out uint count);
+            void GetAt(uint index, ref Guid interfaceId, [MarshalAs(UnmanagedType.Interface)] out object value);
+            void AddObject([MarshalAs(UnmanagedType.IUnknown)] object value);
+            void AddFromArray(IObjectArray source);
+            void RemoveObjectAt(uint index);
+            void Clear();
+        }
+
+        [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellLinkW
+        {
+            void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int pathLength, IntPtr findData, uint flags);
+            void GetIDList(out IntPtr itemIdList);
+            void SetIDList(IntPtr itemIdList);
+            void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder description, int maxLength);
+            void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string description);
+            void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder directory, int maxLength);
+            void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string directory);
+            void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder arguments, int maxLength);
+            void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string arguments);
+            void GetHotkey(out short hotkey);
+            void SetHotkey(short hotkey);
+            void GetShowCmd(out int showCommand);
+            void SetShowCmd(int showCommand);
+            void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder iconPath, int iconPathLength, out int iconIndex);
+            void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string iconPath, int iconIndex);
+            void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+            void Resolve(IntPtr window, uint flags);
+            void SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+        }
+
+        [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IPropertyStore
+        {
+            void GetCount(out uint propertyCount);
+            void GetAt(uint propertyIndex, out PropertyKey key);
+            void GetValue(ref PropertyKey key, out PropVariant value);
+            void SetValue(ref PropertyKey key, ref PropVariant value);
+            void Commit();
+        }
+
+        [ComImport, Guid("77F10CF0-3DB5-4966-B520-B7C54FD35ED6")]
+        private class DestinationList { }
+
+        [ComImport, Guid("2D3468C1-36A7-43B6-AC24-D3F02FD9607A")]
+        private class EnumerableObjectCollection { }
+
+        [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+        private class ShellLink { }
+    }
+
     public static class UiTheme
     {
         public static readonly Color WindowTop = Color.FromArgb(229, 237, 243);
@@ -1797,6 +2063,7 @@ namespace WindowLayoutLauncher
             }
             trayMenu.Items.Add(new ToolStripSeparator());
             trayMenu.Items.Add("退出", null, (s, e) => { allowExit = true; Close(); });
+            TaskbarIntegration.UpdateJumpList(layouts);
         }
 
         private void ShowMainWindow()
@@ -1811,10 +2078,8 @@ namespace WindowLayoutLauncher
 
         private void HideToTray()
         {
-            // Hide first so changing the taskbar identity cannot flash a visible native window.
-            Hide();
-            ShowInTaskbar = false;
-            WindowState = FormWindowState.Normal;
+            ShowInTaskbar = true;
+            WindowState = FormWindowState.Minimized;
         }
 
         protected override void WndProc(ref Message m)
@@ -2475,7 +2740,6 @@ namespace WindowLayoutLauncher
         private Label titleLabel;
         private Label versionLabel;
         private Label descLabel;
-        private LinkLabel repoLink;
         private GlassButton checkUpdateButton;
         private GlassButton closeButton;
         private Label updateStatusLabel;
@@ -2485,99 +2749,141 @@ namespace WindowLayoutLauncher
             AutoScaleMode = AutoScaleMode.None;
             Text = "关于 " + Program.AppName;
             StartPosition = FormStartPosition.CenterParent;
-            Size = UiTheme.DpiSize(480, 360);
+            ClientSize = new Size(620, 470);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
             Font = new Font("Microsoft YaHei UI", 9F);
             BackColor = UiTheme.WindowTop;
 
-            titleLabel = new Label();
-            titleLabel.Text = Program.AppName;
-            titleLabel.Font = new Font("Microsoft YaHei UI", 16F, FontStyle.Bold);
-            titleLabel.ForeColor = UiTheme.Ink;
-            titleLabel.BackColor = Color.Transparent;
-            titleLabel.AutoSize = true;
-            titleLabel.Left = 30;
-            titleLabel.Top = 25;
-            Controls.Add(titleLabel);
+            var root = new TableLayoutPanel();
+            root.Dock = DockStyle.Fill;
+            root.Padding = new Padding(34, 26, 34, 24);
+            root.ColumnCount = 1;
+            root.RowCount = 10;
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 60F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 60F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 82F));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
+            Controls.Add(root);
 
-            versionLabel = new Label();
-            versionLabel.Text = "版本 v" + Program.Version;
-            versionLabel.Font = new Font("Microsoft YaHei UI", 10F);
-            versionLabel.ForeColor = UiTheme.Muted;
-            versionLabel.BackColor = Color.Transparent;
-            versionLabel.AutoSize = true;
-            versionLabel.Left = 32;
-            versionLabel.Top = 60;
-            Controls.Add(versionLabel);
-
-            descLabel = new Label();
-            descLabel.Text = "保存不同工作流的窗口位置和大小，下次一键恢复。\n支持文件资源管理器、浏览器和普通应用窗口。";
-            descLabel.Font = new Font("Microsoft YaHei UI", 9.5F);
-            descLabel.ForeColor = UiTheme.Ink;
-            descLabel.BackColor = Color.Transparent;
-            descLabel.Left = 32;
-            descLabel.Top = 95;
-            descLabel.Width = 400;
-            descLabel.Height = 60;
-            Controls.Add(descLabel);
-
-            repoLink = new LinkLabel();
-            repoLink.Text = "开源地址：" + Program.RepoUrl;
-            repoLink.Font = new Font("Microsoft YaHei UI", 9F);
-            repoLink.ForeColor = UiTheme.Blue;
-            repoLink.LinkColor = UiTheme.Blue;
-            repoLink.BackColor = Color.Transparent;
-            repoLink.Left = 32;
-            repoLink.Top = 160;
-            repoLink.Width = 400;
-            repoLink.AutoSize = true;
-            repoLink.LinkClicked += (s, e) =>
+            titleLabel = new Label
             {
-                try { Process.Start(Program.RepoUrl); }
-                catch { }
+                Text = Program.AppName,
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei UI", 16F, FontStyle.Bold),
+                ForeColor = UiTheme.Ink,
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.MiddleLeft
             };
-            Controls.Add(repoLink);
+            root.Controls.Add(titleLabel, 0, 0);
 
-            updateStatusLabel = new Label();
-            updateStatusLabel.Text = "";
-            updateStatusLabel.Font = new Font("Microsoft YaHei UI", 9F);
-            updateStatusLabel.ForeColor = UiTheme.Muted;
-            updateStatusLabel.BackColor = Color.Transparent;
-            updateStatusLabel.Left = 32;
-            updateStatusLabel.Top = 195;
-            updateStatusLabel.Width = 400;
-            updateStatusLabel.Height = 25;
-            updateStatusLabel.AutoSize = false;
-            Controls.Add(updateStatusLabel);
+            versionLabel = new Label
+            {
+                Text = "版本 v" + Program.Version + "  ·  Windows 桌面工作启动器",
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei UI", 9.5F),
+                ForeColor = UiTheme.Muted,
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            root.Controls.Add(versionLabel, 0, 1);
 
-            checkUpdateButton = new GlassButton();
-            checkUpdateButton.Text = "检查更新";
-            checkUpdateButton.Left = 30;
-            checkUpdateButton.Top = 235;
-            checkUpdateButton.Width = 110;
-            checkUpdateButton.Height = 36;
-            checkUpdateButton.Primary = false;
-            checkUpdateButton.SurfaceColor = UiTheme.WindowTop;
-            checkUpdateButton.BackColor = UiTheme.WindowTop;
+            descLabel = new Label
+            {
+                Text = "把一组文件夹、网页和软件窗口保存成工作布局。下次开始工作时，直接恢复已经打开的窗口，并把它们放回对应屏幕和位置。",
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei UI", 9.5F),
+                ForeColor = UiTheme.Ink,
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            root.Controls.Add(descLabel, 0, 2);
+
+            root.Controls.Add(SectionLabel("设计思路"), 0, 3);
+            root.Controls.Add(BodyLabel("少开窗口、少找入口、尽量复用已经打开的内容。布局只记录窗口位置和启动规则，不上传个人文件；主界面、任务栏和托盘共用同一套布局。"), 0, 4);
+            root.Controls.Add(SectionLabel("怎么使用"), 0, 5);
+            root.Controls.Add(BodyLabel("1. 打开工作需要的文件夹、网页和软件，摆好位置。\n2. 回到主界面，选择“保存为新布局”。\n3. 以后从主界面、任务栏右键或托盘菜单直接开始工作。"), 0, 6);
+
+            updateStatusLabel = new Label
+            {
+                Text = "更新由你主动检查，程序启动时不会打扰你。",
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei UI", 9F),
+                ForeColor = UiTheme.Muted,
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            root.Controls.Add(updateStatusLabel, 0, 8);
+
+            var buttons = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                BackColor = Color.Transparent
+            };
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120F));
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90F));
+            root.Controls.Add(buttons, 0, 9);
+
+            checkUpdateButton = new GlassButton
+            {
+                Text = "检查更新",
+                Dock = DockStyle.Fill,
+                Primary = false,
+                SurfaceColor = UiTheme.WindowTop,
+                BackColor = UiTheme.WindowTop
+            };
             checkUpdateButton.Click += CheckUpdateButton_Click;
-            Controls.Add(checkUpdateButton);
+            buttons.Controls.Add(checkUpdateButton, 0, 0);
 
-            closeButton = new GlassButton();
-            closeButton.Text = "关闭";
-            closeButton.Left = 340;
-            closeButton.Top = 235;
-            closeButton.Width = 90;
-            closeButton.Height = 36;
-            closeButton.Primary = true;
-            closeButton.SurfaceColor = UiTheme.WindowTop;
-            closeButton.BackColor = UiTheme.WindowTop;
-            closeButton.DialogResult = DialogResult.OK;
-            Controls.Add(closeButton);
+            closeButton = new GlassButton
+            {
+                Text = "关闭",
+                Dock = DockStyle.Fill,
+                Primary = true,
+                SurfaceColor = UiTheme.WindowTop,
+                BackColor = UiTheme.WindowTop,
+                DialogResult = DialogResult.OK
+            };
+            buttons.Controls.Add(closeButton, 2, 0);
 
             AcceptButton = closeButton;
             CancelButton = closeButton;
+        }
+
+        private static Label SectionLabel(string text)
+        {
+            return new Label
+            {
+                Text = text,
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
+                ForeColor = UiTheme.Ink,
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.BottomLeft
+            };
+        }
+
+        private static Label BodyLabel(string text)
+        {
+            return new Label
+            {
+                Text = text,
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei UI", 9.3F),
+                ForeColor = UiTheme.Muted,
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.TopLeft
+            };
         }
 
         private void CheckUpdateButton_Click(object sender, EventArgs e)
@@ -2602,17 +2908,17 @@ namespace WindowLayoutLauncher
             {
                 updateStatusLabel.Text = "发现新版本 v" + info.Version;
                 updateStatusLabel.ForeColor = UiTheme.Blue;
-                var result = MessageBox.Show(this,
-                    "发现新版本 v" + info.Version + "\n\n" +
-                    (info.ReleaseNotes ?? "暂无更新说明") + "\n\n" +
-                    "是否立即更新？",
-                    "发现新版本",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Information);
-
-                if (result == DialogResult.Yes)
+                using (var prompt = new UpdatePromptForm(info))
                 {
-                    DoUpdate(info);
+                    if (prompt.ShowDialog(this) == DialogResult.OK)
+                    {
+                        DoUpdate(info);
+                    }
+                    else
+                    {
+                        updateStatusLabel.Text = "已跳过版本 v" + info.Version;
+                        updateStatusLabel.ForeColor = UiTheme.Muted;
+                    }
                 }
             }
             else
@@ -2680,23 +2986,109 @@ namespace WindowLayoutLauncher
                 return;
             }
 
-            var confirm = MessageBox.Show(this,
-                "下载完成，是否立即安装更新？\n（安装时会自动关闭当前程序）",
-                "更新下载完成",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question);
-
-            if (confirm == DialogResult.Yes)
+            if (UpdateChecker.ApplyUpdate(newExe))
             {
-                if (UpdateChecker.ApplyUpdate(newExe))
-                {
-                    Application.Exit();
-                }
-                else
-                {
-                    MessageBox.Show(this, "更新失败，请手动下载替换。", "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
+                Application.Exit();
             }
+            else
+            {
+                MessageBox.Show(this, "更新失败，请稍后重试。", "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+    }
+
+    public class UpdatePromptForm : Form
+    {
+        public UpdatePromptForm(VersionInfo info)
+        {
+            AutoScaleMode = AutoScaleMode.None;
+            Text = "发现新版本";
+            StartPosition = FormStartPosition.CenterParent;
+            ClientSize = new Size(480, 260);
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            Font = new Font("Microsoft YaHei UI", 9F);
+            BackColor = UiTheme.WindowTop;
+
+            var root = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(28, 24, 28, 22),
+                ColumnCount = 1,
+                RowCount = 4,
+                BackColor = Color.Transparent
+            };
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32F));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
+            Controls.Add(root);
+
+            root.Controls.Add(new Label
+            {
+                Text = "发现新版本 v" + (info == null ? "" : info.Version),
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei UI", 14F, FontStyle.Bold),
+                ForeColor = UiTheme.Ink,
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.MiddleLeft
+            }, 0, 0);
+
+            root.Controls.Add(new Label
+            {
+                Text = "本次更新内容",
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold),
+                ForeColor = UiTheme.Muted,
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.BottomLeft
+            }, 0, 1);
+
+            root.Controls.Add(new Label
+            {
+                Text = info == null || string.IsNullOrWhiteSpace(info.ReleaseNotes) ? "体验优化与问题修复。" : info.ReleaseNotes,
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei UI", 9.3F),
+                ForeColor = UiTheme.Ink,
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.TopLeft
+            }, 0, 2);
+
+            var buttons = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.RightToLeft,
+                WrapContents = false,
+                BackColor = Color.Transparent
+            };
+            var update = new GlassButton
+            {
+                Text = "立刻更新",
+                Width = 105,
+                Height = 36,
+                Primary = true,
+                SurfaceColor = UiTheme.WindowTop,
+                BackColor = UiTheme.WindowTop,
+                DialogResult = DialogResult.OK
+            };
+            var skip = new GlassButton
+            {
+                Text = "跳过本次版本",
+                Width = 130,
+                Height = 36,
+                Primary = false,
+                SurfaceColor = UiTheme.WindowTop,
+                BackColor = UiTheme.WindowTop,
+                DialogResult = DialogResult.Cancel
+            };
+            buttons.Controls.Add(update);
+            buttons.Controls.Add(skip);
+            root.Controls.Add(buttons, 0, 3);
+
+            AcceptButton = update;
+            CancelButton = skip;
         }
     }
 
