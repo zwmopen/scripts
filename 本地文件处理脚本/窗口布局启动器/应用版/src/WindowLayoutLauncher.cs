@@ -16,7 +16,7 @@ namespace WindowLayoutLauncher
 {
     static class Program
     {
-        public const string Version = "3.0.5";
+        public const string Version = "3.0.6";
         public const string AppName = "窗口布局启动器";
         public const string RepoUrl = "https://github.com/zwmopen/scripts/tree/master/本地文件处理脚本/窗口布局启动器/应用版";
         public const string VersionCheckUrl = "https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/本地文件处理脚本/窗口布局启动器/应用版/version.json";
@@ -1802,6 +1802,7 @@ namespace WindowLayoutLauncher
         private void ShowMainWindow()
         {
             ignoreMinimizeUntilUtc = DateTime.UtcNow.AddMilliseconds(1200);
+            ShowInTaskbar = true;
             WindowState = FormWindowState.Normal;
             Show();
             BringToFront();
@@ -1810,8 +1811,9 @@ namespace WindowLayoutLauncher
 
         private void HideToTray()
         {
-            // Changing ShowInTaskbar while visible recreates the native window and causes a flash.
+            // Hide first so changing the taskbar identity cannot flash a visible native window.
             Hide();
+            ShowInTaskbar = false;
             WindowState = FormWindowState.Normal;
         }
 

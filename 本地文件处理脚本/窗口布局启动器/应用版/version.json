@@ -1,6 +1,6 @@
 {
-  "version": "3.0.5",
+  "version": "3.0.6",
   "download_url": "https://github.com/zwmopen/scripts/raw/refs/heads/master/本地文件处理脚本/窗口布局启动器/应用版/release/窗口布局启动器.exe",
-  "release_notes": "3.0.5：修复从任务栏快速双击启动器时窗口闪现后消失；加强单实例启动等待与快速最小化防抖。",
+  "release_notes": "3.0.6：修复窗口进入托盘后左侧任务栏图标无法再次打开；隐藏时正确移除任务栏窗口身份，恢复时重新登记。",
   "published_at": "2026-07-15"
 }
