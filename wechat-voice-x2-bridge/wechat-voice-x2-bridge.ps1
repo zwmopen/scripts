@@ -30,6 +30,7 @@ public static class WeChatVoiceX2Bridge
     private const ushort SC_CONTROL = 0x1D;
     private const ushort SC_MENU = 0x38;
     private const ushort SC_O = 0x18;
+    private const uint INPUT_KEYBOARD = 1;
     private const uint KEYEVENTF_KEYUP = 0x0002;
 
     private static LowLevelMouseProc _proc = HookCallback;
@@ -91,23 +92,40 @@ public static class WeChatVoiceX2Bridge
     {
         ReleaseCommonModifiers();
         Thread.Sleep(30);
-        keybd_event((byte)VK_LCONTROL, (byte)SC_CONTROL, 0, UIntPtr.Zero);
-        keybd_event((byte)VK_LMENU, (byte)SC_MENU, 0, UIntPtr.Zero);
-        keybd_event((byte)VK_O, (byte)SC_O, 0, UIntPtr.Zero);
-        Thread.Sleep(40);
-        keybd_event((byte)VK_O, (byte)SC_O, KEYEVENTF_KEYUP, UIntPtr.Zero);
-        keybd_event((byte)VK_LMENU, (byte)SC_MENU, KEYEVENTF_KEYUP, UIntPtr.Zero);
-        keybd_event((byte)VK_LCONTROL, (byte)SC_CONTROL, KEYEVENTF_KEYUP, UIntPtr.Zero);
-        Log("keybd_event sent LeftCtrl+LeftAlt+O.");
+        INPUT[] inputs = new INPUT[] {
+            KeyboardInput(VK_LCONTROL, 0),
+            KeyboardInput(VK_LMENU, 0),
+            KeyboardInput(VK_O, 0),
+            KeyboardInput(VK_O, KEYEVENTF_KEYUP),
+            KeyboardInput(VK_LMENU, KEYEVENTF_KEYUP),
+            KeyboardInput(VK_LCONTROL, KEYEVENTF_KEYUP)
+        };
+        uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+        if (sent == inputs.Length)
+            Log("SendInput sent LeftCtrl+LeftAlt+O.");
+        else
+            Log("SendInput failed: sent " + sent + "/" + inputs.Length + ", Win32Error=" + Marshal.GetLastWin32Error());
     }
 
     private static void ReleaseCommonModifiers()
     {
         ushort[] keys = new ushort[] { VK_CONTROL, VK_LCONTROL, VK_MENU, VK_LMENU, VK_SHIFT, VK_LWIN, VK_RWIN };
+        INPUT[] inputs = new INPUT[keys.Length];
+        int index = 0;
         foreach (ushort key in keys)
         {
-            keybd_event((byte)key, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            inputs[index++] = KeyboardInput(key, KEYEVENTF_KEYUP);
         }
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    private static INPUT KeyboardInput(ushort virtualKey, uint flags)
+    {
+        INPUT input = new INPUT();
+        input.type = INPUT_KEYBOARD;
+        input.U.ki.wVk = virtualKey;
+        input.U.ki.dwFlags = flags;
+        return input;
     }
 
     private static void Log(string text)
@@ -147,6 +165,50 @@ public static class WeChatVoiceX2Bridge
         public POINT pt;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT
+    {
+        public uint type;
+        public InputUnion U;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)] public MOUSEINPUT mi;
+        [FieldOffset(0)] public KEYBDINPUT ki;
+        [FieldOffset(0)] public HARDWAREINPUT hi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public UIntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KEYBDINPUT
+    {
+        public ushort wVk;
+        public ushort wScan;
+        public uint dwFlags;
+        public uint time;
+        public UIntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HARDWAREINPUT
+    {
+        public uint uMsg;
+        public ushort wParamL;
+        public ushort wParamH;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
 
@@ -164,7 +226,7 @@ public static class WeChatVoiceX2Bridge
     private static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
 
     [DllImport("user32.dll", SetLastError = true)]
-    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+    private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 }
 "@
 

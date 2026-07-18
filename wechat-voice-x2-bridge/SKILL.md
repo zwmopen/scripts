@@ -9,7 +9,7 @@ description: 本地 Windows 人机协同小技能。用于把鼠标 X2 侧键联
 
 这是一个人机协同里的本地操作技能：把鼠标 `X2` 侧键变成微信输入法语音输入入口。
 
-它解决的是微信输入法对普通模拟快捷键不稳定识别的问题。脚本监听 Windows 的 `XBUTTON2`，在松开鼠标侧键时发送 `左 Ctrl + 左 Alt + O`，匹配微信输入法“启动语音输入”的快捷键。
+它解决的是微信输入法对普通模拟快捷键不稳定识别的问题。脚本监听 Windows 的 `XBUTTON2`，在松开鼠标侧键时通过 Windows `SendInput` 批量发送 `左 Ctrl + 左 Alt + O`，匹配微信输入法“启动语音输入”的快捷键。
 
 ## 使用入口
 
@@ -51,9 +51,13 @@ D:\AICode\AI\skills\技能包\技能\AI协作\鼠标快速语音打字\scripts
 
 1. 确认微信输入法设置里“启动语音输入”为 `左 Ctrl + 左 Alt + O`。
 2. 确认后台脚本正在运行。
-3. 查看日志是否出现 `Mouse down XBUTTON2`、`Mouse up XBUTTON2`、`keybd_event sent LeftCtrl+LeftAlt+O`。
+3. 查看日志是否出现 `Mouse down XBUTTON2`、`Mouse up XBUTTON2`、`SendInput sent LeftCtrl+LeftAlt+O`。
 4. 如果有侧键日志但没有弹窗，优先怀疑微信输入法快捷键设置变化或目标窗口权限层级差异。
 5. 如果没有侧键日志，优先怀疑鼠标驱动、侧键映射或脚本未运行。
+
+## 兼容性记录
+
+- 2026-07-18：快捷键注入由旧式 `keybd_event` 升级为 `SendInput`，提高新版微信输入法的识别稳定性，并在日志中记录发送数量或 Win32 错误码。
 
 ## 分类
 
