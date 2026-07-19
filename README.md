@@ -55,21 +55,11 @@
 - 自动生成 ZIP 和迁移日志；
 - 使用锁文件避免并发执行冲突。
 
-### CodexRadar 最佳模型监控
+### 已归档：CodexRadar 最佳模型监控
 
-目录：[`tools/codexradar-monitor/`](tools/codexradar-monitor/README.md)
+目录：[`archive/codexradar-monitor/`](archive/codexradar-monitor/README.md)
 
-功能包括：
-
-- 定时读取 CodexRadar 最新降智榜；
-- 分别判断当前能力最强模型与综合性价比模型；
-- 推荐变化时在固定 GitHub Issue 中评论并 `@zwmopen`；
-- 将最新快照和历史数据保存到仓库；
-- 相同榜单不重复提交、不重复提醒；
-- 解析异常时停止发布，避免推送错误结论；
-- 无需邮箱密码、外部 Token 或第三方推送密钥。
-
-推送入口：[`scripts#9`](https://github.com/zwmopen/scripts/issues/9)
+该实验已停止维护，GitHub Actions、定时检查和 Issue 推送均已禁用。历史代码与数据只作为阶段性记录保留，不得恢复自动推送；如未来重新评估，应建立新的独立方案并由仓库所有者明确确认。
 
 ## 破坏性操作安全约定
 
