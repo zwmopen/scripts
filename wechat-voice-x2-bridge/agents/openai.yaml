@@ -1,4 +1,4 @@
 interface:
   display_name: "鼠标快速语音打字"
-  short_description: "维护鼠标 X2 唤起微信输入法语音输入的本地常驻小软件"
-  default_prompt: "使用 $mouse-voice-typing 检查并维护 X2 侧键语音输入软件。"
+  short_description: "维护 X2 语音输入并规划多组鼠标键盘映射的小程序"
+  default_prompt: "使用 $mouse-voice-typing 维护 X2 语音输入或规划新的鼠标键盘映射。"
