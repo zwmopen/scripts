@@ -17,7 +17,7 @@ namespace WindowLayoutLauncher
 {
     static class Program
     {
-        public const string Version = "3.0.8";
+        public const string Version = "3.0.9";
         public const string AppName = "窗口布局启动器";
         public const string RepoUrl = "https://github.com/zwmopen/scripts/tree/master/本地文件处理脚本/窗口布局启动器/应用版";
         public const string VersionCheckUrl = "https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/本地文件处理脚本/窗口布局启动器/应用版/version.json";
@@ -48,7 +48,11 @@ namespace WindowLayoutLauncher
                 var manager = new LayoutManager(AppDomain.CurrentDomain.BaseDirectory);
                 if (args.Length >= 2 && string.Equals(args[0], "--restore", StringComparison.OrdinalIgnoreCase))
                 {
-                    manager.Restore(args[1]);
+                    var restoreResult = manager.Restore(args[1]);
+                    if (restoreResult.Failed > 0)
+                    {
+                        Application.Run(NotificationToastForm.ForRestoreResult(restoreResult));
+                    }
                     return;
                 }
 
@@ -996,7 +1000,8 @@ namespace WindowLayoutLauncher
                 "SystemSettings",
                 "RuntimeBroker",
                 "LockApp",
-                "SpeedBall"
+                "SpeedBall",
+                "msedgewebview2"
             };
 
             if (ignoredProcesses.Contains(processName)) return true;
@@ -2405,29 +2410,8 @@ namespace WindowLayoutLauncher
 
             if (result.Failed > 0 && result.FailDetails != null && result.FailDetails.Count > 0)
             {
-                var detailText = string.Join(Environment.NewLine, result.FailDetails);
-                statusLabel.Text = result.Message + "，用时 " + sw.Elapsed.TotalSeconds.ToString("0.0") + " 秒。点击查看失败详情";
-
-                var logDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs");
-                if (Directory.Exists(logDir))
-                {
-                    try
-                    {
-                        var latestLog = Directory.GetFiles(logDir, "restore_*.log")
-                            .OrderByDescending(f => f)
-                            .FirstOrDefault();
-                        if (!string.IsNullOrEmpty(latestLog))
-                        {
-                            detailText += Environment.NewLine + Environment.NewLine + "详细日志: " + latestLog;
-                        }
-                    }
-                    catch { }
-                }
-
-                BeginInvoke((Action)(() =>
-                {
-                    MessageBox.Show(this, detailText, "恢复失败详情", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }));
+                statusLabel.Text = result.Message + "，用时 " + sw.Elapsed.TotalSeconds.ToString("0.0") + " 秒。详情已写入日志。";
+                NotificationToastForm.ShowRestoreResult(result);
             }
             else
             {
@@ -2732,6 +2716,120 @@ namespace WindowLayoutLauncher
             {
                 return false;
             }
+        }
+    }
+
+    public class NotificationToastForm : Form
+    {
+        private readonly System.Windows.Forms.Timer closeTimer;
+
+        public static NotificationToastForm ForRestoreResult(RestoreResult result)
+        {
+            int ok = result == null ? 0 : result.Ok;
+            int failed = result == null ? 0 : result.Failed;
+            string message = "已恢复 " + ok + " 个窗口，" + failed + " 个未恢复\n详情已自动保存到日志";
+            return new NotificationToastForm("布局恢复完成", message);
+        }
+
+        public static void ShowRestoreResult(RestoreResult result)
+        {
+            var toast = ForRestoreResult(result);
+            toast.FormClosed += (s, e) => toast.Dispose();
+            toast.Show();
+        }
+
+        private NotificationToastForm(string title, string message)
+        {
+            AutoScaleMode = AutoScaleMode.None;
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.Manual;
+            ClientSize = new Size(420, 108);
+            ShowInTaskbar = false;
+            TopMost = true;
+            BackColor = UiTheme.PanelLight;
+            Opacity = 0.97;
+            Font = new Font("Microsoft YaHei UI", 9F);
+
+            var accent = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = 5,
+                BackColor = UiTheme.Amber
+            };
+            Controls.Add(accent);
+
+            var titleLabel = new Label
+            {
+                Text = title,
+                Left = 26,
+                Top = 18,
+                Width = 365,
+                Height = 25,
+                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold),
+                ForeColor = UiTheme.Ink,
+                BackColor = Color.Transparent
+            };
+            Controls.Add(titleLabel);
+
+            var messageLabel = new Label
+            {
+                Text = message,
+                Left = 26,
+                Top = 48,
+                Width = 365,
+                Height = 45,
+                Font = new Font("Microsoft YaHei UI", 9F),
+                ForeColor = UiTheme.Muted,
+                BackColor = Color.Transparent
+            };
+            Controls.Add(messageLabel);
+
+            closeTimer = new System.Windows.Forms.Timer { Interval = 2100 };
+            closeTimer.Tick += (s, e) =>
+            {
+                closeTimer.Stop();
+                Close();
+            };
+        }
+
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                const int WsExToolWindow = 0x00000080;
+                const int WsExNoActivate = 0x08000000;
+                var parameters = base.CreateParams;
+                parameters.ExStyle |= WsExToolWindow | WsExNoActivate;
+                return parameters;
+            }
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            var area = Screen.FromPoint(Cursor.Position).WorkingArea;
+            Location = new Point(
+                area.Left + Math.Max(0, (area.Width - Width) / 2),
+                area.Top + Math.Max(0, (area.Height - Height) / 2));
+            using (var path = UiTheme.RoundedRect(new Rectangle(0, 0, Width, Height), 12))
+            {
+                Region = new Region(path);
+            }
+            closeTimer.Start();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && closeTimer != null)
+            {
+                closeTimer.Dispose();
+            }
+            base.Dispose(disposing);
         }
     }
 
