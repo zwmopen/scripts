@@ -2,102 +2,110 @@
   "schema_version": "1.0",
   "source": {
     "url": "https://codexradar.com/",
-    "site_updated_label": "7月15日17:22",
-    "site_updated_at": "2026-07-15T17:22:00+08:00",
-    "observed_at": "2026-07-16T09:03:57+08:00"
+    "site_updated_label": "7月19日08:55",
+    "site_updated_at": "2026-07-19T08:55:00+08:00",
+    "observed_at": "2026-07-19T10:09:00.231396+08:00"
   },
   "recommendations": {
     "strongest": {
-      "name": "Luna max",
-      "passed": 9,
-      "total": 10,
-      "iq": 135.0,
-      "cost_usd": 16.3,
-      "duration_hours": 4.0
+      "name": "Sol max",
+      "passed": 79,
+      "total": 112,
+      "iq": 106.3,
+      "cost_usd": 10.2,
+      "duration_hours": 0.65
     },
     "value_pick": {
-      "name": "Sol low",
-      "passed": 8,
-      "total": 10,
-      "iq": 120.0,
-      "cost_usd": 10.7,
-      "duration_hours": 1.0
+      "name": "Sol max",
+      "passed": 79,
+      "total": 112,
+      "iq": 106.3,
+      "cost_usd": 10.2,
+      "duration_hours": 0.65
     },
-    "signature": "Luna max|Sol low",
+    "signature": "Sol max|Sol max",
     "value_rule": "Among models within one passed task of the strongest result and IQ >= 90, choose the lowest cost per passed task; use cost and duration as tie-breakers."
   },
   "models": [
     {
       "name": "Sol max",
-      "passed": 6,
-      "total": 10,
-      "iq": 90.0,
-      "cost_usd": 51.4,
-      "duration_hours": 4.2
+      "passed": 79,
+      "total": 112,
+      "iq": 106.3,
+      "cost_usd": 10.2,
+      "duration_hours": 0.65
     },
     {
       "name": "Sol xhigh",
-      "passed": 7,
-      "total": 10,
-      "iq": 105.0,
-      "cost_usd": 32.6,
-      "duration_hours": 2.8
+      "passed": 69,
+      "total": 110,
+      "iq": 94.5,
+      "cost_usd": 6.9,
+      "duration_hours": 0.48333333333333334
     },
     {
       "name": "Sol high",
-      "passed": 7,
-      "total": 10,
-      "iq": 105.0,
-      "cost_usd": 25.0,
-      "duration_hours": 2.6
+      "passed": 70,
+      "total": 112,
+      "iq": 94.2,
+      "cost_usd": 5.5,
+      "duration_hours": 0.4
     },
     {
       "name": "Sol medium",
-      "passed": 6,
-      "total": 10,
-      "iq": 90.0,
-      "cost_usd": 16.6,
-      "duration_hours": 1.6
+      "passed": 67,
+      "total": 112,
+      "iq": 90.1,
+      "cost_usd": 3.5,
+      "duration_hours": 0.3
     },
     {
       "name": "Sol low",
-      "passed": 8,
-      "total": 10,
-      "iq": 120.0,
-      "cost_usd": 10.7,
-      "duration_hours": 1.0
+      "passed": 58,
+      "total": 111,
+      "iq": 78.7,
+      "cost_usd": 1.9,
+      "duration_hours": 0.2
     },
     {
       "name": "Terra max",
-      "passed": 7,
-      "total": 10,
-      "iq": 105.0,
-      "cost_usd": 34.0,
-      "duration_hours": 4.6
+      "passed": 73,
+      "total": 112,
+      "iq": 98.2,
+      "cost_usd": 4.6,
+      "duration_hours": 0.55
     },
     {
       "name": "Terra high",
-      "passed": 5,
-      "total": 10,
-      "iq": 75.0,
-      "cost_usd": 9.3,
-      "duration_hours": 2.0
+      "passed": 49,
+      "total": 112,
+      "iq": 65.9,
+      "cost_usd": 1.3,
+      "duration_hours": 0.2
     },
     {
       "name": "Luna max",
-      "passed": 9,
-      "total": 10,
-      "iq": 135.0,
-      "cost_usd": 16.3,
-      "duration_hours": 4.0
+      "passed": 65,
+      "total": 112,
+      "iq": 87.4,
+      "cost_usd": 2.4,
+      "duration_hours": 0.6
     },
     {
       "name": "Luna high",
-      "passed": 5,
-      "total": 10,
-      "iq": 75.0,
-      "cost_usd": 6.7,
-      "duration_hours": 2.2
+      "passed": 46,
+      "total": 111,
+      "iq": 62.4,
+      "cost_usd": 1.1,
+      "duration_hours": 0.3
+    },
+    {
+      "name": "GPT-5.5 high",
+      "passed": 65,
+      "total": 112,
+      "iq": 87.4,
+      "cost_usd": 3.6,
+      "duration_hours": 0.26666666666666666
     }
   ]
 }
