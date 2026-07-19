@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.11.4
+// @version      1.11.5
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -25,7 +25,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.11.4';
+  const SCRIPT_VERSION = '1.11.5';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -128,6 +128,7 @@
   let cloudPromptSyncing = false;
   let cloudPromptSyncPromise = null;
   let editingPromptId = '';
+  let promptHelpVisible = false;
   let pendingRecentMenuUntil = 0;
   let recentMenuAugmented = false;
   let imageToolsTimer = 0;
@@ -1363,6 +1364,37 @@
       #${PROMPT_PANEL_ID} .cgpt-prompt-primary {
         background: var(--sidebar-surface-secondary, rgba(0,0,0,.08));
         font-weight: 600;
+      }
+      #${PROMPT_PANEL_ID} .cgpt-prompt-help-button {
+        width: 30px;
+        padding: 7px 0;
+        border-radius: 999px;
+        text-align: center;
+        font-weight: 700;
+      }
+      .cgpt-prompt-help {
+        flex: 0 0 auto;
+        padding: 10px 12px;
+        border: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+        border-radius: 12px;
+        background: var(--sidebar-surface-secondary, rgba(0,0,0,.04));
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .cgpt-prompt-help strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 13px;
+      }
+      .cgpt-prompt-help p {
+        margin: 4px 0;
+      }
+      .cgpt-prompt-help ul {
+        margin: 5px 0;
+        padding-left: 18px;
+      }
+      .cgpt-prompt-help small {
+        color: var(--text-tertiary, #777);
       }
       #${PROMPT_PANEL_ID} .cgpt-danger {
         color: #e03131;
@@ -2628,11 +2660,25 @@
         <span>
           <button data-cgpt-prompt-action="new">＋ 新增</button>
           <button data-cgpt-prompt-action="sync-cloud" ${cloudPromptSyncing ? 'disabled' : ''}>${cloudPromptSyncing ? '同步中…' : '☁ 同步'}</button>
+          <button class="cgpt-prompt-help-button" data-cgpt-prompt-action="toggle-help" aria-label="提示词库说明" title="提示词库说明">?</button>
           ${cloudPromptBackupCount() ? '<button data-cgpt-prompt-action="restore-cloud">↶ 回退</button>' : ''}
           <button data-cgpt-prompt-action="export-cloud">导出云端文件</button>
           <button data-cgpt-prompt-action="close">关闭</button>
         </span>
       </div>
+      ${promptHelpVisible ? `
+        <div class="cgpt-prompt-help">
+          <strong>这个提示词库如何工作？</strong>
+          <p><b>开发初衷：</b>在尽量保留 ChatGPT 原生体验的前提下，把常用提示词、对话整理和作品处理集中成一个贴着网页生长的生产力工具。</p>
+          <ul>
+            <li><b>GitHub 云端库：</b>相当于你维护的官方公共库；“同步”只会从云端拉取。</li>
+            <li><b>浏览器本地库：</b>相当于个人自建库；新增、编辑和删除都只影响当前浏览器。</li>
+            <li><b>合并规则：</b>两套数据一起显示；标题和内容完全相同时优先显示本地版本。</li>
+            <li><b>安全设计：</b>云端同步不会覆盖本地库，并保留缓存和可回退版本。</li>
+          </ul>
+          <small>网页中新增提示词不会自动上传 GitHub；“导出云端文件”只生成 JSON 文件，也不会自动上传。</small>
+        </div>
+      ` : ''}
       <div class="cgpt-prompt-list">${list}</div>
       ${editingPromptId ? `
         <div class="cgpt-prompt-editor">
@@ -6490,6 +6536,9 @@
           insertPrompt(promptId);
         } else if (action === 'sync-cloud') {
           void syncCloudPrompts(true);
+        } else if (action === 'toggle-help') {
+          promptHelpVisible = !promptHelpVisible;
+          renderPromptPanel();
         } else if (action === 'restore-cloud') {
           restorePreviousCloudPrompts();
         } else if (action === 'export-cloud') {
