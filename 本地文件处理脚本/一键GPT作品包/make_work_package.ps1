@@ -7,7 +7,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.3.2"
+$workPackageScriptVersion = "1.3.3"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -320,7 +320,7 @@ function Get-WorkPackageConfig {
 function Show-Tip {
     param(
         [string]$Message,
-        [int]$Milliseconds = 1000
+        [int]$Milliseconds = 2000
     )
 
     if ($NoMessage) {
