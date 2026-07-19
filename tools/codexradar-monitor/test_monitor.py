@@ -44,6 +44,29 @@ SAMPLE_HTML = """
 </html>
 """
 
+CURRENT_SAMPLE_HTML = """
+<!doctype html>
+<html lang="zh-CN">
+<body>
+  <h2>降智雷达 7月19日08:55更新</h2>
+  <h3>本次多模型指标</h3>
+  <table>
+    <thead><tr><th>项目</th><th>Sol max</th><th>Terra high</th><th>5.5-high</th></tr></thead>
+    <tbody>
+      <tr><td>通过数</td><td>79/112</td><td>49/112</td><td>65/112</td></tr>
+      <tr><td>IQ</td><td>106.3</td><td>65.9</td><td>87.4</td></tr>
+      <tr><td>Agent steps</td><td>117.2</td><td>47.0</td><td>56.1</td></tr>
+      <tr><td>平均费用</td><td>$10.2</td><td>$1.3</td><td>$3.6</td></tr>
+      <tr><td>cache命中率</td><td>98.0%</td><td>96.8%</td><td>97.0%</td></tr>
+      <tr><td>平均耗时</td><td>39分钟</td><td>12分钟</td><td>16分钟</td></tr>
+      <tr><td>总tokens</td><td>1605.8M</td><td>323.4M</td><td>507.1M</td></tr>
+    </tbody>
+  </table>
+  <h3>共同 10 题参考</h3>
+</body>
+</html>
+"""
+
 
 class MonitorTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -61,6 +84,16 @@ class MonitorTests(unittest.TestCase):
         dataset = monitor.build_dataset(SAMPLE_HTML, now=self.now)
         self.assertEqual(dataset.strongest.name, "Luna max")
         self.assertEqual(dataset.value_pick.name, "Sol low")
+
+    def test_parse_current_table_shape(self) -> None:
+        label, _, models = monitor.parse_metrics(CURRENT_SAMPLE_HTML, now=self.now)
+        self.assertEqual(label, "7月19日08:55")
+        self.assertEqual(
+            [item.name for item in models],
+            ["Sol max", "Terra high", "GPT-5.5 high"],
+        )
+        self.assertAlmostEqual(models[0].duration_hours, 0.65)
+        self.assertAlmostEqual(models[2].duration_hours, 16 / 60)
 
     def test_persist_only_notifies_on_recommendation_change(self) -> None:
         dataset = monitor.build_dataset(SAMPLE_HTML, now=self.now)

@@ -31,7 +31,8 @@ NOTIFICATION_PATH = Path(
 MENTION = os.environ.get("CODEXRADAR_MENTION", "zwmopen").lstrip("@")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 MODEL_PATTERN = re.compile(
-    r"\b(Sol|Terra|Luna)\s+(ultra|max|xhigh|high|medium|low)\b",
+    r"(?:(?:Sol|Terra|Luna)\s+(?:ultra|max|xhigh|high|medium|low)"
+    r"|(?:GPT-)?\d+(?:\.\d+)?[-\s]+(?:ultra|max|xhigh|high|medium|low))",
     re.IGNORECASE,
 )
 
@@ -137,6 +138,13 @@ def between(text: str, start: str, end: str) -> str:
     return text.split(start, 1)[1].split(end, 1)[0]
 
 
+def normalize_model_name(value: str) -> str:
+    name = re.sub(r"[-\s]+", " ", value).strip()
+    if re.match(r"^\d", name):
+        name = f"GPT-{name}"
+    return name
+
+
 def parse_update_label(text: str, now: datetime) -> tuple[str, str]:
     matches = re.findall(
         r"降智雷达\s*(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})\s*更新",
@@ -158,19 +166,38 @@ def parse_metrics(html: str, now: datetime | None = None) -> tuple[str, str, tup
     text = visible_text(html)
     label, updated_at = parse_update_label(text, now)
 
-    if "本次多模型指标" not in text or "固定评测任务集" not in text:
+    if "本次多模型指标" not in text:
         raise RadarParseError("Could not locate the current multi-model metrics table")
-    section = text.split("本次多模型指标", 1)[1].split("固定评测任务集", 1)[0]
+    section_tail = text.split("本次多模型指标", 1)[1]
+    end_positions = [
+        section_tail.index(marker)
+        for marker in ("固定评测任务集", "共同 10 题参考")
+        if marker in section_tail
+    ]
+    if not end_positions:
+        raise RadarParseError("Could not locate the end of the current metrics table")
+    section = section_tail[: min(end_positions)]
 
     header = between(section, "项目", "通过数")
-    model_names = [f"{family.title()} {effort.lower()}" for family, effort in MODEL_PATTERN.findall(header)]
+    model_names = [
+        normalize_model_name(match.group(0))
+        for match in MODEL_PATTERN.finditer(header)
+    ]
     if not model_names:
         raise RadarParseError("No models found in the current metrics header")
 
     pass_values = re.findall(r"(\d+)\s*/\s*(\d+)", between(section, "通过数", "IQ"))
     iq_values = re.findall(r"\d+(?:\.\d+)?", between(section, "IQ", "Agent steps"))
     cost_values = re.findall(r"\$\s*(\d+(?:\.\d+)?)", between(section, "费用", "cache命中率"))
-    duration_values = re.findall(r"(\d+(?:\.\d+)?)\s*h", between(section, "耗时", "总tokens"), re.I)
+    duration_matches = re.findall(
+        r"(\d+(?:\.\d+)?)\s*(h|小时|分钟)",
+        between(section, "耗时", "总tokens"),
+        re.I,
+    )
+    duration_values = [
+        float(value) / 60 if unit == "分钟" else float(value)
+        for value, unit in duration_matches
+    ]
 
     lengths = {
         "models": len(model_names),
