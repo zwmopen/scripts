@@ -50,7 +50,7 @@ jobs:
     env:
       CODEXRADAR_ISSUE_NUMBER: "9"
       CODEXRADAR_MENTION: "zwmopen"
-      CODEXRADAR_NOTIFICATION_PATH: ${{ runner.temp }}/codexradar-notification.md
+      CODEXRADAR_NOTIFICATION_PATH: /tmp/codexradar-notification.md
       GH_TOKEN: ${{ github.token }}
 
     steps:
