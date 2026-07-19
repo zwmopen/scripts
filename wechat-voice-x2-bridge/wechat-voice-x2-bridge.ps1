@@ -2,11 +2,19 @@ $ErrorActionPreference = 'Stop'
 
 $pidPath = Join-Path $PSScriptRoot 'wechat-voice-x2-bridge.pid'
 $logPath = Join-Path $PSScriptRoot 'wechat-voice-x2-bridge.log'
+$createdNew = $false
+$instanceMutex = [System.Threading.Mutex]::new($true, 'Local\WeChatVoiceX2Bridge', [ref]$createdNew)
+if (-not $createdNew) {
+    Add-Content -LiteralPath $logPath -Value ("{0} Duplicate bridge launch ignored PID={1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'), $PID) -Encoding UTF8
+    $instanceMutex.Dispose()
+    exit 0
+}
 Set-Content -LiteralPath $pidPath -Value $PID -Encoding ASCII
 Add-Content -LiteralPath $logPath -Value ("Started {0} PID={1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $PID) -Encoding UTF8
 
 Add-Type -TypeDefinition @"
 using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -36,6 +44,8 @@ public static class WeChatVoiceX2Bridge
     private static LowLevelMouseProc _proc = HookCallback;
     private static IntPtr _hookID = IntPtr.Zero;
     private static string _logPath = "";
+    private static readonly ConcurrentQueue<int> _mouseEvents = new ConcurrentQueue<int>();
+    private static readonly AutoResetEvent _eventReady = new AutoResetEvent(false);
 
     public static void Run(string logPath)
     {
@@ -46,6 +56,10 @@ public static class WeChatVoiceX2Bridge
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
         }
 
+        Thread worker = new Thread(ProcessMouseEvents);
+        worker.IsBackground = true;
+        worker.Name = "WeChatVoiceX2Worker";
+        worker.Start();
         Log("Hook installed. Listening for XBUTTON2.");
         MSG msg;
         while (GetMessage(out msg, IntPtr.Zero, 0, 0) != 0) { }
@@ -74,18 +88,32 @@ public static class WeChatVoiceX2Bridge
                 int xButton = (int)((data.mouseData >> 16) & 0xffff);
                 if (xButton == XBUTTON2)
                 {
-                    Log("Mouse " + (message == WM_XBUTTONDOWN ? "down" : "up") + " XBUTTON" + xButton);
-                    if (message == WM_XBUTTONUP)
-                    {
-                        Thread.Sleep(80);
-                        Log("Sending LeftCtrl+LeftAlt+O.");
-                        SendCtrlAltO();
-                    }
+                    _mouseEvents.Enqueue(message);
+                    _eventReady.Set();
                     return (IntPtr)1;
                 }
             }
         }
         return CallNextHookEx(_hookID, nCode, wParam, lParam);
+    }
+
+    private static void ProcessMouseEvents()
+    {
+        while (true)
+        {
+            _eventReady.WaitOne();
+            int message;
+            while (_mouseEvents.TryDequeue(out message))
+            {
+                Log("Mouse " + (message == WM_XBUTTONDOWN ? "down" : "up") + " XBUTTON2");
+                if (message == WM_XBUTTONUP)
+                {
+                    Thread.Sleep(80);
+                    Log("Sending LeftCtrl+LeftAlt+O.");
+                    SendCtrlAltO();
+                }
+            }
+        }
     }
 
     private static void SendCtrlAltO()
@@ -234,5 +262,10 @@ try {
     [WeChatVoiceX2Bridge]::Run($logPath)
 }
 finally {
-    Remove-Item -LiteralPath $pidPath -ErrorAction SilentlyContinue
+    $ownedPid = (Get-Content -LiteralPath $pidPath -Raw -ErrorAction SilentlyContinue).Trim()
+    if ($ownedPid -eq [string]$PID) {
+        Remove-Item -LiteralPath $pidPath -ErrorAction SilentlyContinue
+    }
+    try { $instanceMutex.ReleaseMutex() } catch { }
+    $instanceMutex.Dispose()
 }

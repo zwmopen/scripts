@@ -2,6 +2,15 @@ param([switch]$Restart)
 
 $ErrorActionPreference = 'SilentlyContinue'
 
+$watchdogLockTaken = $false
+$watchdogMutex = [System.Threading.Mutex]::new($false, 'Local\WeChatVoiceX2BridgeWatchdog')
+try {
+    $watchdogLockTaken = $watchdogMutex.WaitOne(0)
+} catch [System.Threading.AbandonedMutexException] {
+    $watchdogLockTaken = $true
+}
+if (-not $watchdogLockTaken) { exit 0 }
+
 $scriptPath = Join-Path $PSScriptRoot 'wechat-voice-x2-bridge.ps1'
 $pidPath = Join-Path $PSScriptRoot 'wechat-voice-x2-bridge.pid'
 $logPath = Join-Path $PSScriptRoot 'wechat-voice-x2-bridge.log'
@@ -17,7 +26,8 @@ if (Test-Path -LiteralPath $pidPath) {
     $pidText = (Get-Content -LiteralPath $pidPath -Raw).Trim()
     if ($pidText) {
         $proc = Get-Process -Id ([int]$pidText) -ErrorAction SilentlyContinue
-        $running = [bool]$proc
+        $pidStamp = (Get-Item -LiteralPath $pidPath).LastWriteTime
+        $running = [bool]$proc -and ([Math]::Abs(($proc.StartTime - $pidStamp).TotalSeconds) -lt 10)
     }
 }
 
@@ -33,3 +43,8 @@ if (-not $running) {
     Start-Process powershell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$scriptPath`"" -WindowStyle Hidden | Out-Null
     Write-WatchdogLog 'bridge was not running; started it'
 }
+
+if ($watchdogLockTaken) {
+    try { $watchdogMutex.ReleaseMutex() } catch { }
+}
+$watchdogMutex.Dispose()
