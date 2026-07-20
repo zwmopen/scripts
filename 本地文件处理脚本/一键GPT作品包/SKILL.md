@@ -75,7 +75,7 @@ Preserve these rules when modifying the template:
 - If the clipboard text exactly matches an existing archived `文案_*.txt`, treat it as already packaged, clean the current same-level downloaded images, and show `该作品已创建过，已清理本次重复下载`.
 - If the clipboard still contains the previous note copy, treat it as duplicate rather than creating another package.
 - Only after fresh clipboard text exists, create or use the configured library folder.
-- Create each note/post package folder as `.yyyyMMdd_HHmmss_<first non-empty line of copy>`. The leading dot belongs to the individual note folder so phones can hide it; portfolio folders must not receive a leading dot.
+- Create each note/post package folder as `yyyyMMdd_HHmmss_<first non-empty line of copy>` with no leading dot. Keep legacy `.yyyyMMdd_HHmmss_` folders compatible for duplicate scanning and portfolio grouping, but never add the dot to newly created folders.
 - Save clipboard text as `文案_yyyyMMdd_HHmmss.txt` inside that package folder.
 - When the ChatGPT userscript provides provenance metadata, save `GPT会话溯源.json` beside the copy. Keep `accountName` as the first property and `conversationUrl` as the second; never mix either value into the clipboard copy text. Missing metadata must not block packaging.
 - Do not create, copy, or insert any blank separator image. Packages should contain only the text file and the user-downloaded images.
@@ -84,7 +84,7 @@ Preserve these rules when modifying the template:
 - Move same-level images into the package folder and order them by modification time before renaming.
 - Never treat legacy `分隔图.png` as a user-downloaded image when moving or cleaning duplicates.
 - For duplicate checks, search archived `文案_*.txt` recursively inside the library so packages inside `作品集_001`, `作品集_002`, etc. are still detected.
-- If `portfolio_auto_group` is enabled, after a new package is created, group top-level loose package folders into visible `作品集_001`, `作品集_002`, etc. using `portfolio_batch_size` folders per portfolio. Accept both new `.yyyyMMdd_HHmmss_` and legacy `yyyyMMdd_HHmmss_` note folders.
+- If `portfolio_auto_group` is enabled, after a new package is created, group top-level loose package folders into visible `作品集_001`, `作品集_002`, etc. using `portfolio_batch_size` folders per portfolio. Accept both current `yyyyMMdd_HHmmss_` and legacy `.yyyyMMdd_HHmmss_` note folders.
 - If `portfolio_auto_zip` is enabled, create a same-level ZIP archive for each newly created portfolio folder, for example `作品集_005.zip`. The archive should contain the 14 package folders directly.
 - Skip existing portfolio folders, `_portfolio_move_logs`, files, archives, and child folders. If the loose package count is below the batch size, leave them in place.
 - Write portfolio preview/result CSV logs under `_portfolio_move_logs`; do not use blocking popups for the integrated one-click flow.

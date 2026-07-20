@@ -47,8 +47,9 @@ try {
     $successOutput = @(& $workScript -ClipboardTextOverride $text -ConversationMetadataJsonOverride $metadataJson -NoMessage)
     Assert-True ($successOutput -contains "OK") "work package success marker is missing"
     Assert-Equal 0 (@(Get-ChildItem -LiteralPath $workDir -File | Where-Object { $_.Extension -in @('.png','.jpg') }).Count) "successful package should move source images into the package"
-    $createdPackages = @(Get-ChildItem -LiteralPath (Join-Path $workDir "团建成品库") -Directory -Force | Where-Object { $_.Name -match '^\.\d{8}_\d{6}_' })
-    Assert-Equal 1 $createdPackages.Count "note package folder should start with a dot"
+    $createdPackages = @(Get-ChildItem -LiteralPath (Join-Path $workDir "团建成品库") -Directory -Force | Where-Object { $_.Name -match '^\d{8}_\d{6}_' })
+    Assert-Equal 1 $createdPackages.Count "note package folder should use a normal visible name"
+    Assert-True (-not $createdPackages[0].Name.StartsWith('.')) "new note package folder must not start with a dot"
     $provenanceFiles = @(Get-ChildItem -LiteralPath (Join-Path $workDir "团建成品库") -File -Recurse -Force | Where-Object { $_.Name -like "GPT*.json" })
     Assert-Equal 1 $provenanceFiles.Count "work package provenance JSON is missing"
     $provenance = Get-Content -LiteralPath $provenanceFiles[0].FullName -Raw -Encoding UTF8 | ConvertFrom-Json

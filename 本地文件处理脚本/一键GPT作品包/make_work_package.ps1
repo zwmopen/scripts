@@ -7,7 +7,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.3.3"
+$workPackageScriptVersion = "1.3.4"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -1008,12 +1008,12 @@ try {
         $folderTitle = Get-SafeNamePart -Text "$title（$gptConversationTitle）" -MaxLength 130
     }
 
-    $targetDir = Join-Path $libraryDir ".$stamp`_$folderTitle"
+    $targetDir = Join-Path $libraryDir "$stamp`_$folderTitle"
     $packageId = $stamp
 
     $index = 2
     while (Test-Path -LiteralPath $targetDir) {
-        $targetDir = Join-Path $libraryDir ".$stamp`_$folderTitle`_$index"
+        $targetDir = Join-Path $libraryDir "$stamp`_$folderTitle`_$index"
         $packageId = "$stamp`_$index"
         $index++
     }
