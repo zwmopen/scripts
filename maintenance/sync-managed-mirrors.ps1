@@ -54,3 +54,5 @@ if ($Apply) {
     & $PSCommandPath
     exit $LASTEXITCODE
 }
+
+exit 0
