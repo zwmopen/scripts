@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.11.6
+// @version      1.12.0
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -25,7 +25,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.11.5';
+  const SCRIPT_VERSION = '1.12.0';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -4997,6 +4997,7 @@
       workPackageButtonVisible ? '隐藏作品包按钮' : '显示作品包按钮',
       () => setWorkPackageButtonVisible(!workPackageButtonVisible)
     );
+    addMenu('设置本地作品包目录', () => openWorkPackageProtocol('cgpt-workpkg://configure'));
     addMenu('复制诊断日志', () => copyDiagnosticLogs());
   }
 
@@ -5881,13 +5882,7 @@
     showImageDownloadToast('打包中...', true);
     try {
       await stampWorkPackageTitleOnClipboard();
-      const anchor = document.createElement('a');
-      anchor.href = WORK_PACKAGE_PROTOCOL_URL;
-      anchor.rel = 'noopener';
-      anchor.style.display = 'none';
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
+      openWorkPackageProtocol(WORK_PACKAGE_PROTOCOL_URL);
     } catch (error) {
       console.warn('[ChatGPT 作品包按钮] 调用本地协议失败：', error);
       window.alert('调用本地作品包脚本失败。请检查 cgpt-workpkg://run 协议是否已注册。');
@@ -5898,6 +5893,16 @@
       setWorkPackageButtonState(button, 'done');
       showImageDownloadToast('打包完成', true);
     }, 3600);
+  }
+
+  function openWorkPackageProtocol(url) {
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.rel = 'noopener';
+    anchor.style.display = 'none';
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
   }
 
   function ensureImageDownloadButton(container, images, preferredActionRow = null) {

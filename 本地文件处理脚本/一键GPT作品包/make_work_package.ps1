@@ -7,7 +7,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.3.4"
+$workPackageScriptVersion = "1.4.0"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -291,6 +291,7 @@ function Get-WorkPackageConfig {
 
     $defaults = [pscustomobject]@{
         library_name = New-TextFromCodePoints @(0x56E2, 0x5EFA, 0x6210, 0x54C1, 0x5E93)
+        library_path = ""
         portfolio_auto_group = $true
         portfolio_auto_zip = $true
         portfolio_batch_size = 14
@@ -904,7 +905,15 @@ $textPrefix = "$([char]0x6587)$([char]0x6848)"
 $configPath = Join-Path $scriptDir "workpkg_config.json"
 $config = Get-WorkPackageConfig -Path $configPath
 $libraryName = [string]$config.library_name
-$libraryDir = Join-Path $scriptDir $libraryName
+$configuredLibraryPath = [Environment]::ExpandEnvironmentVariables(([string]$config.library_path).Trim())
+if ([string]::IsNullOrWhiteSpace($configuredLibraryPath)) {
+    $libraryDir = Join-Path $scriptDir $libraryName
+} else {
+    if (-not [System.IO.Path]::IsPathRooted($configuredLibraryPath)) {
+        throw "workpkg_config.json library_path must be an absolute path: $configuredLibraryPath"
+    }
+    $libraryDir = [System.IO.Path]::GetFullPath($configuredLibraryPath)
+}
 $successMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305)
 $noImageMessage = New-TextFromCodePoints @(0x8BF7, 0x5148, 0x4E0B, 0x8F7D, 0x4F5C, 0x54C1, 0x56FE)
 $duplicateExistingMessage = New-TextFromCodePoints @(0x8BE5, 0x4F5C, 0x54C1, 0x5DF2, 0x521B, 0x5EFA, 0x8FC7, 0xFF0C, 0x5DF2, 0x6E05, 0x7406, 0x672C, 0x6B21, 0x91CD, 0x590D, 0x4E0B, 0x8F7D)

@@ -21,7 +21,9 @@ Use the files in `scripts/`:
 
 - `install_work_package_tool.ps1`: installer/generator for another user's target folder.
 - `make_work_package.ps1`: portable core script copied by the installer.
+- `configure_work_package.ps1`: folder picker and config updater.
 - `一键生成作品包.vbs`: simple visible launcher template.
+- `设置作品包目录.vbs`: manual output-folder setup entry.
 - `usage_zh.md`: Chinese usage guide copied into the target folder.
 
 ## Install Workflow
@@ -30,15 +32,18 @@ When the user wants to give this to someone else or install it into a new folder
 
 1. Ask for or infer the folder where images are downloaded.
 2. Run the installer with that folder as `TargetFolder`.
-3. Choose a library name. Default is `成品库`; use `团建成品库` for the team-building workflow.
-4. Tell the user which file to double-click and the human workflow.
+3. Choose either a child-folder `LibraryName` or an absolute `LibraryPath`.
+4. Use `RegisterProtocol` when the ChatGPT userscript should invoke the local packager.
+5. Tell the user which file to double-click and the human workflow.
 
 Example:
 
 ```powershell
-& "C:\Users\z\.codex\skills\xhs-gpt-work-package\scripts\install_work_package_tool.ps1" `
-  -TargetFolder "D:\Download\素材下载" `
-  -LibraryName "团建成品库"
+& "D:\AICode\工具开发\projects\chatgpt-conversation-tree\src\work-package\install_work_package_tool.ps1" `
+  -TargetFolder "D:\Download" `
+  -LibraryName "团建成品库" `
+  -LibraryPath "D:\Projects\MyProject\团建成品库" `
+  -RegisterProtocol
 ```
 
 The installer creates or updates these files in the target folder:
@@ -101,6 +106,7 @@ The installed tool reads `workpkg_config.json`. For another user, prefer changin
 ```json
 {
   "library_name": "成品库",
+  "library_path": "",
   "success_message": "已创建作品包",
   "no_text_message": "请先复制文案",
   "no_image_message": "请先下载作品图",
@@ -119,7 +125,7 @@ The installed tool reads `workpkg_config.json`. For another user, prefer changin
 }
 ```
 
-If the user asks for a different output folder name, update `library_name`.
+If the user asks for a different output folder name, update `library_name`. If the output belongs in a separate project or disk, set an absolute `library_path`; it takes precedence over `library_name`.
 
 ## Validation
 
@@ -133,6 +139,8 @@ Minimum tests:
 - Duplicate existing copy: does not create a new package and cleans the newly downloaded same-level images.
 - Portfolio grouping: with 13 existing loose package folders and one new package, creates the next `作品集_###`, moves 14 folders into it, creates `作品集_###.zip`, logs the move/zip, and still detects duplicate text inside that portfolio afterward.
 - Syntax check passes for the installed `make_work_package.ps1`.
+- Absolute-library install: images are read from the runtime/download folder, the package is created under `library_path`, and no shadow library is created beside the runtime scripts.
+- Upgrade install: existing config values remain intact unless the corresponding installer parameter is explicitly supplied.
 
 Use the script's test-only parameters:
 

@@ -4,9 +4,20 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+function New-TextFromCodePoints {
+    param([int[]]$CodePoints)
+    return -join ($CodePoints | ForEach-Object { [char]$_ })
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $projectsRoot = Split-Path -Parent $repoRoot
 $canonicalRoot = Join-Path $projectsRoot 'chatgpt-conversation-tree'
+$workPackageSource = Join-Path $canonicalRoot 'src\work-package'
+$localFileScriptsName = New-TextFromCodePoints @(0x672C, 0x5730, 0x6587, 0x4EF6, 0x5904, 0x7406, 0x811A, 0x672C)
+$workPackageName = (New-TextFromCodePoints @(0x4E00, 0x952E)) + 'GPT' + (New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x5305))
+$workPackageLauncher = (New-TextFromCodePoints @(0x4E00, 0x952E, 0x751F, 0x6210, 0x4F5C, 0x54C1, 0x5305)) + '.vbs'
+$workPackageSettingsLauncher = (New-TextFromCodePoints @(0x8BBE, 0x7F6E, 0x4F5C, 0x54C1, 0x5305, 0x76EE, 0x5F55)) + '.vbs'
+$workPackageMirror = Join-Path (Join-Path $repoRoot $localFileScriptsName) $workPackageName
 
 $mappings = @(
     @{
@@ -18,6 +29,46 @@ $mappings = @(
         Name = 'ChatGPT cloud prompts'
         Source = Join-Path $canonicalRoot 'data\chatgpt-cloud-prompts.json'
         Mirror = Join-Path $repoRoot 'chatgpt-cloud-prompts.json'
+    },
+    @{
+        Name = 'Work package installer'
+        Source = Join-Path $workPackageSource 'install_work_package_tool.ps1'
+        Mirror = Join-Path $workPackageMirror 'install_work_package_tool.ps1'
+    },
+    @{
+        Name = 'Work package core'
+        Source = Join-Path $workPackageSource 'make_work_package.ps1'
+        Mirror = Join-Path $workPackageMirror 'make_work_package.ps1'
+    },
+    @{
+        Name = 'Work package configurator'
+        Source = Join-Path $workPackageSource 'configure_work_package.ps1'
+        Mirror = Join-Path $workPackageMirror 'configure_work_package.ps1'
+    },
+    @{
+        Name = 'Work package launcher'
+        Source = Join-Path $workPackageSource $workPackageLauncher
+        Mirror = Join-Path $workPackageMirror $workPackageLauncher
+    },
+    @{
+        Name = 'Work package settings launcher'
+        Source = Join-Path $workPackageSource $workPackageSettingsLauncher
+        Mirror = Join-Path $workPackageMirror $workPackageSettingsLauncher
+    },
+    @{
+        Name = 'Work package README'
+        Source = Join-Path $workPackageSource 'README.md'
+        Mirror = Join-Path $workPackageMirror 'README.md'
+    },
+    @{
+        Name = 'Work package usage'
+        Source = Join-Path $workPackageSource 'usage_zh.md'
+        Mirror = Join-Path $workPackageMirror 'usage_zh.md'
+    },
+    @{
+        Name = 'Work package maintenance skill'
+        Source = Join-Path $workPackageSource 'SKILL.md'
+        Mirror = Join-Path $workPackageMirror 'SKILL.md'
     }
 )
 
