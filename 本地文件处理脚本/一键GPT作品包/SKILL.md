@@ -77,7 +77,7 @@ Preserve these rules when modifying the template:
 - Only process files in the script's own folder level. Do not enter child folders.
 - If the clipboard has no text, show a short toast saying `请先复制文案` and do not create any library/package folder.
 - If clipboard text exists but there are no same-level user images, show `请先下载作品图`, do not create any library/package folder, do not clear the clipboard, and leave the folder untouched.
-- If the clipboard text exactly matches an existing archived `文案_*.txt`, treat it as already packaged, clean the current same-level downloaded images, and show `该作品已创建过，已清理本次重复下载`.
+- If the normalized clipboard text matches an existing archived `文案_*.txt`, do not create a package. Send current same-level downloaded images to the Windows Recycle Bin, clear the clipboard, and show `本次为重复下载，已删除本地图片和文案。`.
 - If the clipboard still contains the previous note copy, treat it as duplicate rather than creating another package.
 - Only after fresh clipboard text exists, create or use the configured library folder.
 - Create each note/post package folder as `yyyyMMdd_HHmmss_<first non-empty line of copy>` with no leading dot. Keep legacy `.yyyyMMdd_HHmmss_` folders compatible for duplicate scanning and portfolio grouping, but never add the dot to newly created folders.
@@ -111,7 +111,7 @@ The installed tool reads `workpkg_config.json`. For another user, prefer changin
   "no_text_message": "请先复制文案",
   "no_image_message": "请先下载作品图",
   "duplicate_text_message": "还是上一条文案，先复制新文案",
-  "duplicate_existing_message": "该作品已创建过，已清理本次重复下载",
+  "duplicate_existing_message": "本次为重复下载，已删除本地图片和文案。",
   "portfolio_grouped_message": "已创建作品包，已整理作品集",
   "portfolio_zipped_message": "已创建作品包，已整理并压缩作品集",
   "portfolio_group_done_message": "已整理作品集",

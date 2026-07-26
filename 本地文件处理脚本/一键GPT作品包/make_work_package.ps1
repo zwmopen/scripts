@@ -7,7 +7,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.4.2"
+$workPackageScriptVersion = "1.4.3"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -547,31 +547,27 @@ function Set-FileTimes {
     }
 }
 
-function Move-DuplicateDownloadImagesToQuarantine {
+function Remove-DuplicateDownloadImages {
     param(
-        [object[]]$Images,
-        [string]$Directory,
-        [string]$Stamp
+        [object[]]$Images
     )
 
-    $holdingDir = Join-Path $Directory ".workpkg_duplicate_downloads_$Stamp"
-    if (-not (Test-Path -LiteralPath $holdingDir)) {
-        New-Item -ItemType Directory -Path $holdingDir | Out-Null
-        try {
-            $holdingItem = Get-Item -LiteralPath $holdingDir -Force
-            $holdingItem.Attributes = $holdingItem.Attributes -bor [System.IO.FileAttributes]::Hidden
-        } catch {
-        }
-    }
-
-    $moved = 0
+    $deleted = 0
     foreach ($image in $Images) {
-        $destination = Get-UniqueFilePath -Path (Join-Path $holdingDir $image.Name)
-        Move-Item -LiteralPath $image.FullName -Destination $destination -ErrorAction Stop
-        $moved++
+        if ($clipboardTextOverrideSpecified) {
+            Remove-Item -LiteralPath $image.FullName -Force -ErrorAction Stop
+        } else {
+            Add-Type -AssemblyName Microsoft.VisualBasic
+            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
+                $image.FullName,
+                [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+                [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
+            )
+        }
+        $deleted++
     }
 
-    return $moved
+    return $deleted
 }
 
 function Restore-StagedImages {
@@ -940,7 +936,7 @@ function Get-LegacyTextHash {
 }
 $successMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305)
 $noImageMessage = New-TextFromCodePoints @(0x8BF7, 0x5148, 0x4E0B, 0x8F7D, 0x4F5C, 0x54C1, 0x56FE)
-$duplicateExistingMessage = New-TextFromCodePoints @(0x8BE5, 0x4F5C, 0x54C1, 0x5DF2, 0x521B, 0x5EFA, 0x8FC7, 0xFF0C, 0x5DF2, 0x6E05, 0x7406, 0x672C, 0x6B21, 0x91CD, 0x590D, 0x4E0B, 0x8F7D)
+$duplicateExistingMessage = New-TextFromCodePoints @(0x672C, 0x6B21, 0x4E3A, 0x91CD, 0x590D, 0x4E0B, 0x8F7D, 0xFF0C, 0x5DF2, 0x5220, 0x9664, 0x672C, 0x5730, 0x56FE, 0x7247, 0x548C, 0x6587, 0x6848, 0x3002)
 $portfolioGroupedMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305, 0xFF0C, 0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6)
 $portfolioZippedMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305, 0xFF0C, 0x5DF2, 0x6574, 0x7406, 0x5E76, 0x538B, 0x7F29, 0x4F5C, 0x54C1, 0x96C6)
 $portfolioGroupDoneMessage = New-TextFromCodePoints @(0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6)
@@ -1016,16 +1012,16 @@ try {
         if ($Preview) {
             Write-Output "PREVIEW_DUPLICATE"
             Write-Output "Version=$workPackageScriptVersion"
-            Write-Output "WouldQuarantineImages=$($images.Count)"
+            Write-Output "WouldDeleteImages=$($images.Count)"
             return
         }
-        $removedImages = Move-DuplicateDownloadImagesToQuarantine -Images $images -Directory $scriptDir -Stamp $stamp
+        $removedImages = Remove-DuplicateDownloadImages -Images $images
         Clear-ClipboardAfterSuccess
         Show-Tip -Message $duplicateExistingMessage
         if ($NoMessage) {
             Write-Output "DUPLICATE"
             Write-Output "Version=$workPackageScriptVersion"
-            Write-Output "CleanedImages=$removedImages"
+            Write-Output "DeletedImages=$removedImages"
         }
         return
     }
