@@ -82,6 +82,9 @@ $config = [ordered]@{
     portfolio_batch_size = 14
     portfolio_prefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
     portfolio_log_folder = "_portfolio_move_logs"
+    visual_similarity_enabled = $true
+    visual_similarity_max_distance = 6
+    visual_similarity_max_average = 3
 }
 
 if (Test-Path -LiteralPath $configDest -PathType Leaf) {
