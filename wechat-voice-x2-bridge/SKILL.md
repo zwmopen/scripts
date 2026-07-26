@@ -37,6 +37,8 @@ D:\AICode\AI\skills\技能包\技能\AI协作\鼠标快速语音打字\scripts
 - `scripts\uninstall-watchdog.ps1`：取消计划任务守护和恢复刷新任务。
 - `scripts\run-hidden.vbs`：隐藏运行 PowerShell，避免计划任务弹出蓝色窗口。
 - `scripts\wechat-voice-x2-bridge.ps1`：核心脚本。
+- `scripts\repair-and-status.ps1`：一键重启并执行心跳健康检查，显示成功或失败结果。
+- `scripts\install-desktop-shortcut.ps1`：创建桌面“鼠标语音输入-启动修复”入口。
 
 ## 运行规则
 
@@ -51,6 +53,7 @@ D:\AICode\AI\skills\技能包\技能\AI协作\鼠标快速语音打字\scripts
 
 - `scripts\wechat-voice-x2-bridge.log`
 - `scripts\wechat-voice-x2-bridge.pid`
+- `scripts\wechat-voice-x2-bridge.heartbeat`
 
 这两个文件只代表本机当前运行状态，不是技能源码，不需要提交或同步。
 
@@ -64,6 +67,7 @@ D:\AICode\AI\skills\技能包\技能\AI协作\鼠标快速语音打字\scripts
 
 ## 兼容性记录
 
+- 2026-07-26 / v0.4.0：增加钩子与轮询双通道、15 秒心跳、60 秒钩子刷新；守护任务使用心跳识别“进程假活”，并改为直接 PowerShell 任务。增加桌面一键启动修复入口。
 - 2026-07-19：修复“进程仍在但钩子失活”和守护竞态。底层鼠标回调只入队，日志与快捷键发送改由后台线程处理；监听器和守护程序增加单实例锁。
 - 2026-07-18：快捷键注入由旧式 `keybd_event` 升级为 `SendInput`，提高新版微信输入法的识别稳定性，并在日志中记录发送数量或 Win32 错误码。
 

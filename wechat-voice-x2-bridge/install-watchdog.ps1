@@ -1,20 +1,23 @@
 $ErrorActionPreference = 'Stop'
 
-$runnerPath = Join-Path $PSScriptRoot 'run-hidden.vbs'
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -StartWhenAvailable
+$watchdogPath = Join-Path $PSScriptRoot 'watchdog.ps1'
+$powershellPath = Join-Path $PSHOME 'powershell.exe'
+$baseArguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $watchdogPath + '"'
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
 
 $taskName = 'WeChat Voice X2 Bridge Watchdog'
-$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"' + $runnerPath + '" watchdog.ps1')
+$action = New-ScheduledTaskAction -Execute $powershellPath -Argument $baseArguments
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description 'Keeps the mouse X2 WeChat voice typing bridge running.' -Force | Out-Null
 
 $startupTaskName = 'WeChat Voice X2 Bridge Startup'
-$startupAction = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"' + $runnerPath + '" watchdog.ps1 -Restart')
+$startupAction = New-ScheduledTaskAction -Execute $powershellPath -Argument ($baseArguments + ' -Restart')
 $startupTrigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 Register-ScheduledTask -TaskName $startupTaskName -Action $startupAction -Trigger $startupTrigger -Settings $settings -Description 'Starts the mouse X2 WeChat voice typing bridge when the user logs on.' -Force | Out-Null
 
 $refreshTaskName = 'WeChat Voice X2 Bridge Refresh'
-$runnerXml = [Security.SecurityElement]::Escape($runnerPath)
+$powershellXml = [Security.SecurityElement]::Escape($powershellPath)
+$watchdogXml = [Security.SecurityElement]::Escape($watchdogPath)
 $userId = [Security.SecurityElement]::Escape("$env:USERDOMAIN\$env:USERNAME")
 $refreshXml = @"
 <?xml version="1.0" encoding="UTF-16"?>
@@ -61,8 +64,8 @@ $refreshXml = @"
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>wscript.exe</Command>
-      <Arguments>"$runnerXml" watchdog.ps1 -Restart</Arguments>
+      <Command>$powershellXml</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;$watchdogXml&quot; -Restart</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -78,3 +81,5 @@ Write-Host "Installed scheduled startup task:"
 Write-Host $startupTaskName
 Write-Host "Installed scheduled refresh task:"
 Write-Host $refreshTaskName
+Write-Host "Installed desktop repair shortcut:"
+& (Join-Path $PSScriptRoot 'install-desktop-shortcut.ps1')
