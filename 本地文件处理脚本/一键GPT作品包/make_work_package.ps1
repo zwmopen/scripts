@@ -7,7 +7,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.4.1"
+$workPackageScriptVersion = "1.4.2"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -417,7 +417,7 @@ public class WorkPkgToastForm : Form
     }
 }
 
-function Get-TextHash {
+function Get-Sha256Hex {
     param([string]$Text)
 
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -914,6 +914,30 @@ if ([string]::IsNullOrWhiteSpace($configuredLibraryPath)) {
     }
     $libraryDir = [System.IO.Path]::GetFullPath($configuredLibraryPath)
 }
+
+function Normalize-TextForDuplicateHash {
+    param([string]$Text)
+
+    if ($null -eq $Text) {
+        return ""
+    }
+
+    $normalized = $Text.Replace(([string][char]0xFEFF), "")
+    $normalized = $normalized -replace "`r`n?", "`n"
+    $normalized = $normalized -replace '[\t ]+(?=\n|$)', ''
+    $normalized = $normalized.Trim([char[]]@(0x20, 0x09, 0x0A))
+    return $normalized.Normalize([System.Text.NormalizationForm]::FormC)
+}
+
+function Get-TextHash {
+    param([string]$Text)
+    return Get-Sha256Hex -Text (Normalize-TextForDuplicateHash -Text $Text)
+}
+
+function Get-LegacyTextHash {
+    param([string]$Text)
+    return Get-Sha256Hex -Text $Text
+}
 $successMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305)
 $noImageMessage = New-TextFromCodePoints @(0x8BF7, 0x5148, 0x4E0B, 0x8F7D, 0x4F5C, 0x54C1, 0x56FE)
 $duplicateExistingMessage = New-TextFromCodePoints @(0x8BE5, 0x4F5C, 0x54C1, 0x5DF2, 0x521B, 0x5EFA, 0x8FC7, 0xFF0C, 0x5DF2, 0x6E05, 0x7406, 0x672C, 0x6B21, 0x91CD, 0x590D, 0x4E0B, 0x8F7D)
@@ -965,6 +989,7 @@ try {
     }
 
     $currentHash = Get-TextHash -Text $text
+    $legacyCurrentHash = Get-LegacyTextHash -Text $text
     $duplicateExists = Test-PackagedTextHashExists -Directory $libraryDir -TextPrefix $textPrefix -Hash $currentHash -Recurse
     if (-not $duplicateExists) {
         $duplicateExists = Test-PackagedTextHashExists -Directory $scriptDir -TextPrefix $textPrefix -Hash $currentHash
@@ -987,7 +1012,7 @@ try {
         }
     }
 
-    if ($duplicateExists -or $lastHash -eq $currentHash) {
+    if ($duplicateExists -or $lastHash -eq $currentHash -or $lastHash -eq $legacyCurrentHash) {
         if ($Preview) {
             Write-Output "PREVIEW_DUPLICATE"
             Write-Output "Version=$workPackageScriptVersion"
