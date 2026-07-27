@@ -13,7 +13,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.8.1"
+$workPackageScriptVersion = "1.8.2"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -2208,6 +2208,13 @@ try {
     }
 
     Move-Item -LiteralPath $stagingDir -Destination $targetDir -ErrorAction Stop
+    # 临时目录需要隐藏，但正式作品包必须恢复为可见目录。
+    try {
+        $committedItem = Get-Item -LiteralPath $targetDir -Force
+        $committedItem.Attributes = $committedItem.Attributes -band (-bnot [System.IO.FileAttributes]::Hidden)
+    } catch {
+        throw "作品包已移动，但无法恢复为可见目录：$($_.Exception.Message)"
+    }
     $packageCommitted = $true
     $stagingDir = $null
     $txtPath = Join-Path $targetDir "$textPrefix`_$stamp.txt"

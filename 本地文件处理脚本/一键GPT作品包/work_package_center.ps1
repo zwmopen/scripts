@@ -21,6 +21,7 @@ $corePath = Join-Path $PSScriptRoot "make_work_package.ps1"
 $runtimeHistoryPath = Join-Path $PSScriptRoot ".workpkg_history_backup.json"
 $taskArchivePath = Join-Path $PSScriptRoot "任务记录"
 $backupRoot = Join-Path $PSScriptRoot "备份"
+$centerVersion = "1.8.2"
 
 function Read-JsonFile {
     param([string]$Path)
@@ -58,6 +59,18 @@ function Write-Config {
     param([object]$Config)
     $json = $Config | ConvertTo-Json -Depth 8
     [System.IO.File]::WriteAllText($configPath, $json, (New-Object System.Text.UTF8Encoding($true)))
+}
+
+function Repair-LegacyConfig {
+    param([object]$Config)
+
+    $changed = $false
+    $validNamingModes = @("title_conversation", "conversation_title", "title_only", "conversation_only")
+    if ([string]$Config.package_naming_mode -notin $validNamingModes) {
+        Set-ObjectProperty -Object $Config -Name "package_naming_mode" -Value "title_conversation"
+        $changed = $true
+    }
+    return $changed
 }
 
 function Show-Info {
@@ -144,10 +157,19 @@ function Get-TaskRows {
     }
     $library = [string]$Config.library_path
     if (Test-Path -LiteralPath $library -PathType Container) {
-        foreach ($file in @(Get-ChildItem -LiteralPath $library -File -Recurse -Filter "GPT*记录.json" -ErrorAction SilentlyContinue |
+        # 作品包曾短暂继承临时目录的 Hidden 属性；-Force 可确保旧作品仍能被任务中心读取。
+        # 同一作品目录若同时存在新旧记录，优先读取统一记录，避免显示成两条任务。
+        $recordFiles = @(Get-ChildItem -LiteralPath $library -File -Recurse -Force -Filter "GPT*记录.json" -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -in @("GPT作品记录.json", "GPT任务记录.json") } |
+            Group-Object DirectoryName |
+            ForEach-Object {
+                $_.Group |
+                    Sort-Object @{ Expression = { if ($_.Name -eq "GPT作品记录.json") { 0 } else { 1 } } }, @{ Expression = "LastWriteTime"; Descending = $true } |
+                    Select-Object -First 1
+            } |
             Sort-Object LastWriteTime -Descending |
-            Select-Object -First 80)) {
+            Select-Object -First 80)
+        foreach ($file in $recordFiles) {
             $task = Read-JsonFile -Path $file.FullName
             if ($null -eq $task) { continue }
             $rows.Add([pscustomobject]@{
@@ -215,13 +237,18 @@ if ($null -eq $config) {
     Show-ErrorMessage "本地配置文件损坏，请从备份恢复或重新安装。"
     exit 1
 }
+$configWasRepaired = Repair-LegacyConfig -Config $config
+if ($configWasRepaired -and -not $SelfTest) {
+    Write-Config -Config $config
+}
 
 if ($SelfTest) {
     $historyPaths = Get-HistoryPaths -Config $config
     $history = Read-JsonFile -Path $historyPaths.Primary
     if ($null -eq $history) { $history = Read-JsonFile -Path $historyPaths.Runtime }
     Write-Output "CENTER_OK"
-    Write-Output "Version=1.8.1"
+    Write-Output "Version=$centerVersion"
+    Write-Output "ConfigRepaired=$configWasRepaired"
     Write-Output "TaskRows=$(@(Get-TaskRows -Config $config).Count)"
     Write-Output "HistoryEntries=$(if ($null -eq $history) { 0 } else { @($history.entries).Count })"
     exit 0
@@ -480,7 +507,7 @@ function Refresh-DataSummary {
         "查重历史：$entryCount 条，约 $historySize KB"
         "作品集最后编号：$lastNumber；下一个编号：$($lastNumber + 1)"
         "当前待处理任务：$pending"
-        "本地版本：1.8.1"
+        "本地版本：$centerVersion"
     ) -join [Environment]::NewLine
     $nextNumberLabel.Text = "最后编号：$lastNumber；下一个：$($lastNumber + 1)"
 }
