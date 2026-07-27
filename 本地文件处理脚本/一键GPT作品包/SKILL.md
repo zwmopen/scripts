@@ -84,7 +84,7 @@ Preserve these rules when modifying the template:
 - Only after fresh clipboard text exists, create or use the configured library folder.
 - Create each note/post package folder as `yyyyMMdd_HHmmss_<first non-empty line of copy>` with no leading dot. Keep legacy `.yyyyMMdd_HHmmss_` folders compatible for duplicate scanning and portfolio grouping, but never add the dot to newly created folders.
 - Save clipboard text as `文案_yyyyMMdd_HHmmss.txt` inside that package folder.
-- When the ChatGPT userscript provides provenance metadata, save `GPT会话溯源.json` beside the copy. Keep `accountName` as the first property and `conversationUrl` as the second; never mix either value into the clipboard copy text. Missing metadata must not block packaging.
+- Save successful task and provenance metadata together in `GPT作品记录.json`; do not generate separate task/provenance files. Preserve compatibility when reading legacy `GPT任务记录.json`. Never mix account or URL metadata into the clipboard copy text, and missing metadata must not block packaging.
 - Do not create, copy, or insert any blank separator image. Packages should contain only the text file and the user-downloaded images.
 - Name package media with the copy title first and a package timestamp before the sequence: `<title>_yyyyMMdd_HHmmss_01.ext`, `<title>_yyyyMMdd_HHmmss_02.ext`, etc. This keeps every image name unique across packages and makes name sorting useful on phones.
 - Set package file times in order: text at package time, then user images at package time + 1 second, + 2 seconds, etc. This keeps time sorting grouped more predictably.

@@ -17,6 +17,8 @@ $localFileScriptsName = New-TextFromCodePoints @(0x672C, 0x5730, 0x6587, 0x4EF6,
 $workPackageName = (New-TextFromCodePoints @(0x4E00, 0x952E)) + 'GPT' + (New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x5305))
 $workPackageLauncher = (New-TextFromCodePoints @(0x4E00, 0x952E, 0x751F, 0x6210, 0x4F5C, 0x54C1, 0x5305)) + '.vbs'
 $workPackageSettingsLauncher = (New-TextFromCodePoints @(0x8BBE, 0x7F6E, 0x4F5C, 0x54C1, 0x5305, 0x76EE, 0x5F55)) + '.vbs'
+$workPackageFriendlyInstaller = (New-TextFromCodePoints @(0x5B89, 0x88C5)) + 'GPT' + (New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x52A9, 0x624B)) + '.vbs'
+$workPackageFriendlyZip = 'GPT' + (New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x52A9, 0x624B)) + '-' + (New-TextFromCodePoints @(0x50BB, 0x74DC, 0x5B89, 0x88C5, 0x5305)) + '.zip'
 $workPackageMirror = Join-Path (Join-Path $repoRoot $localFileScriptsName) $workPackageName
 
 $mappings = @(
@@ -34,6 +36,16 @@ $mappings = @(
         Name = 'Work package installer'
         Source = Join-Path $workPackageSource 'install_work_package_tool.ps1'
         Mirror = Join-Path $workPackageMirror 'install_work_package_tool.ps1'
+    },
+    @{
+        Name = 'Work package friendly installer core'
+        Source = Join-Path $workPackageSource 'install_for_user.ps1'
+        Mirror = Join-Path $workPackageMirror 'install_for_user.ps1'
+    },
+    @{
+        Name = 'Work package friendly installer launcher'
+        Source = Join-Path $workPackageSource $workPackageFriendlyInstaller
+        Mirror = Join-Path $workPackageMirror $workPackageFriendlyInstaller
     },
     @{
         Name = 'Work package core'
@@ -74,6 +86,11 @@ $mappings = @(
         Name = 'Work package maintenance skill'
         Source = Join-Path $workPackageSource 'SKILL.md'
         Mirror = Join-Path $workPackageMirror 'SKILL.md'
+    },
+    @{
+        Name = 'Work package friendly installer ZIP'
+        Source = Join-Path (Join-Path $canonicalRoot 'releases') $workPackageFriendlyZip
+        Mirror = Join-Path $repoRoot $workPackageFriendlyZip
     }
 )
 

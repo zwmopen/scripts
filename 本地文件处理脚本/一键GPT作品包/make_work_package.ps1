@@ -13,7 +13,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.8.0"
+$workPackageScriptVersion = "1.8.1"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -2158,29 +2158,34 @@ try {
     [System.IO.File]::WriteAllText($txtPath, $text, (New-Object System.Text.UTF8Encoding($false)))
     Set-FileTimes -Path $txtPath -Time $packageTime
 
-    if ($null -ne $gptConversationMetadata) {
-        $provenanceFileName = "GPT" + (New-TextFromCodePoints @(0x4F1A, 0x8BDD, 0x6EAF, 0x6E90)) + ".json"
-        $provenancePath = Join-Path $stagingDir $provenanceFileName
-        $provenance = [ordered]@{
-            accountName = [string]$gptConversationMetadata.accountName
-            conversationUrl = [string]$gptConversationMetadata.conversationUrl
+    $packageRecordFileName = "GPT作品记录.json"
+    $packageRecord = if ($null -ne $taskData) {
+        $taskData
+    } else {
+        [pscustomobject][ordered]@{
+            schemaVersion = 2
+            recordType = "gpt_work_package"
+            status = "completed"
+            createdAt = $packageTime.ToUniversalTime().ToString("o")
+            copyText = $text
+            copyTitle = $title
+            conversationTitle = $gptConversationTitle
         }
-        $provenanceJson = $provenance | ConvertTo-Json
-        [System.IO.File]::WriteAllText($provenancePath, $provenanceJson, (New-Object System.Text.UTF8Encoding($false)))
-        Set-FileTimes -Path $provenancePath -Time $packageTime
     }
-
-    $taskRecordFileName = "GPT任务记录.json"
-    if ($null -ne $taskData) {
-        Set-WorkPackageTaskProperty -Task $taskData -Name "status" -Value "completed"
-        Set-WorkPackageTaskProperty -Task $taskData -Name "completedAt" -Value ((Get-Date).ToString("o"))
-        Set-WorkPackageTaskProperty -Task $taskData -Name "actualImages" -Value $images.Count
-        Set-WorkPackageTaskProperty -Task $taskData -Name "textSha256" -Value $currentHash
-        Set-WorkPackageTaskProperty -Task $taskData -Name "imageSetSha256" -Value $imageHashInfo.SetHash
-        Set-WorkPackageTaskProperty -Task $taskData -Name "packageFolder" -Value (Split-Path -Leaf $targetDir)
-        Save-WorkPackageTaskJson -Task $taskData -Path (Join-Path $stagingDir $taskRecordFileName)
-        Set-FileTimes -Path (Join-Path $stagingDir $taskRecordFileName) -Time $packageTime
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "schemaVersion" -Value 2
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "recordType" -Value "gpt_work_package"
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "status" -Value "completed"
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "completedAt" -Value ((Get-Date).ToString("o"))
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "actualImages" -Value $images.Count
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "textSha256" -Value $currentHash
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "imageSetSha256" -Value $imageHashInfo.SetHash
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "packageFolder" -Value (Split-Path -Leaf $targetDir)
+    if ($null -ne $gptConversationMetadata) {
+        Set-WorkPackageTaskProperty -Task $packageRecord -Name "accountName" -Value ([string]$gptConversationMetadata.accountName)
+        Set-WorkPackageTaskProperty -Task $packageRecord -Name "conversationUrl" -Value ([string]$gptConversationMetadata.conversationUrl)
     }
+    Save-WorkPackageTaskJson -Task $packageRecord -Path (Join-Path $stagingDir $packageRecordFileName)
+    Set-FileTimes -Path (Join-Path $stagingDir $packageRecordFileName) -Time $packageTime
 
     $numberFormat = "D$([Math]::Max(2, $images.Count.ToString().Length))"
 
@@ -2235,9 +2240,9 @@ try {
         }
     }
 
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "packagePath" -Value $finalTargetDir
+    Save-WorkPackageTaskJson -Task $packageRecord -Path (Join-Path $finalTargetDir $packageRecordFileName)
     if ($null -ne $taskData) {
-        Set-WorkPackageTaskProperty -Task $taskData -Name "packagePath" -Value $finalTargetDir
-        Save-WorkPackageTaskJson -Task $taskData -Path (Join-Path $finalTargetDir $taskRecordFileName)
         if (-not [string]::IsNullOrWhiteSpace($taskPath) -and (Test-Path -LiteralPath $taskPath -PathType Leaf)) {
             Remove-Item -LiteralPath $taskPath -Force -ErrorAction SilentlyContinue
         }
