@@ -48,12 +48,14 @@ $coreSource = Join-Path $PSScriptRoot "make_work_package.ps1"
 $entrySource = Join-Path $PSScriptRoot "${toolName}.vbs"
 $usageSource = Join-Path $PSScriptRoot "usage_zh.md"
 $configureSource = Join-Path $PSScriptRoot "configure_work_package.ps1"
+$centerSource = Join-Path $PSScriptRoot "work_package_center.ps1"
 $settingsSource = Join-Path $PSScriptRoot "${settingsName}.vbs"
 $coreDest = Join-Path $TargetFolder "make_work_package.ps1"
 $entryDest = Join-Path $TargetFolder "${toolName}.vbs"
 $configDest = Join-Path $TargetFolder "workpkg_config.json"
 $usageDest = Join-Path $TargetFolder "$usageName.md"
 $configureDest = Join-Path $TargetFolder "configure_work_package.ps1"
+$centerDest = Join-Path $TargetFolder "work_package_center.ps1"
 $settingsDest = Join-Path $TargetFolder "${settingsName}.vbs"
 
 Backup-IfExists -Path $coreDest
@@ -61,10 +63,12 @@ Backup-IfExists -Path $entryDest
 Backup-IfExists -Path $configDest
 Backup-IfExists -Path $usageDest
 Backup-IfExists -Path $configureDest
+Backup-IfExists -Path $centerDest
 Backup-IfExists -Path $settingsDest
 
 Copy-Item -LiteralPath $coreSource -Destination $coreDest -Force
 Copy-Item -LiteralPath $configureSource -Destination $configureDest -Force
+Copy-Item -LiteralPath $centerSource -Destination $centerDest -Force
 
 $config = [ordered]@{
     library_name = $LibraryName
@@ -85,6 +89,10 @@ $config = [ordered]@{
     portfolio_batch_size = 14
     portfolio_prefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
     portfolio_log_folder = "_portfolio_move_logs"
+    package_naming_mode = "title_conversation"
+    completion_open_folder = $false
+    completion_copy_path = $false
+    notification_duration_ms = 850
     visual_similarity_enabled = $true
     visual_similarity_max_distance = 6
     visual_similarity_max_average = 3
@@ -151,6 +159,8 @@ try {
     $coreItem.Attributes = $coreItem.Attributes -bor [System.IO.FileAttributes]::Hidden
     $configureItem = Get-Item -LiteralPath $configureDest -Force
     $configureItem.Attributes = $configureItem.Attributes -bor [System.IO.FileAttributes]::Hidden
+    $centerItem = Get-Item -LiteralPath $centerDest -Force
+    $centerItem.Attributes = $centerItem.Attributes -bor [System.IO.FileAttributes]::Hidden
 } catch {
 }
 

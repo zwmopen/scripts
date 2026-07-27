@@ -8,11 +8,12 @@
     [switch]$Diagnose,
     [switch]$RebuildHistory,
     [switch]$CleanExistingDuplicates,
+    [switch]$FlushPortfolio,
     [int]$TestFailAfterImageMove = 0
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.7.1"
+$workPackageScriptVersion = "1.8.0"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -303,6 +304,10 @@ function Get-WorkPackageConfig {
         portfolio_batch_size = 14
         portfolio_prefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
         portfolio_log_folder = "_portfolio_move_logs"
+        package_naming_mode = "title_conversation"
+        completion_open_folder = $false
+        completion_copy_path = $false
+        notification_duration_ms = 850
         visual_similarity_enabled = $true
         visual_similarity_max_distance = 6
         visual_similarity_max_average = 3
@@ -1307,6 +1312,7 @@ function Invoke-PortfolioAutoGroup {
         [string]$PortfolioPrefix,
         [string]$LogFolderName,
         [int]$MinimumExistingNumber = 0,
+        [bool]$FlushRemainder = $false,
         [bool]$CreateZip = $true
     )
 
@@ -1341,7 +1347,7 @@ function Invoke-PortfolioAutoGroup {
         $_.Name -match '^\.?\d{8}_\d{6}_'
     } | Sort-Object Name)
 
-    if ($workFolders.Count -lt $BatchSize) {
+    if ($workFolders.Count -eq 0 -or ($workFolders.Count -lt $BatchSize -and -not $FlushRemainder)) {
         $emptyResult.Leftover = $workFolders.Count
         return $emptyResult
     }
@@ -1354,8 +1360,16 @@ function Invoke-PortfolioAutoGroup {
         }
     }
 
-    $fullBatchCount = [int][math]::Floor($workFolders.Count / $BatchSize)
-    $moveCount = $fullBatchCount * $BatchSize
+    $fullBatchCount = if ($FlushRemainder) {
+        [int][math]::Ceiling($workFolders.Count / $BatchSize)
+    } else {
+        [int][math]::Floor($workFolders.Count / $BatchSize)
+    }
+    $moveCount = if ($FlushRemainder) {
+        $workFolders.Count
+    } else {
+        $fullBatchCount * $BatchSize
+    }
     $leftoverCount = $workFolders.Count - $moveCount
     $selectedFolders = @($workFolders | Select-Object -First $moveCount)
     $plan = New-Object System.Collections.Generic.List[object]
@@ -1706,6 +1720,13 @@ $portfolioAutoZip = [bool]$config.portfolio_auto_zip
 $portfolioBatchSize = [Math]::Max(1, [int]$config.portfolio_batch_size)
 $portfolioPrefix = ([string]$config.portfolio_prefix).TrimStart('.')
 $portfolioLogFolder = [string]$config.portfolio_log_folder
+$packageNamingMode = [string]$config.package_naming_mode
+if ($packageNamingMode -notin @("title_conversation", "conversation_title", "title_only", "conversation_only")) {
+    $packageNamingMode = "title_conversation"
+}
+$completionOpenFolder = [bool]$config.completion_open_folder
+$completionCopyPath = [bool]$config.completion_copy_path
+$notificationDurationMs = [Math]::Max(500, [Math]::Min(10000, [int]$config.notification_duration_ms))
 $visualSimilarityEnabled = [bool]$config.visual_similarity_enabled
 $visualSimilarityMaxDistance = [Math]::Max(0, [Math]::Min(64, [int]$config.visual_similarity_max_distance))
 $visualSimilarityMaxAverage = [Math]::Max(0, [double]$config.visual_similarity_max_average)
@@ -1780,6 +1801,49 @@ try {
             Write-Output "Version=$workPackageScriptVersion"
             Write-Output "BatchId=$BatchId"
         }
+        return
+    }
+
+    if ($FlushPortfolio) {
+        if (-not (Test-Path -LiteralPath $libraryDir -PathType Container)) {
+            throw "Configured library does not exist: $libraryDir"
+        }
+        $flushHistoryState = Get-WorkHistoryDatabase `
+            -PrimaryPath $historyPath `
+            -BackupPath $historyBackupPath `
+            -RuntimeMirrorPath $historyRuntimeMirrorPath
+        $flushDatabase = $flushHistoryState.Database
+        $flushDatabase.portfolioLastIssued = Get-PortfolioHistoryMaxNumber `
+            -Database $flushDatabase `
+            -LibraryDir $libraryDir `
+            -PortfolioPrefix $portfolioPrefix `
+            -LogFolderName $portfolioLogFolder
+        $flushResult = Invoke-PortfolioAutoGroup `
+            -LibraryDir $libraryDir `
+            -BatchSize $portfolioBatchSize `
+            -PortfolioPrefix $portfolioPrefix `
+            -LogFolderName $portfolioLogFolder `
+            -MinimumExistingNumber ([int]$flushDatabase.portfolioLastIssued) `
+            -FlushRemainder $true `
+            -CreateZip:$portfolioAutoZip
+        if ($flushResult.HighestIssuedNumber -gt [int]$flushDatabase.portfolioLastIssued) {
+            $flushDatabase.portfolioLastIssued = [int]$flushResult.HighestIssuedNumber
+        }
+        Save-WorkHistoryDatabase `
+            -Database $flushDatabase `
+            -PrimaryPath $historyPath `
+            -BackupPath $historyBackupPath `
+            -RuntimeMirrorPath $historyRuntimeMirrorPath
+        if ($flushResult.Moved -gt 0) {
+            Show-Tip -Message "已立即整理 $($flushResult.Moved) 个作品包。"
+        } else {
+            Show-Tip -Message "当前没有待整理的作品包。"
+        }
+        Write-Output "PORTFOLIO_FLUSHED"
+        Write-Output "Version=$workPackageScriptVersion"
+        Write-Output "Moved=$($flushResult.Moved)"
+        Write-Output "ZipCreated=$($flushResult.ZipCreated)"
+        Write-Output "PortfolioLastIssued=$($flushDatabase.portfolioLastIssued)"
         return
     }
 
@@ -2030,10 +2094,31 @@ try {
         Get-GptConversationTitle
     }
     $gptConversationMetadata = Get-GptConversationMetadata
-    $folderTitle = $title
-    if (-not [string]::IsNullOrWhiteSpace($gptConversationTitle) -and $gptConversationTitle -ne $title) {
-        $folderTitle = Get-SafeNamePart -Text "$title（$gptConversationTitle）" -MaxLength 130
+    $folderTitle = switch ($packageNamingMode) {
+        "conversation_title" {
+            if ([string]::IsNullOrWhiteSpace($gptConversationTitle)) {
+                $title
+            } elseif ($gptConversationTitle -eq $title) {
+                $title
+            } else {
+                Get-SafeNamePart -Text "$gptConversationTitle（$title）" -MaxLength 130
+            }
+        }
+        "title_only" {
+            $title
+        }
+        "conversation_only" {
+            if ([string]::IsNullOrWhiteSpace($gptConversationTitle)) { $title } else { $gptConversationTitle }
+        }
+        default {
+            if ([string]::IsNullOrWhiteSpace($gptConversationTitle) -or $gptConversationTitle -eq $title) {
+                $title
+            } else {
+                Get-SafeNamePart -Text "$title（$gptConversationTitle）" -MaxLength 130
+            }
+        }
     }
+    $folderTitle = Get-SafeNamePart -Text $folderTitle -MaxLength 130
 
     $targetDir = Join-Path $libraryDir "$stamp`_$folderTitle"
     $packageId = $stamp
@@ -2176,6 +2261,18 @@ try {
     if ($null -eq $taskData) {
         Clear-ClipboardAfterSuccess
     }
+    if ($completionCopyPath) {
+        try {
+            Set-Clipboard -Value $finalTargetDir
+        } catch {
+        }
+    }
+    if ($completionOpenFolder) {
+        try {
+            Start-Process -FilePath "explorer.exe" -ArgumentList @("/select,`"$finalTargetDir`"") -WindowStyle Normal
+        } catch {
+        }
+    }
     $stageMessages = New-Object System.Collections.Generic.List[string]
     $stageMessages.Add($successMessage)
     if ($similarTextExists) {
@@ -2193,7 +2290,7 @@ try {
     }
 
     foreach ($stageMessage in $stageMessages) {
-        Show-Tip -Message $stageMessage -Milliseconds 850
+        Show-Tip -Message $stageMessage -Milliseconds $notificationDurationMs
     }
 
     if ($NoMessage) {

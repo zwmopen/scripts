@@ -15,15 +15,20 @@ Function QueryValue(url, key)
 End Function
 
 isConfigure = False
+isCenter = False
 protocolUrl = ""
 If WScript.Arguments.Count > 0 Then
     protocolUrl = WScript.Arguments(0)
     isConfigure = InStr(1, LCase(protocolUrl), "configure", vbTextCompare) > 0
+    isCenter = InStr(1, LCase(protocolUrl), "center", vbTextCompare) > 0
 End If
 
 If isConfigure Then
-    scriptPath = fso.GetParentFolderName(WScript.ScriptFullName) & "\configure_work_package.ps1"
-    command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File " & Chr(34) & scriptPath & Chr(34)
+    scriptPath = fso.GetParentFolderName(WScript.ScriptFullName) & "\work_package_center.ps1"
+    command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File " & Chr(34) & scriptPath & Chr(34) & " -InitialTab Settings"
+ElseIf isCenter Then
+    scriptPath = fso.GetParentFolderName(WScript.ScriptFullName) & "\work_package_center.ps1"
+    command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File " & Chr(34) & scriptPath & Chr(34) & " -InitialTab Tasks"
 ElseIf WScript.Arguments.Count > 0 And InStr(1, LCase(WScript.Arguments(0)), "diagnose", vbTextCompare) > 0 Then
     scriptPath = fso.GetParentFolderName(WScript.ScriptFullName) & "\make_work_package.ps1"
     command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File " & Chr(34) & scriptPath & Chr(34) & " -Diagnose"

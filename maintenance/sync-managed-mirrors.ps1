@@ -46,6 +46,11 @@ $mappings = @(
         Mirror = Join-Path $workPackageMirror 'configure_work_package.ps1'
     },
     @{
+        Name = 'Work package assistant center'
+        Source = Join-Path $workPackageSource 'work_package_center.ps1'
+        Mirror = Join-Path $workPackageMirror 'work_package_center.ps1'
+    },
+    @{
         Name = 'Work package launcher'
         Source = Join-Path $workPackageSource $workPackageLauncher
         Mirror = Join-Path $workPackageMirror $workPackageLauncher
