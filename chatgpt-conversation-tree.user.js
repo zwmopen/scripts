@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.12.4
+// @version      1.13.0
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -25,7 +25,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.12.3';
+  const SCRIPT_VERSION = '1.13.0';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -4997,7 +4997,8 @@
       workPackageButtonVisible ? '隐藏作品包按钮' : '显示作品包按钮',
       () => setWorkPackageButtonVisible(!workPackageButtonVisible)
     );
-    addMenu('设置本地作品包目录', () => openWorkPackageProtocol('cgpt-workpkg://configure'));
+    addMenu('设置本地作品助手（下载目录+成品库）', () => openWorkPackageProtocol('cgpt-workpkg://configure'));
+    addMenu('检查本地作品助手', () => openWorkPackageProtocol('cgpt-workpkg://diagnose'));
     addMenu('复制诊断日志', () => copyDiagnosticLogs());
   }
 
@@ -5869,8 +5870,8 @@
       return;
     }
     button.innerHTML = icons.package;
-    button.title = '打包作品：整理已下载图片和剪贴板文案';
-    button.setAttribute('aria-label', '打包作品');
+    button.title = '一键打包作品；本组尚未下载时会先自动下载';
+    button.setAttribute('aria-label', '下载并打包作品');
   }
 
   async function triggerWorkPackageButton(button, event = null) {
@@ -5879,6 +5880,20 @@
     event?.stopPropagation?.();
     event?.stopImmediatePropagation?.();
     setWorkPackageButtonState(button, 'running');
+    const slot = button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
+    const imageButton = slot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
+    const expectedImages = Number(imageButton?.dataset.cgptImageTotal || 0);
+    const downloadedImages = Number(imageButton?.dataset.cgptImageDownloaded || 0);
+    if (imageButton && expectedImages > 0 && downloadedImages < expectedImages) {
+      showImageDownloadToast(`先下载本组图片：${downloadedImages}/${expectedImages}`, true);
+      const downloadResult = await runImageDownloadShortcut(imageButton);
+      if (!downloadResult || downloadResult.downloaded < downloadResult.total) {
+        showImageDownloadToast('图片未下载完整，暂不打包', false);
+        setWorkPackageButtonState(button, 'idle');
+        return;
+      }
+      await sleep(450);
+    }
     showImageDownloadToast('打包中...', true);
     try {
       await stampWorkPackageTitleOnClipboard();
@@ -6111,7 +6126,13 @@
     return src;
   }
 
-  function directDownloadName(index, url) {
+  function newDownloadBatchId() {
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
+    const suffix = Math.random().toString(36).slice(2, 6).padEnd(4, '0');
+    return `${stamp}-${suffix}`;
+  }
+
+  function directDownloadName(index, total, url, batchId) {
     let ext = 'jpg';
     try {
       const pathname = new URL(url, location.href).pathname;
@@ -6120,8 +6141,7 @@
     } catch {
       // keep default
     }
-    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
-    return `chatgpt-image-group-${stamp}-${String(index + 1).padStart(2, '0')}.${ext}`;
+    return `chatgpt-workpkg-${batchId}-${String(index + 1).padStart(2, '0')}-of-${String(total).padStart(2, '0')}.${ext}`;
   }
 
   function gmDownload(url, name) {
@@ -6163,6 +6183,7 @@
 
   async function downloadUrlsConcurrently(urls, onProgress = null, concurrency = 4) {
     const total = urls.length;
+    const batchId = newDownloadBatchId();
     const limit = Math.max(1, Math.min(8, Number(concurrency || 4), total || 1));
     let nextIndex = 0;
     let ok = 0;
@@ -6170,7 +6191,7 @@
       while (nextIndex < total) {
         const index = nextIndex;
         nextIndex += 1;
-        const success = await gmDownload(urls[index], directDownloadName(index, urls[index]));
+        const success = await gmDownload(urls[index], directDownloadName(index, total, urls[index], batchId));
         if (success) ok += 1;
         if (onProgress) {
           try { onProgress(ok, total); } catch {}
@@ -6296,7 +6317,7 @@
   }
 
   async function runImageDownloadShortcut(button) {
-    if (button.disabled) return;
+    if (button.disabled) return null;
     const container = button.__cgptImageDownloadContainer
       || button.closest('[data-cgpt-image-download-container]')
       || document;
@@ -6309,7 +6330,7 @@
     }
     if (!images.length) {
       window.alert('\u8fd9\u4e2a\u56de\u590d\u91cc\u6682\u65f6\u6ca1\u6709\u627e\u5230\u53ef\u4e0b\u8f7d\u7684\u56fe\u7247\u3002');
-      return;
+      return null;
     }
 
     const label = button.querySelector('[data-cgpt-image-download-label]');
@@ -6345,6 +6366,7 @@
         setImageButtonProgress(button, downloaded, totalImages, false, downloaded ? 'done' : 'idle');
       }, 600);
     }
+    return { downloaded, total: totalImages };
   }
 
   function handleAction(actionElement) {

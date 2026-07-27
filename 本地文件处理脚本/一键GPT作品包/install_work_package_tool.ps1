@@ -2,6 +2,7 @@ param(
     [string]$TargetFolder,
     [string]$LibraryName,
     [string]$LibraryPath,
+    [string]$ImageInboxPath,
     [switch]$RegisterProtocol,
     [switch]$NoBackup
 )
@@ -9,6 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 $libraryNameSpecified = $PSBoundParameters.ContainsKey("LibraryName") -and -not [string]::IsNullOrWhiteSpace($LibraryName)
 $libraryPathSpecified = $PSBoundParameters.ContainsKey("LibraryPath")
+$imageInboxPathSpecified = $PSBoundParameters.ContainsKey("ImageInboxPath")
 
 function New-TextFromCodePoints {
     param([int[]]$CodePoints)
@@ -67,6 +69,7 @@ Copy-Item -LiteralPath $configureSource -Destination $configureDest -Force
 $config = [ordered]@{
     library_name = $LibraryName
     library_path = ""
+    image_inbox_path = ""
     success_message = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305)
     no_text_message = New-TextFromCodePoints @(0x8BF7, 0x5148, 0x590D, 0x5236, 0x6587, 0x6848)
     no_image_message = New-TextFromCodePoints @(0x8BF7, 0x5148, 0x4E0B, 0x8F7D, 0x4F5C, 0x54C1, 0x56FE)
@@ -111,6 +114,13 @@ if ($libraryPathSpecified) {
     }
     $config.library_path = $expandedLibraryPath
 }
+if ($imageInboxPathSpecified) {
+    $expandedInboxPath = [Environment]::ExpandEnvironmentVariables(([string]$ImageInboxPath).Trim())
+    if (-not [string]::IsNullOrWhiteSpace($expandedInboxPath) -and -not [System.IO.Path]::IsPathRooted($expandedInboxPath)) {
+        throw "ImageInboxPath must be an absolute path: $expandedInboxPath"
+    }
+    $config.image_inbox_path = $expandedInboxPath
+}
 
 $json = $config | ConvertTo-Json -Depth 3
 [System.IO.File]::WriteAllText($configDest, $json, (New-Object System.Text.UTF8Encoding($true)))
@@ -148,4 +158,5 @@ Write-Output "Installed=$TargetFolder"
 Write-Output "Entry=$entryDest"
 Write-Output "LibraryName=$($config.library_name)"
 Write-Output "LibraryPath=$($config.library_path)"
+Write-Output "ImageInboxPath=$($config.image_inbox_path)"
 Write-Output "ProtocolRegistered=$([bool]$RegisterProtocol)"

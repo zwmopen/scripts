@@ -3,13 +3,14 @@
     [string]$ConversationMetadataJsonOverride,
     [switch]$NoMessage,
     [switch]$Preview,
+    [switch]$Diagnose,
     [switch]$RebuildHistory,
     [switch]$CleanExistingDuplicates,
     [int]$TestFailAfterImageMove = 0
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.5.0"
+$workPackageScriptVersion = "1.6.0"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -294,6 +295,7 @@ function Get-WorkPackageConfig {
     $defaults = [pscustomobject]@{
         library_name = New-TextFromCodePoints @(0x56E2, 0x5EFA, 0x6210, 0x54C1, 0x5E93)
         library_path = ""
+        image_inbox_path = ""
         portfolio_auto_group = $true
         portfolio_auto_zip = $true
         portfolio_batch_size = 14
@@ -535,6 +537,64 @@ function Get-TopLevelImages {
         ($imageExtensions -contains $_.Extension.ToLowerInvariant()) -and
         (-not ($ExcludeNames -contains $_.Name))
     } | Sort-Object LastWriteTime, Name)
+}
+
+function Get-WorkPackageInboxImages {
+    param(
+        [string]$Directory,
+        [string[]]$ExcludeNames = @()
+    )
+
+    $allImages = @(Get-TopLevelImages -Directory $Directory -ExcludeNames $ExcludeNames)
+    if ($allImages.Count -eq 0) {
+        return [pscustomobject]@{
+            Images = @()
+            BatchId = ""
+            ExpectedCount = 0
+            IsComplete = $true
+        }
+    }
+
+    $batchPattern = '^chatgpt-workpkg-(?<batch>\d{8}-\d{6}-[a-z0-9]{4})-(?<index>\d+)-of-(?<total>\d+)\.[^.]+$'
+    $batchRows = @($allImages | ForEach-Object {
+        $match = [regex]::Match($_.Name, $batchPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($match.Success) {
+            [pscustomobject]@{
+                File = $_
+                BatchId = $match.Groups['batch'].Value
+                Index = [int]$match.Groups['index'].Value
+                Total = [int]$match.Groups['total'].Value
+            }
+        }
+    })
+
+    if ($batchRows.Count -eq 0) {
+        return [pscustomobject]@{
+            Images = $allImages
+            BatchId = ""
+            ExpectedCount = $allImages.Count
+            IsComplete = $true
+        }
+    }
+
+    $latestBatch = @($batchRows | Group-Object BatchId | ForEach-Object {
+        [pscustomobject]@{
+            BatchId = $_.Name
+            Rows = @($_.Group)
+            LastWriteTime = (@($_.Group.File | Sort-Object LastWriteTime -Descending)[0]).LastWriteTime
+        }
+    } | Sort-Object LastWriteTime -Descending)[0]
+
+    $rows = @($latestBatch.Rows | Sort-Object Index)
+    $expectedCount = [Math]::Max(1, [int](@($rows.Total | Sort-Object -Descending)[0]))
+    $uniqueIndexes = @($rows.Index | Sort-Object -Unique)
+
+    return [pscustomobject]@{
+        Images = @($rows.File)
+        BatchId = [string]$latestBatch.BatchId
+        ExpectedCount = $expectedCount
+        IsComplete = ($rows.Count -eq $expectedCount -and $uniqueIndexes.Count -eq $expectedCount)
+    }
 }
 
 function Get-FileSha256Hex {
@@ -1415,6 +1475,15 @@ $textPrefix = "$([char]0x6587)$([char]0x6848)"
 $configPath = Join-Path $scriptDir "workpkg_config.json"
 $config = Get-WorkPackageConfig -Path $configPath
 $libraryName = [string]$config.library_name
+$configuredInboxPath = [Environment]::ExpandEnvironmentVariables(([string]$config.image_inbox_path).Trim())
+if ([string]::IsNullOrWhiteSpace($configuredInboxPath)) {
+    $imageInboxDir = $scriptDir
+} else {
+    if (-not [System.IO.Path]::IsPathRooted($configuredInboxPath)) {
+        throw "workpkg_config.json image_inbox_path must be an absolute path: $configuredInboxPath"
+    }
+    $imageInboxDir = [System.IO.Path]::GetFullPath($configuredInboxPath)
+}
 $configuredLibraryPath = [Environment]::ExpandEnvironmentVariables(([string]$config.library_path).Trim())
 if ([string]::IsNullOrWhiteSpace($configuredLibraryPath)) {
     $libraryDir = Join-Path $scriptDir $libraryName
@@ -1479,6 +1548,40 @@ $movedImages = New-Object System.Collections.Generic.List[object]
 $packageCommitted = $false
 
 try {
+    if ($Diagnose) {
+        $inboxExists = Test-Path -LiteralPath $imageInboxDir -PathType Container
+        $libraryExists = Test-Path -LiteralPath $libraryDir -PathType Container
+        $inboxImageCount = if ($inboxExists) {
+            @(Get-TopLevelImages -Directory $imageInboxDir -ExcludeNames $imageExcludeNames).Count
+        } else {
+            0
+        }
+        $diagnosticMessage = @(
+            "GPT 作品包环境检查"
+            ""
+            "图片下载目录：$imageInboxDir"
+            "目录状态：$(if ($inboxExists) { '正常' } else { '不存在' })"
+            "当前图片：$inboxImageCount 张"
+            ""
+            "成品库：$libraryDir"
+            "目录状态：$(if ($libraryExists) { '正常' } else { '尚未创建，将在首次打包时创建' })"
+            ""
+            "本地打包器：$workPackageScriptVersion"
+        ) -join "`r`n"
+        if (-not $NoMessage) {
+            Add-Type -AssemblyName PresentationFramework
+            [System.Windows.MessageBox]::Show($diagnosticMessage, "GPT 作品包自检", "OK", "Information") | Out-Null
+        }
+        Write-Output "DIAGNOSTIC"
+        Write-Output "Version=$workPackageScriptVersion"
+        Write-Output "ImageInbox=$imageInboxDir"
+        Write-Output "InboxExists=$inboxExists"
+        Write-Output "InboxImages=$inboxImageCount"
+        Write-Output "Library=$libraryDir"
+        Write-Output "LibraryExists=$libraryExists"
+        return
+    }
+
     if (Test-Path -LiteralPath $lockPath) {
         try {
             $lockItem = Get-Item -LiteralPath $lockPath -Force
@@ -1555,9 +1658,22 @@ try {
         return
     }
 
-    $images = Get-TopLevelImages -Directory $scriptDir -ExcludeNames $imageExcludeNames
+    $inboxSelection = Get-WorkPackageInboxImages -Directory $imageInboxDir -ExcludeNames $imageExcludeNames
+    $images = @($inboxSelection.Images)
     if ($images.Count -eq 0) {
         Show-Tip -Message $noImageMessage
+        return
+    }
+    if (-not $inboxSelection.IsComplete) {
+        $incompleteMessage = "本组图片尚未下载完整：$($images.Count)/$($inboxSelection.ExpectedCount)，请稍后再打包。"
+        Show-Tip -Message $incompleteMessage
+        if ($NoMessage) {
+            Write-Output "INCOMPLETE_BATCH"
+            Write-Output "Version=$workPackageScriptVersion"
+            Write-Output "BatchId=$($inboxSelection.BatchId)"
+            Write-Output "DownloadedImages=$($images.Count)"
+            Write-Output "ExpectedImages=$($inboxSelection.ExpectedCount)"
+        }
         return
     }
 
