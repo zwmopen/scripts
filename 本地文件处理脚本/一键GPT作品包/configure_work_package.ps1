@@ -1,6 +1,9 @@
 ﻿param(
     [string]$LibraryPath,
     [string]$ImageInboxPath,
+    [Nullable[int]]$PortfolioBatchSize,
+    [Nullable[bool]]$PortfolioAutoGroup,
+    [Nullable[bool]]$PortfolioAutoZip,
     [switch]$NoMessage
 )
 
@@ -31,7 +34,10 @@ function Resolve-ConfiguredDirectory {
 function Show-WorkPackageSettings {
     param(
         [string]$InitialInbox,
-        [string]$InitialLibrary
+        [string]$InitialLibrary,
+        [int]$InitialBatchSize,
+        [bool]$InitialAutoGroup,
+        [bool]$InitialAutoZip
     )
 
     Add-Type -AssemblyName System.Windows.Forms
@@ -43,7 +49,7 @@ function Show-WorkPackageSettings {
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
     $form.MinimizeBox = $false
-    $form.ClientSize = New-Object System.Drawing.Size(760, 300)
+    $form.ClientSize = New-Object System.Drawing.Size(760, 420)
     $form.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10)
 
     $intro = New-Object System.Windows.Forms.Label
@@ -103,15 +109,69 @@ function Show-WorkPackageSettings {
         -Top 138 `
         -DialogDescription "选择作品包成品库目录"
 
+    $groupLabel = New-Object System.Windows.Forms.Label
+    $groupLabel.AutoSize = $true
+    $groupLabel.Location = New-Object System.Drawing.Point(22, 224)
+    $groupLabel.Text = "作品集整理规则"
+    $form.Controls.Add($groupLabel)
+
+    $autoGroupBox = New-Object System.Windows.Forms.CheckBox
+    $autoGroupBox.AutoSize = $true
+    $autoGroupBox.Location = New-Object System.Drawing.Point(22, 258)
+    $autoGroupBox.Text = "自动整理作品集"
+    $autoGroupBox.Checked = $InitialAutoGroup
+    $form.Controls.Add($autoGroupBox)
+
+    $batchLabel = New-Object System.Windows.Forms.Label
+    $batchLabel.AutoSize = $true
+    $batchLabel.Location = New-Object System.Drawing.Point(190, 260)
+    $batchLabel.Text = "每个作品集包含"
+    $form.Controls.Add($batchLabel)
+
+    $batchSizeBox = New-Object System.Windows.Forms.NumericUpDown
+    $batchSizeBox.Location = New-Object System.Drawing.Point(310, 256)
+    $batchSizeBox.Size = New-Object System.Drawing.Size(70, 30)
+    $batchSizeBox.Minimum = 1
+    $batchSizeBox.Maximum = 500
+    $batchSizeBox.Value = [Math]::Max(1, [Math]::Min(500, $InitialBatchSize))
+    $form.Controls.Add($batchSizeBox)
+
+    $batchUnit = New-Object System.Windows.Forms.Label
+    $batchUnit.AutoSize = $true
+    $batchUnit.Location = New-Object System.Drawing.Point(389, 260)
+    $batchUnit.Text = "个作品包"
+    $form.Controls.Add($batchUnit)
+
+    $autoZipBox = New-Object System.Windows.Forms.CheckBox
+    $autoZipBox.AutoSize = $true
+    $autoZipBox.Location = New-Object System.Drawing.Point(500, 258)
+    $autoZipBox.Text = "同时生成 ZIP"
+    $autoZipBox.Checked = $InitialAutoZip
+    $form.Controls.Add($autoZipBox)
+
+    $autoGroupBox.Add_CheckedChanged({
+        $batchSizeBox.Enabled = $autoGroupBox.Checked
+        $autoZipBox.Enabled = $autoGroupBox.Checked
+    })
+    $batchSizeBox.Enabled = $autoGroupBox.Checked
+    $autoZipBox.Enabled = $autoGroupBox.Checked
+
+    $ruleHint = New-Object System.Windows.Forms.Label
+    $ruleHint.AutoSize = $true
+    $ruleHint.Location = New-Object System.Drawing.Point(22, 296)
+    $ruleHint.ForeColor = [System.Drawing.Color]::FromArgb(72, 105, 92)
+    $ruleHint.Text = "例如设为 14：每累计 14 个作品包，自动创建下一个连续编号的作品集。"
+    $form.Controls.Add($ruleHint)
+
     $status = New-Object System.Windows.Forms.Label
     $status.AutoSize = $true
-    $status.Location = New-Object System.Drawing.Point(22, 224)
+    $status.Location = New-Object System.Drawing.Point(22, 334)
     $status.ForeColor = [System.Drawing.Color]::FromArgb(72, 105, 92)
-    $status.Text = "提示：两个目录可以不同，升级脚本不会覆盖这里的设置。"
+    $status.Text = "设置保存在本地运行数据中，升级脚本不会覆盖。"
     $form.Controls.Add($status)
 
     $saveButton = New-Object System.Windows.Forms.Button
-    $saveButton.Location = New-Object System.Drawing.Point(532, 250)
+    $saveButton.Location = New-Object System.Drawing.Point(532, 368)
     $saveButton.Size = New-Object System.Drawing.Size(95, 34)
     $saveButton.Text = "保存"
     $saveButton.Add_Click({
@@ -122,6 +182,9 @@ function Show-WorkPackageSettings {
         $form.Tag = [pscustomobject]@{
             ImageInboxPath = $inboxBox.Text
             LibraryPath = $libraryBox.Text
+            PortfolioBatchSize = [int]$batchSizeBox.Value
+            PortfolioAutoGroup = [bool]$autoGroupBox.Checked
+            PortfolioAutoZip = [bool]$autoZipBox.Checked
         }
         $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
         $form.Close()
@@ -129,7 +192,7 @@ function Show-WorkPackageSettings {
     $form.Controls.Add($saveButton)
 
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(642, 250)
+    $cancelButton.Location = New-Object System.Drawing.Point(642, 368)
     $cancelButton.Size = New-Object System.Drawing.Size(95, 34)
     $cancelButton.Text = "取消"
     $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
@@ -152,24 +215,64 @@ if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
 $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $currentLibrary = [Environment]::ExpandEnvironmentVariables(([string]$config.library_path).Trim())
 $currentInbox = [Environment]::ExpandEnvironmentVariables(([string]$config.image_inbox_path).Trim())
+$currentBatchSize = if ($null -ne $config.PSObject.Properties['portfolio_batch_size']) {
+    [Math]::Max(1, [int]$config.portfolio_batch_size)
+} else {
+    14
+}
+$currentAutoGroup = if ($null -ne $config.PSObject.Properties['portfolio_auto_group']) {
+    [bool]$config.portfolio_auto_group
+} else {
+    $true
+}
+$currentAutoZip = if ($null -ne $config.PSObject.Properties['portfolio_auto_zip']) {
+    [bool]$config.portfolio_auto_zip
+} else {
+    $true
+}
 if ([string]::IsNullOrWhiteSpace($currentInbox)) {
     $currentInbox = Split-Path -Parent $PSScriptRoot
 }
 
-if ([string]::IsNullOrWhiteSpace($LibraryPath) -and [string]::IsNullOrWhiteSpace($ImageInboxPath)) {
-    $settings = Show-WorkPackageSettings -InitialInbox $currentInbox -InitialLibrary $currentLibrary
+$hasDirectSettings = (
+    $PSBoundParameters.ContainsKey('LibraryPath') -or
+    $PSBoundParameters.ContainsKey('ImageInboxPath') -or
+    $PSBoundParameters.ContainsKey('PortfolioBatchSize') -or
+    $PSBoundParameters.ContainsKey('PortfolioAutoGroup') -or
+    $PSBoundParameters.ContainsKey('PortfolioAutoZip')
+)
+
+if (-not $hasDirectSettings) {
+    $settings = Show-WorkPackageSettings `
+        -InitialInbox $currentInbox `
+        -InitialLibrary $currentLibrary `
+        -InitialBatchSize $currentBatchSize `
+        -InitialAutoGroup $currentAutoGroup `
+        -InitialAutoZip $currentAutoZip
     if ($null -eq $settings) {
         Write-Output "CANCELLED"
         exit 0
     }
     $LibraryPath = [string]$settings.LibraryPath
     $ImageInboxPath = [string]$settings.ImageInboxPath
+    $PortfolioBatchSize = [int]$settings.PortfolioBatchSize
+    $PortfolioAutoGroup = [bool]$settings.PortfolioAutoGroup
+    $PortfolioAutoZip = [bool]$settings.PortfolioAutoZip
 } else {
     if ([string]::IsNullOrWhiteSpace($LibraryPath)) {
         $LibraryPath = $currentLibrary
     }
     if ([string]::IsNullOrWhiteSpace($ImageInboxPath)) {
         $ImageInboxPath = $currentInbox
+    }
+    if (-not $PSBoundParameters.ContainsKey('PortfolioBatchSize')) {
+        $PortfolioBatchSize = $currentBatchSize
+    }
+    if (-not $PSBoundParameters.ContainsKey('PortfolioAutoGroup')) {
+        $PortfolioAutoGroup = $currentAutoGroup
+    }
+    if (-not $PSBoundParameters.ContainsKey('PortfolioAutoZip')) {
+        $PortfolioAutoZip = $currentAutoZip
     }
 }
 
@@ -186,14 +289,34 @@ if ($null -eq $config.PSObject.Properties['image_inbox_path']) {
 } else {
     $config.image_inbox_path = $resolvedInbox
 }
+$resolvedBatchSize = [Math]::Max(1, [Math]::Min(500, [int]$PortfolioBatchSize))
+foreach ($setting in @(
+    [pscustomobject]@{ Name = 'portfolio_batch_size'; Value = $resolvedBatchSize },
+    [pscustomobject]@{ Name = 'portfolio_auto_group'; Value = [bool]$PortfolioAutoGroup },
+    [pscustomobject]@{ Name = 'portfolio_auto_zip'; Value = [bool]$PortfolioAutoZip }
+)) {
+    if ($null -eq $config.PSObject.Properties[$setting.Name]) {
+        $config | Add-Member -NotePropertyName $setting.Name -NotePropertyValue $setting.Value
+    } else {
+        $config.($setting.Name) = $setting.Value
+    }
+}
 
 $json = $config | ConvertTo-Json -Depth 5
 [System.IO.File]::WriteAllText($configPath, $json, (New-Object System.Text.UTF8Encoding($true)))
 
 Write-Output "ImageInboxPath=$resolvedInbox"
 Write-Output "LibraryPath=$resolvedLibrary"
+Write-Output "PortfolioBatchSize=$resolvedBatchSize"
+Write-Output "PortfolioAutoGroup=$([bool]$PortfolioAutoGroup)"
+Write-Output "PortfolioAutoZip=$([bool]$PortfolioAutoZip)"
 if (-not $NoMessage) {
     Add-Type -AssemblyName PresentationFramework
-    $message = "设置已保存。`n`n图片下载目录：$resolvedInbox`n成品库：$resolvedLibrary"
+    $groupSummary = if ([bool]$PortfolioAutoGroup) {
+        "每 $resolvedBatchSize 个作品包自动整理一个作品集；ZIP：$(if ([bool]$PortfolioAutoZip) { '开启' } else { '关闭' })"
+    } else {
+        "自动整理作品集：关闭"
+    }
+    $message = "设置已保存。`n`n图片下载目录：$resolvedInbox`n成品库：$resolvedLibrary`n$groupSummary"
     [System.Windows.MessageBox]::Show($message, "GPT 作品助手", "OK", "Information") | Out-Null
 }

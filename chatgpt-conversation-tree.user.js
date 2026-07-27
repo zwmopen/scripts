@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.13.0
+// @version      1.14.1
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -25,7 +25,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.13.0';
+  const SCRIPT_VERSION = '1.14.1';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -4997,9 +4997,60 @@
       workPackageButtonVisible ? '隐藏作品包按钮' : '显示作品包按钮',
       () => setWorkPackageButtonVisible(!workPackageButtonVisible)
     );
-    addMenu('设置本地作品助手（下载目录+成品库）', () => openWorkPackageProtocol('cgpt-workpkg://configure'));
+    addMenu('设置本地作品助手（目录+作品集规则）', () => openWorkPackageProtocol('cgpt-workpkg://configure'));
     addMenu('检查本地作品助手', () => openWorkPackageProtocol('cgpt-workpkg://diagnose'));
     addMenu('复制诊断日志', () => copyDiagnosticLogs());
+  }
+
+  async function freezeWorkPackageTask(batchId, expectedImages) {
+    if (!batchId || !navigator.clipboard?.readText) return null;
+    let copyText = '';
+    try {
+      copyText = await navigator.clipboard.readText();
+    } catch (error) {
+      addDiagnosticLog('workpkg:task-clipboard-read-failed', {
+        batchId,
+        message: error?.message || String(error),
+      });
+      return null;
+    }
+    if (!copyText || !copyText.trim()) return null;
+
+    const task = {
+      schemaVersion: 1,
+      taskId: batchId,
+      batchId,
+      status: 'queued',
+      createdAt: new Date().toISOString(),
+      expectedImages: Math.max(0, Number(expectedImages || 0)),
+      copyText,
+      copyTitle: compactTitle(copyText.split(/\r?\n/).find((line) => line.trim()) || '').slice(0, 160),
+      conversationTitle: currentWorkPackageConversationTitle(),
+      accountName: currentWorkPackageAccountName(),
+      conversationUrl: currentWorkPackageConversationUrl(),
+      pageUrl: location.href,
+      scriptVersion: SCRIPT_VERSION,
+    };
+
+    const blob = new Blob([JSON.stringify(task, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `chatgpt-workpkg-task-${batchId}.json`;
+    anchor.rel = 'noopener';
+    anchor.style.display = 'none';
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 3000);
+    await sleep(180);
+    addDiagnosticLog('workpkg:task-frozen', {
+      batchId,
+      expectedImages: task.expectedImages,
+      copyTitle: task.copyTitle,
+      conversationUrl: task.conversationUrl,
+    });
+    return task;
   }
 
   function sanitizeKnownRecord(record) {
@@ -5884,9 +5935,21 @@
     const imageButton = slot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
     const expectedImages = Number(imageButton?.dataset.cgptImageTotal || 0);
     const downloadedImages = Number(imageButton?.dataset.cgptImageDownloaded || 0);
-    if (imageButton && expectedImages > 0 && downloadedImages < expectedImages) {
+    const batchId = imageButton?.dataset.cgptWorkPackageBatchId || newDownloadBatchId();
+    const frozenTask = await freezeWorkPackageTask(batchId, expectedImages);
+    if (!frozenTask) {
+      showImageDownloadToast('请先复制当前窗口的文案', false);
+      setWorkPackageButtonState(button, 'idle');
+      return;
+    }
+    showImageDownloadToast(`任务已冻结：${frozenTask.copyTitle || '已复制文案'} · ${expectedImages} 张`, true);
+
+    if (imageButton && expectedImages > 0 && (
+      downloadedImages < expectedImages
+      || imageButton.dataset.cgptWorkPackageBatchId !== batchId
+    )) {
       showImageDownloadToast(`先下载本组图片：${downloadedImages}/${expectedImages}`, true);
-      const downloadResult = await runImageDownloadShortcut(imageButton);
+      const downloadResult = await runImageDownloadShortcut(imageButton, batchId);
       if (!downloadResult || downloadResult.downloaded < downloadResult.total) {
         showImageDownloadToast('图片未下载完整，暂不打包', false);
         setWorkPackageButtonState(button, 'idle');
@@ -5896,8 +5959,8 @@
     }
     showImageDownloadToast('打包中...', true);
     try {
-      await stampWorkPackageTitleOnClipboard();
-      openWorkPackageProtocol(WORK_PACKAGE_PROTOCOL_URL);
+      const protocolUrl = `${WORK_PACKAGE_PROTOCOL_URL}?batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}`;
+      openWorkPackageProtocol(protocolUrl);
     } catch (error) {
       console.warn('[ChatGPT 作品包按钮] 调用本地协议失败：', error);
       window.alert('调用本地作品包脚本失败。请检查 cgpt-workpkg://run 协议是否已注册。');
@@ -6181,9 +6244,9 @@
     });
   }
 
-  async function downloadUrlsConcurrently(urls, onProgress = null, concurrency = 4) {
+  async function downloadUrlsConcurrently(urls, onProgress = null, concurrency = 4, requestedBatchId = '') {
     const total = urls.length;
-    const batchId = newDownloadBatchId();
+    const batchId = requestedBatchId || newDownloadBatchId();
     const limit = Math.max(1, Math.min(8, Number(concurrency || 4), total || 1));
     let nextIndex = 0;
     let ok = 0;
@@ -6199,7 +6262,7 @@
       }
     };
     await Promise.all(Array.from({ length: limit }, worker));
-    return ok;
+    return { ok, total, batchId };
   }
 
   async function directDownloadImagesFromContainer(container, seedImages = []) {
@@ -6299,7 +6362,7 @@
     }, delay);
   }
 
-  async function directDownloadImages(images, onProgress = null) {
+  async function directDownloadImages(images, onProgress = null, requestedBatchId = '') {
     const urls = [];
     const seen = new Set();
     images.forEach((img) => {
@@ -6313,10 +6376,10 @@
     if (onProgress) {
       try { onProgress(0, usableUrls.length); } catch {}
     }
-    return downloadUrlsConcurrently(usableUrls, onProgress, 4);
+    return downloadUrlsConcurrently(usableUrls, onProgress, 4, requestedBatchId);
   }
 
-  async function runImageDownloadShortcut(button) {
+  async function runImageDownloadShortcut(button, requestedBatchId = '') {
     if (button.disabled) return null;
     const container = button.__cgptImageDownloadContainer
       || button.closest('[data-cgpt-image-download-container]')
@@ -6346,10 +6409,14 @@
         imageCount: images.length,
         containerText: compactTitle(container.innerText || '').slice(0, 120),
       });
-      downloaded = await directDownloadImages(images, (current, total) => {
+      const downloadResult = await directDownloadImages(images, (current, total) => {
         totalImages = total || totalImages;
         setImageButtonProgress(button, current, totalImages, true);
-      });
+      }, requestedBatchId);
+      downloaded = Number(downloadResult?.ok || 0);
+      if (downloadResult?.batchId) {
+        button.dataset.cgptWorkPackageBatchId = downloadResult.batchId;
+      }
       if (!downloaded) {
         window.alert('\u4e0b\u8f7d\u5931\u8d25\u4e86\uff0c\u53ef\u80fd\u662f\u7f51\u7edc\u95ee\u9898\u6216\u8005\u56fe\u7247\u5730\u5740\u53d8\u4e86\u3002\u6253\u5f00\u63a7\u5236\u53f0\u53ef\u4ee5\u770b\u5230\u8be6\u7ec6\u65e5\u5fd7\u3002');
       } else if (totalImages && downloaded >= totalImages) {
@@ -6366,7 +6433,11 @@
         setImageButtonProgress(button, downloaded, totalImages, false, downloaded ? 'done' : 'idle');
       }, 600);
     }
-    return { downloaded, total: totalImages };
+    return {
+      downloaded,
+      total: totalImages,
+      batchId: button.dataset.cgptWorkPackageBatchId || requestedBatchId || '',
+    };
   }
 
   function handleAction(actionElement) {
