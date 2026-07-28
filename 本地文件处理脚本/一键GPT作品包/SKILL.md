@@ -92,7 +92,7 @@ Preserve these rules when modifying the template:
 - Never treat legacy `分隔图.png` as a user-downloaded image when moving or cleaning duplicates.
 - On first migration or explicit `-RebuildHistory`, scan archived packages recursively to build the durable history database. Normal duplicate checks must read the database instead of rescanning every archived text and image.
 - If `portfolio_auto_group` is enabled, after a new package is created, group top-level loose package folders into visible `作品集_001`, `作品集_002`, etc. using `portfolio_batch_size` folders per portfolio. Accept both current `yyyyMMdd_HHmmss_` and legacy `.yyyyMMdd_HHmmss_` note folders.
-- If `portfolio_auto_zip` is enabled, create a same-level ZIP archive for each newly created portfolio folder, for example `作品集_005.zip`. The archive should contain the 14 package folders directly.
+- Default `portfolio_auto_zip` to `false`. If the user enables it, create a same-level ZIP archive for each newly created portfolio folder, for example `作品集_005.zip`. The archive should contain the 14 package folders directly.
 - Skip existing portfolio folders, `_portfolio_move_logs`, files, archives, and child folders. If the loose package count is below the batch size, leave them in place.
 - Write portfolio preview/result CSV logs under `_portfolio_move_logs`; do not use blocking popups for the integrated one-click flow.
 - On success, show short stage toasts in sequence so the user can see progress nodes: `已创建作品包`; if grouping happened, `已整理作品集`; if ZIP succeeded, `已生成ZIP压缩包`; if ZIP failed, `作品集压缩失败`.
@@ -120,7 +120,7 @@ The installed tool reads `workpkg_config.json`. For another user, prefer changin
   "portfolio_zip_done_message": "已生成ZIP压缩包",
   "portfolio_zip_failed_message": "作品集压缩失败",
   "portfolio_auto_group": true,
-  "portfolio_auto_zip": true,
+  "portfolio_auto_zip": false,
   "portfolio_batch_size": 14,
   "portfolio_prefix": "作品集",
   "portfolio_log_folder": "_portfolio_move_logs"

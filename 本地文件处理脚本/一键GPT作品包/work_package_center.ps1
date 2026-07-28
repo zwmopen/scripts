@@ -21,7 +21,7 @@ $corePath = Join-Path $PSScriptRoot "make_work_package.ps1"
 $runtimeHistoryPath = Join-Path $PSScriptRoot ".workpkg_history_backup.json"
 $taskArchivePath = Join-Path $PSScriptRoot "任务记录"
 $backupRoot = Join-Path $PSScriptRoot "备份"
-$centerVersion = "1.8.2"
+$centerVersion = "1.8.3"
 
 function Read-JsonFile {
     param([string]$Path)
