@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.15.5
+// @version      1.15.6
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -25,7 +25,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.15.5';
+  const SCRIPT_VERSION = '1.15.6';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -5605,52 +5605,26 @@
     const rowRect = row.getBoundingClientRect();
     const maxActionGap = Math.max(96, Math.min(170, innerHeight * 0.18));
     const sameTurn = row.closest?.('[data-testid^="conversation-turn"], [data-message-author-role], article, [class*="group/conversation-turn"]');
+    if (!sameTurn) return null;
+    const authorNode = sameTurn.matches?.('[data-message-author-role]')
+      ? sameTurn
+      : sameTurn.querySelector?.('[data-message-author-role]');
+    const authorRole = authorNode?.getAttribute?.('data-message-author-role') || '';
+    if (authorRole && authorRole !== 'assistant') return null;
     const sameTurnImages = sameTurn
       ? broadImageElements(sameTurn, 24).filter((img) => {
-        const rect = img.getBoundingClientRect();
-        const gap = rowRect.top - rect.bottom;
-        return gap > -70 && gap < maxActionGap && overlapRatio(rect, rowRect) > 0.08;
-      })
+          const rect = img.getBoundingClientRect();
+          const gap = rowRect.top - rect.bottom;
+          return gap > -70 && gap < maxActionGap && overlapRatio(rect, rowRect) > 0.08;
+        })
       : [];
     if (sameTurnImages.length) {
       return { container: sameTurn, images: sameTurnImages };
     }
-
-    let ancestor = row.parentElement;
-    for (let depth = 0; ancestor && depth < 8; depth += 1, ancestor = ancestor.parentElement) {
-      if (ancestor === document.body || ancestor === document.documentElement || ancestor.matches?.('main')) break;
-      const rect = ancestor.getBoundingClientRect?.();
-      if (!rect || rect.height > Math.max(1400, innerHeight * 1.65)) continue;
-      const images = broadImageElements(ancestor, 24)
-        .filter((img) => {
-          const imgRect = img.getBoundingClientRect();
-          const gap = rowRect.top - imgRect.bottom;
-          return gap > -70 && gap < maxActionGap && overlapRatio(imgRect, rowRect) > 0.08;
-        });
-      if (images.length) return { container: ancestor, images };
-    }
-
-    const candidates = broadImageElements(document, 24)
-      .map((img) => ({ img, rect: img.getBoundingClientRect() }))
-      .filter(({ rect }) => {
-        const verticalGap = rowRect.top - rect.bottom;
-        return verticalGap > -70
-          && verticalGap < maxActionGap
-          && overlapRatio(rect, rowRect) > 0.08;
-      })
-      .sort((a, b) => {
-        const gapA = Math.abs(rowRect.top - a.rect.bottom);
-        const gapB = Math.abs(rowRect.top - b.rect.bottom);
-        return gapA - gapB;
-      });
-    if (!candidates.length) return null;
-
-    const nearestBottom = candidates[0].rect.bottom;
-    const images = candidates
-      .filter(({ rect }) => Math.abs(rect.bottom - nearestBottom) < Math.max(400, innerHeight * 0.45))
-      .map(({ img }) => img);
-    const container = imageTurnContainer(images[0]) || row.parentElement;
-    return { container, images };
+    // A native action row without images in its own conversation turn belongs
+    // to text/user content. Never borrow images from a preceding turn: doing
+    // so creates one download/package pair beside every later message.
+    return null;
   }
 
   function imageButtonLabel(count, downloaded = 0, busyText = '') {
@@ -6065,6 +6039,8 @@
   }
 
   function refreshImageDownloadButtons() {
+    const validSlots = new Set();
+    const claimedContainers = new Set();
     actionRowsOnPage().forEach((row) => {
       const existingSlot = row.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
       const group = nearbyImagesForActionRow(row);
@@ -6072,6 +6048,11 @@
         existingSlot?.remove();
         return;
       }
+      if (claimedContainers.has(group.container)) {
+        existingSlot?.remove();
+        return;
+      }
+      claimedContainers.add(group.container);
       const existingButton = existingSlot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
       const currentElements = imageGroupElements(group.container, group.images);
       const currentCount = imageGroupUniqueCount(group.container, group.images) || currentElements.length;
@@ -6080,6 +6061,11 @@
       if (!existingButton || previousElementCount !== currentElements.length || previousCount !== currentCount) {
         ensureImageDownloadButton(group.container, group.images, row);
       }
+      const activeSlot = row.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
+      if (activeSlot) validSlots.add(activeSlot);
+    });
+    document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((slot) => {
+      if (!validSlots.has(slot)) slot.remove();
     });
     refreshTextDownloadButtons();
   }
