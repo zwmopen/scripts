@@ -21,7 +21,7 @@ $corePath = Join-Path $PSScriptRoot "make_work_package.ps1"
 $runtimeHistoryPath = Join-Path $PSScriptRoot ".workpkg_history_backup.json"
 $taskArchivePath = Join-Path $PSScriptRoot "任务记录"
 $backupRoot = Join-Path $PSScriptRoot "备份"
-$centerVersion = "1.8.3"
+$centerVersion = "1.8.4"
 
 function Read-JsonFile {
     param([string]$Path)
@@ -117,6 +117,33 @@ function Get-HistoryPaths {
     }
 }
 
+function Get-PortfolioOutputDirectory {
+    param([object]$Config)
+    $configured = if ($null -ne $Config.PSObject.Properties["portfolio_output_path"]) {
+        [string]$Config.portfolio_output_path
+    } else {
+        ""
+    }
+    if ([string]::IsNullOrWhiteSpace($configured)) {
+        return [string]$Config.library_path
+    }
+    return $configured
+}
+
+function Get-PackageSearchRoots {
+    param([object]$Config)
+    $library = [System.IO.Path]::GetFullPath([string]$Config.library_path)
+    $portfolio = [System.IO.Path]::GetFullPath((Get-PortfolioOutputDirectory -Config $Config))
+    $roots = New-Object System.Collections.Generic.List[string]
+    $roots.Add($library) | Out-Null
+    $libraryPrefix = $library.TrimEnd('\') + '\'
+    if (-not $portfolio.Equals($library, [System.StringComparison]::OrdinalIgnoreCase) -and
+        -not $portfolio.StartsWith($libraryPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $roots.Add($portfolio) | Out-Null
+    }
+    return $roots.ToArray()
+}
+
 function Get-TaskRows {
     param([object]$Config)
     $rows = New-Object System.Collections.Generic.List[object]
@@ -155,8 +182,8 @@ function Get-TaskRows {
             }) | Out-Null
         }
     }
-    $library = [string]$Config.library_path
-    if (Test-Path -LiteralPath $library -PathType Container) {
+    foreach ($library in @(Get-PackageSearchRoots -Config $Config)) {
+      if (Test-Path -LiteralPath $library -PathType Container) {
         # 作品包曾短暂继承临时目录的 Hidden 属性；-Force 可确保旧作品仍能被任务中心读取。
         # 同一作品目录若同时存在新旧记录，优先读取统一记录，避免显示成两条任务。
         $recordFiles = @(Get-ChildItem -LiteralPath $library -File -Recurse -Force -Filter "GPT*记录.json" -ErrorAction SilentlyContinue |
@@ -184,6 +211,7 @@ function Get-TaskRows {
                 Source = "package"
             }) | Out-Null
         }
+      }
     }
     return @($rows | Sort-Object Time -Descending)
 }
@@ -250,6 +278,7 @@ if ($SelfTest) {
     Write-Output "Version=$centerVersion"
     Write-Output "ConfigRepaired=$configWasRepaired"
     Write-Output "TaskRows=$(@(Get-TaskRows -Config $config).Count)"
+    Write-Output "PortfolioOutput=$(Get-PortfolioOutputDirectory -Config $config)"
     Write-Output "HistoryEntries=$(if ($null -eq $history) { 0 } else { @($history.entries).Count })"
     exit 0
 }
@@ -257,8 +286,8 @@ if ($SelfTest) {
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "GPT 作品助手中心"
 $form.StartPosition = "CenterScreen"
-$form.MinimumSize = New-Object System.Drawing.Size(860, 650)
-$form.Size = New-Object System.Drawing.Size(940, 700)
+$form.MinimumSize = New-Object System.Drawing.Size(860, 700)
+$form.Size = New-Object System.Drawing.Size(940, 780)
 $form.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 10)
 $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::None
 
@@ -290,7 +319,7 @@ $toolTip.AutoPopDelay = 12000
 $toolTip.InitialDelay = 350
 $toolTip.ReshowDelay = 150
 
-$welcomeLabel = Add-Label -Parent $settingsTab -Text "首次使用只需确认两个目录，再点「保存全部设置」。其余选项保持推荐值即可。" -Left 24 -Top 18 -Width 720
+$welcomeLabel = Add-Label -Parent $settingsTab -Text "首次使用确认三个目录，再点「保存全部设置」。作品集目录不设置时默认跟随成品库。" -Left 24 -Top 18 -Width 760
 $welcomeLabel.ForeColor = [System.Drawing.Color]::FromArgb(46, 86, 112)
 $helpButton = New-Object System.Windows.Forms.Button
 $helpButton.Text = "怎么用？"
@@ -326,9 +355,23 @@ $libraryBrowse.Add_Click({ Browse-Directory -TextBox $libraryBox -Description "�
 $settingsTab.Controls.Add($libraryBrowse)
 $toolTip.SetToolTip($libraryBox, "这是最终成品位置，不建议和浏览器下载目录设置成同一个文件夹。")
 
+Add-Label -Parent $settingsTab -Text "作品集目录（凑满后，作品集文件夹和可选 ZIP 放在哪里）" -Left 24 -Top 198 -Width 520 | Out-Null
+$portfolioBox = New-Object System.Windows.Forms.TextBox
+$portfolioBox.Location = New-Object System.Drawing.Point(24, 226)
+$portfolioBox.Size = New-Object System.Drawing.Size(760, 30)
+$portfolioBox.Text = Get-PortfolioOutputDirectory -Config $config
+$settingsTab.Controls.Add($portfolioBox)
+$portfolioBrowse = New-Object System.Windows.Forms.Button
+$portfolioBrowse.Text = "浏览"
+$portfolioBrowse.Location = New-Object System.Drawing.Point(800, 224)
+$portfolioBrowse.Size = New-Object System.Drawing.Size(90, 32)
+$portfolioBrowse.Add_Click({ Browse-Directory -TextBox $portfolioBox -Description "选择整理后的作品集保存目录" })
+$settingsTab.Controls.Add($portfolioBrowse)
+$toolTip.SetToolTip($portfolioBox, "支持直接粘贴完整路径。不想单独分类时，填写与成品库相同的目录即可。")
+
 $groupBox = New-Object System.Windows.Forms.GroupBox
 $groupBox.Text = "作品集整理（把若干作品包自动收进一个合集）"
-$groupBox.Location = New-Object System.Drawing.Point(24, 206)
+$groupBox.Location = New-Object System.Drawing.Point(24, 276)
 $groupBox.Size = New-Object System.Drawing.Size(866, 145)
 $settingsTab.Controls.Add($groupBox)
 $autoGroup = New-Object System.Windows.Forms.CheckBox
@@ -366,7 +409,7 @@ $toolTip.SetToolTip($flushButton, "不用等到设定数量凑满，立即把当
 
 $nameBox = New-Object System.Windows.Forms.GroupBox
 $nameBox.Text = "文件夹命名与完成后动作"
-$nameBox.Location = New-Object System.Drawing.Point(24, 367)
+$nameBox.Location = New-Object System.Drawing.Point(24, 437)
 $nameBox.Size = New-Object System.Drawing.Size(866, 185)
 $settingsTab.Controls.Add($nameBox)
 Add-Label -Parent $nameBox -Text "文件夹名称使用" -Left 18 -Top 34 -Width 130 | Out-Null
@@ -422,10 +465,10 @@ Add-Label -Parent $nameBox -Text "秒" -Left 794 -Top 106 -Width 30 | Out-Null
 
 $saveButton = New-Object System.Windows.Forms.Button
 $saveButton.Text = "保存全部设置"
-$saveButton.Location = New-Object System.Drawing.Point(720, 575)
+$saveButton.Location = New-Object System.Drawing.Point(720, 645)
 $saveButton.Size = New-Object System.Drawing.Size(170, 40)
 $settingsTab.Controls.Add($saveButton)
-$settingsHint = Add-Label -Parent $settingsTab -Text "推荐：连续生产时关闭「打开位置」和「复制路径」；精确图片查重会始终保护你不重复打包。" -Left 24 -Top 584 -Width 670
+$settingsHint = Add-Label -Parent $settingsTab -Text "推荐：连续生产时关闭「打开位置」和「复制路径」；精确图片查重会始终保护你不重复打包。" -Left 24 -Top 654 -Width 670
 $settingsHint.ForeColor = [System.Drawing.Color]::FromArgb(72, 105, 92)
 
 $taskList = New-Object System.Windows.Forms.ListView
@@ -504,6 +547,7 @@ function Refresh-DataSummary {
     $pending = @(Get-TaskRows -Config $config | Where-Object Source -eq "inbox").Count
     $dataSummary.Text = @(
         "成品库：$([string]$config.library_path)"
+        "作品集目录：$(Get-PortfolioOutputDirectory -Config $config)"
         "查重历史：$entryCount 条，约 $historySize KB"
         "作品集最后编号：$lastNumber；下一个编号：$($lastNumber + 1)"
         "当前待处理任务：$pending"
@@ -547,11 +591,12 @@ Update-NamingPreview
 
 $helpButton.Add_Click({
     Show-Info (@(
-        "第一次使用，只做 3 步："
+        "第一次使用，只做 4 步："
         ""
         "1. 图片下载目录：选择 Edge/Chrome 的下载位置。"
-        "2. 成品库目录：选择作品最终长期保存的位置。"
-        "3. 点击「保存全部设置」。"
+        "2. 成品库目录：选择散装作品包暂存和历史数据的位置。"
+        "3. 作品集目录：选择凑满后合集的保存位置；可以与成品库相同。"
+        "4. 点击「保存全部设置」。"
         ""
         "日常使用：在 ChatGPT 复制文案，再点图片组旁边的下载打包按钮。"
         ""
@@ -565,12 +610,14 @@ $saveButton.Add_Click({
     try {
         $resolvedInbox = Resolve-Directory -Path $inboxBox.Text -Label "图片下载目录"
         $resolvedLibrary = Resolve-Directory -Path $libraryBox.Text -Label "成品库目录"
+        $resolvedPortfolio = Resolve-Directory -Path $portfolioBox.Text -Label "作品集目录"
         $resolvedPrefix = ([string]$prefixBox.Text).Trim().TrimStart('.')
         if ([string]::IsNullOrWhiteSpace($resolvedPrefix)) {
             throw "作品集名称前缀不能为空。"
         }
         Set-ObjectProperty -Object $config -Name "image_inbox_path" -Value $resolvedInbox
         Set-ObjectProperty -Object $config -Name "library_path" -Value $resolvedLibrary
+        Set-ObjectProperty -Object $config -Name "portfolio_output_path" -Value $resolvedPortfolio
         Set-ObjectProperty -Object $config -Name "portfolio_auto_group" -Value ([bool]$autoGroup.Checked)
         Set-ObjectProperty -Object $config -Name "portfolio_auto_zip" -Value ([bool]$autoZip.Checked)
         Set-ObjectProperty -Object $config -Name "portfolio_batch_size" -Value ([int]$batchSize.Value)

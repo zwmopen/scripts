@@ -92,6 +92,7 @@ Preserve these rules when modifying the template:
 - Never treat legacy `分隔图.png` as a user-downloaded image when moving or cleaning duplicates.
 - On first migration or explicit `-RebuildHistory`, scan archived packages recursively to build the durable history database. Normal duplicate checks must read the database instead of rescanning every archived text and image.
 - If `portfolio_auto_group` is enabled, after a new package is created, group top-level loose package folders into visible `作品集_001`, `作品集_002`, etc. using `portfolio_batch_size` folders per portfolio. Accept both current `yyyyMMdd_HHmmss_` and legacy `.yyyyMMdd_HHmmss_` note folders.
+- Write completed portfolio folders, optional ZIP files, and move logs under `portfolio_output_path`. If that setting is missing or blank, use `library_path` for backward compatibility.
 - Default `portfolio_auto_zip` to `false`. If the user enables it, create a same-level ZIP archive for each newly created portfolio folder, for example `作品集_005.zip`. The archive should contain the 14 package folders directly.
 - Skip existing portfolio folders, `_portfolio_move_logs`, files, archives, and child folders. If the loose package count is below the batch size, leave them in place.
 - Write portfolio preview/result CSV logs under `_portfolio_move_logs`; do not use blocking popups for the integrated one-click flow.
@@ -109,6 +110,7 @@ The installed tool reads `workpkg_config.json`. For another user, prefer changin
 {
   "library_name": "成品库",
   "library_path": "",
+  "portfolio_output_path": "",
   "success_message": "已创建作品包",
   "no_text_message": "请先复制文案",
   "no_image_message": "请先下载作品图",

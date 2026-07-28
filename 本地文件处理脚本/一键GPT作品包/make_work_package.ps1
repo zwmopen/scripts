@@ -13,7 +13,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.8.3"
+$workPackageScriptVersion = "1.8.4"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -298,6 +298,7 @@ function Get-WorkPackageConfig {
     $defaults = [pscustomobject]@{
         library_name = New-TextFromCodePoints @(0x56E2, 0x5EFA, 0x6210, 0x54C1, 0x5E93)
         library_path = ""
+        portfolio_output_path = ""
         image_inbox_path = ""
         portfolio_auto_group = $true
         portfolio_auto_zip = $false
@@ -1058,13 +1059,18 @@ function Test-ImageSetHashExists {
 function Import-ExistingPackagesIntoHistory {
     param(
         [object]$Database,
-        [string]$LibraryDirectory,
+        [string[]]$LibraryDirectory,
         [string]$TextPrefix
     )
 
     $imported = 0
     $duplicateFolders = New-Object System.Collections.Generic.List[string]
-    foreach ($textFile in @(Get-PackagedTextFiles -Directory $LibraryDirectory -TextPrefix $TextPrefix -Recurse | Sort-Object LastWriteTime, FullName)) {
+    $textFiles = foreach ($directory in @($LibraryDirectory) | Select-Object -Unique) {
+        if (Test-Path -LiteralPath $directory -PathType Container) {
+            Get-PackagedTextFiles -Directory $directory -TextPrefix $TextPrefix -Recurse
+        }
+    }
+    foreach ($textFile in @($textFiles | Sort-Object FullName -Unique | Sort-Object LastWriteTime, FullName)) {
         try {
             $packageImages = Get-TopLevelImages -Directory $textFile.DirectoryName
             if ($packageImages.Count -eq 0) {
@@ -1209,6 +1215,7 @@ function Get-PortfolioHistoryMaxNumber {
     param(
         [object]$Database,
         [string]$LibraryDir,
+        [string]$PortfolioOutputDir,
         [string]$PortfolioPrefix,
         [string]$LogFolderName
     )
@@ -1229,13 +1236,19 @@ function Get-PortfolioHistoryMaxNumber {
         }
     }
 
-    if (Test-Path -LiteralPath $LibraryDir -PathType Container) {
-        foreach ($item in @(Get-ChildItem -LiteralPath $LibraryDir -Force -ErrorAction SilentlyContinue)) {
+    $searchDirectories = @($LibraryDir, $PortfolioOutputDir) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+        Select-Object -Unique
+    foreach ($searchDirectory in $searchDirectories) {
+        if (-not (Test-Path -LiteralPath $searchDirectory -PathType Container)) {
+            continue
+        }
+        foreach ($item in @(Get-ChildItem -LiteralPath $searchDirectory -Force -ErrorAction SilentlyContinue)) {
             $candidateTexts.Add([string]$item.Name) | Out-Null
             $candidateTexts.Add([string]$item.FullName) | Out-Null
         }
 
-        $logDirectory = Join-Path $LibraryDir $LogFolderName
+        $logDirectory = Join-Path $searchDirectory $LogFolderName
         if (Test-Path -LiteralPath $logDirectory -PathType Container) {
             foreach ($logFile in @(Get-ChildItem -LiteralPath $logDirectory -File -Force -ErrorAction SilentlyContinue)) {
                 $candidateTexts.Add([string]$logFile.Name) | Out-Null
@@ -1308,6 +1321,7 @@ function New-PortfolioZip {
 function Invoke-PortfolioAutoGroup {
     param(
         [string]$LibraryDir,
+        [string]$PortfolioOutputDir,
         [int]$BatchSize,
         [string]$PortfolioPrefix,
         [string]$LogFolderName,
@@ -1329,15 +1343,22 @@ function Invoke-PortfolioAutoGroup {
         HighestIssuedNumber = [Math]::Max(0, $MinimumExistingNumber)
     }
 
+    if ([string]::IsNullOrWhiteSpace($PortfolioOutputDir)) {
+        $PortfolioOutputDir = $LibraryDir
+    }
     if ($BatchSize -lt 1 -or -not (Test-Path -LiteralPath $LibraryDir)) {
         return $emptyResult
+    }
+    if (-not (Test-Path -LiteralPath $PortfolioOutputDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $PortfolioOutputDir -Force | Out-Null
     }
 
     $portfolioNameCore = $PortfolioPrefix.TrimStart('.')
     $portfolioPattern = "^\.?$([regex]::Escape($portfolioNameCore))_(\d+)$"
     $allDirs = @(Get-ChildItem -LiteralPath $LibraryDir -Directory -Force -ErrorAction SilentlyContinue)
 
-    $existingPortfolios = @($allDirs | Where-Object {
+    $portfolioDirs = @(Get-ChildItem -LiteralPath $PortfolioOutputDir -Directory -Force -ErrorAction SilentlyContinue)
+    $existingPortfolios = @($portfolioDirs | Where-Object {
         $_.Name -match $portfolioPattern
     })
 
@@ -1379,7 +1400,7 @@ function Invoke-PortfolioAutoGroup {
         $batchIndex = [int][math]::Floor($i / $BatchSize)
         $portfolioNumber = $maxExistingNumber + 1 + $batchIndex
         $portfolioName = New-PortfolioName -Prefix $PortfolioPrefix -Number $portfolioNumber
-        $portfolioPath = Join-Path $LibraryDir $portfolioName
+        $portfolioPath = Join-Path $PortfolioOutputDir $portfolioName
         $destinationPath = Join-Path $portfolioPath $folder.Name
 
         $plan.Add([pscustomobject]@{
@@ -1391,7 +1412,7 @@ function Invoke-PortfolioAutoGroup {
         })
     }
 
-    $logDir = Join-Path $LibraryDir $LogFolderName
+    $logDir = Join-Path $PortfolioOutputDir $LogFolderName
     New-Item -ItemType Directory -Path $logDir -Force | Out-Null
     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $previewCsv = Join-Path $logDir "portfolio_move_preview_$timestamp.csv"
@@ -1475,7 +1496,7 @@ function Invoke-PortfolioAutoGroup {
             }
 
             try {
-                $zipPath = Join-Path $LibraryDir "$portfolioName.zip"
+                $zipPath = Join-Path $PortfolioOutputDir "$portfolioName.zip"
                 $createdZipPath = New-PortfolioZip -PortfolioPath $portfolioPath -ZipPath $zipPath
                 $zipFiles.Add($createdZipPath)
 
@@ -1493,7 +1514,7 @@ function Invoke-PortfolioAutoGroup {
                     Time = Get-Date
                     Portfolio = $portfolioName
                     SourcePath = $portfolioPath
-                    DestinationPath = Join-Path $LibraryDir "$portfolioName.zip"
+                    DestinationPath = Join-Path $PortfolioOutputDir "$portfolioName.zip"
                     Result = "ZipFailed"
                     Message = $_.Exception.Message
                 })
@@ -1677,6 +1698,15 @@ if ([string]::IsNullOrWhiteSpace($configuredLibraryPath)) {
     }
     $libraryDir = [System.IO.Path]::GetFullPath($configuredLibraryPath)
 }
+$configuredPortfolioOutputPath = [Environment]::ExpandEnvironmentVariables(([string]$config.portfolio_output_path).Trim())
+if ([string]::IsNullOrWhiteSpace($configuredPortfolioOutputPath)) {
+    $portfolioOutputDir = $libraryDir
+} else {
+    if (-not [System.IO.Path]::IsPathRooted($configuredPortfolioOutputPath)) {
+        throw "workpkg_config.json portfolio_output_path must be an absolute path: $configuredPortfolioOutputPath"
+    }
+    $portfolioOutputDir = [System.IO.Path]::GetFullPath($configuredPortfolioOutputPath)
+}
 $historyDirectory = Join-Path $libraryDir "_作品历史数据"
 $historyPath = Join-Path $historyDirectory "作品历史数据库.json"
 $historyBackupPath = Join-Path $historyDirectory "作品历史数据库.backup.json"
@@ -1744,6 +1774,7 @@ try {
     if ($Diagnose) {
         $inboxExists = Test-Path -LiteralPath $imageInboxDir -PathType Container
         $libraryExists = Test-Path -LiteralPath $libraryDir -PathType Container
+        $portfolioOutputExists = Test-Path -LiteralPath $portfolioOutputDir -PathType Container
         $inboxImageCount = if ($inboxExists) {
             @(Get-TopLevelImages -Directory $imageInboxDir -ExcludeNames $imageExcludeNames).Count
         } else {
@@ -1759,6 +1790,9 @@ try {
             "成品库：$libraryDir"
             "目录状态：$(if ($libraryExists) { '正常' } else { '尚未创建，将在首次打包时创建' })"
             ""
+            "作品集目录：$portfolioOutputDir"
+            "目录状态：$(if ($portfolioOutputExists) { '正常' } else { '尚未创建，将在首次整理时创建' })"
+            ""
             "本地打包器：$workPackageScriptVersion"
         ) -join "`r`n"
         if (-not $NoMessage) {
@@ -1772,6 +1806,8 @@ try {
         Write-Output "InboxImages=$inboxImageCount"
         Write-Output "Library=$libraryDir"
         Write-Output "LibraryExists=$libraryExists"
+        Write-Output "PortfolioOutput=$portfolioOutputDir"
+        Write-Output "PortfolioOutputExists=$portfolioOutputExists"
         return
     }
 
@@ -1816,10 +1852,12 @@ try {
         $flushDatabase.portfolioLastIssued = Get-PortfolioHistoryMaxNumber `
             -Database $flushDatabase `
             -LibraryDir $libraryDir `
+            -PortfolioOutputDir $portfolioOutputDir `
             -PortfolioPrefix $portfolioPrefix `
             -LogFolderName $portfolioLogFolder
         $flushResult = Invoke-PortfolioAutoGroup `
             -LibraryDir $libraryDir `
+            -PortfolioOutputDir $portfolioOutputDir `
             -BatchSize $portfolioBatchSize `
             -PortfolioPrefix $portfolioPrefix `
             -LogFolderName $portfolioLogFolder `
@@ -1855,11 +1893,12 @@ try {
         $rebuiltDatabase = New-WorkHistoryDatabase
         $migrationResult = Import-ExistingPackagesIntoHistory `
             -Database $rebuiltDatabase `
-            -LibraryDirectory $libraryDir `
+            -LibraryDirectory @($libraryDir, $portfolioOutputDir) `
             -TextPrefix $textPrefix
         $rebuiltDatabase.portfolioLastIssued = Get-PortfolioHistoryMaxNumber `
             -Database $rebuiltDatabase `
             -LibraryDir $libraryDir `
+            -PortfolioOutputDir $portfolioOutputDir `
             -PortfolioPrefix $portfolioPrefix `
             -LogFolderName $portfolioLogFolder
 
@@ -1992,6 +2031,7 @@ try {
     $inferredPortfolioLastIssued = Get-PortfolioHistoryMaxNumber `
         -Database $historyDatabase `
         -LibraryDir $libraryDir `
+        -PortfolioOutputDir $portfolioOutputDir `
         -PortfolioPrefix $portfolioPrefix `
         -LogFolderName $portfolioLogFolder
     if ($inferredPortfolioLastIssued -gt $storedPortfolioLastIssued) {
@@ -2001,7 +2041,7 @@ try {
     if ($historyState.IsNew) {
         $migrationResult = Import-ExistingPackagesIntoHistory `
             -Database $historyDatabase `
-            -LibraryDirectory $libraryDir `
+            -LibraryDirectory @($libraryDir, $portfolioOutputDir) `
             -TextPrefix $textPrefix
         $historyMigrated = $migrationResult.Imported
     }
@@ -2225,6 +2265,7 @@ try {
     if ($portfolioAutoGroup) {
         $portfolioResult = Invoke-PortfolioAutoGroup `
             -LibraryDir $libraryDir `
+            -PortfolioOutputDir $portfolioOutputDir `
             -BatchSize $portfolioBatchSize `
             -PortfolioPrefix $portfolioPrefix `
             -LogFolderName $portfolioLogFolder `
@@ -2238,7 +2279,7 @@ try {
     $finalTargetDir = $targetDir
     if ($null -ne $portfolioResult -and $portfolioResult.Moved -gt 0 -and -not (Test-Path -LiteralPath $finalTargetDir)) {
         $targetLeaf = Split-Path -Leaf $targetDir
-        $movedTarget = @(Get-ChildItem -LiteralPath $libraryDir -Directory -Force -Recurse -ErrorAction SilentlyContinue | Where-Object {
+        $movedTarget = @(Get-ChildItem -LiteralPath $portfolioOutputDir -Directory -Force -Recurse -ErrorAction SilentlyContinue | Where-Object {
             $_.Name -eq $targetLeaf
         } | Select-Object -First 1)
 

@@ -1,6 +1,7 @@
 ﻿param(
     [string]$TargetFolder,
     [string]$DefaultLibraryPath,
+    [string]$DefaultPortfolioOutputPath,
     [string]$DefaultInboxPath,
     [switch]$NoUi,
     [switch]$NoShortcut,
@@ -63,6 +64,9 @@ try {
             LibraryPath = $defaultLibrary
             ImageInboxPath = $defaultInbox
         }
+        if (-not [string]::IsNullOrWhiteSpace($DefaultPortfolioOutputPath)) {
+            $installArguments.PortfolioOutputPath = [System.IO.Path]::GetFullPath($DefaultPortfolioOutputPath)
+        }
         if (-not $SkipProtocol) {
             $installArguments.RegisterProtocol = $true
         }
@@ -86,7 +90,7 @@ try {
         Write-Output "Target=$targetFolder"
     } else {
         $answer = [System.Windows.Forms.MessageBox]::Show(
-            "本地作品助手已安装。`n`n接下来会打开设置中心，请确认「图片下载目录」和「成品库目录」后保存。`n`n是否同时打开 ChatGPT 网页脚本安装页？",
+            "本地作品助手已安装。`n`n接下来会打开设置中心，请确认图片下载、成品库和作品集目录后保存。作品集目录不单独设置时默认使用成品库。`n`n是否同时打开 ChatGPT 网页脚本安装页？",
             "GPT 作品助手安装完成",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Information
