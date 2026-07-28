@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.15.4
+// @version      1.15.5
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -25,7 +25,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.15.4';
+  const SCRIPT_VERSION = '1.15.5';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -1908,6 +1908,10 @@
         line-height: 1;
       }
       .${WORK_PACKAGE_CLASS} .cgpt-work-package-label {
+        white-space: nowrap;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1;
         white-space: nowrap;
         font-size: 12px;
         font-weight: 600;
@@ -5921,9 +5925,9 @@
       button.setAttribute('aria-label', '打包完成');
       return;
     }
-    button.innerHTML = icons.package;
-    button.title = '一键打包作品；本组尚未下载时会先自动下载';
-    button.setAttribute('aria-label', '下载并打包作品');
+    button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">下载并打包</span>`;
+    button.title = '下载本组全部图片，并打包成作品文件夹';
+    button.setAttribute('aria-label', '下载本组图片并打包成文件夹');
   }
 
   async function triggerWorkPackageButton(button, event = null) {
