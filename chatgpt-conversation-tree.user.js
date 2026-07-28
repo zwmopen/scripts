@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.15.6
+// @version      1.15.7
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -25,7 +25,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.15.6';
+  const SCRIPT_VERSION = '1.15.7';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -68,6 +68,7 @@
   const DIAGNOSTIC_LOG_KEY = `${APP_ID}:diagnostic-log:v1`;
   const MAX_DIAGNOSTIC_LOGS = 220;
   const WORK_PACKAGE_VISIBLE_KEY = 'work-package-visible';
+  const IMAGE_DOWNLOAD_VISIBLE_KEY = 'image-download-visible';
   const HARD_NAVIGATION_FALLBACK_KEY = 'hard-navigation-fallback-enabled';
   const DRAG_MIME = `application/x-${APP_ID}`;
 
@@ -141,6 +142,13 @@
   let diagnosticLogs = loadDiagnosticLogs();
   let hardNavigationFallbackEnabled = loadHardNavigationFallbackSetting();
   let diagnosticSaveTimer = 0;
+  let imageDownloadButtonVisible = (() => {
+    try {
+      return GM_getValue(IMAGE_DOWNLOAD_VISIBLE_KEY, true) !== false;
+    } catch {
+      return true;
+    }
+  })();
   let workPackageButtonVisible = (() => {
     try {
       return GM_getValue(WORK_PACKAGE_VISIBLE_KEY, true) !== false;
@@ -1873,6 +1881,10 @@
         color: #16a34a;
         background: color-mix(in srgb, #16a34a 9%, transparent);
       }
+      .${WORK_PACKAGE_CLASS}.cgpt-work-package-warning {
+        color: #b45309;
+        background: color-mix(in srgb, #f59e0b 12%, transparent);
+      }
       .${WORK_PACKAGE_CLASS}[disabled] {
         opacity: .78;
         cursor: progress;
@@ -1912,9 +1924,6 @@
         font-size: 12px;
         font-weight: 600;
         line-height: 1;
-        white-space: nowrap;
-        font-size: 12px;
-        font-weight: 600;
       }
       #${IMAGE_DOWNLOAD_TOAST_ID} {
         position: fixed;
@@ -4951,9 +4960,24 @@
     return true;
   }
 
-  function refreshWorkPackageButtons() {
-    document.querySelectorAll(`.${WORK_PACKAGE_CLASS}`).forEach((button) => button.remove());
+  function refreshImageToolButtons() {
+    document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((slot) => slot.remove());
     scheduleImageDownloadButtons();
+  }
+
+  function setImageDownloadButtonVisible(visible) {
+    imageDownloadButtonVisible = Boolean(visible);
+    try {
+      GM_setValue(IMAGE_DOWNLOAD_VISIBLE_KEY, imageDownloadButtonVisible);
+    } catch {
+      // 菜单开关失败不影响页面按钮刷新。
+    }
+    refreshImageToolButtons();
+    showImageDownloadToast(
+      imageDownloadButtonVisible ? '已显示单独下载按钮' : '已隐藏单独下载按钮',
+      true
+    );
+    registerUserscriptMenuCommands();
   }
 
   function setWorkPackageButtonVisible(visible) {
@@ -4963,9 +4987,9 @@
     } catch {
       // 菜单开关失败不影响页面按钮刷新。
     }
-    refreshWorkPackageButtons();
+    refreshImageToolButtons();
     showImageDownloadToast(
-      workPackageButtonVisible ? '已显示作品包按钮' : '已隐藏作品包按钮',
+      workPackageButtonVisible ? '已显示下载并打包按钮' : '已隐藏下载并打包按钮',
       true
     );
     registerUserscriptMenuCommands();
@@ -4998,7 +5022,11 @@
       else window.alert('没有找到 ChatGPT 输入框，暂时无法打开提示词库。');
     });
     addMenu(
-      workPackageButtonVisible ? '隐藏作品包按钮' : '显示作品包按钮',
+      imageDownloadButtonVisible ? '隐藏单独下载按钮' : '显示单独下载按钮',
+      () => setImageDownloadButtonVisible(!imageDownloadButtonVisible)
+    );
+    addMenu(
+      workPackageButtonVisible ? '隐藏下载并打包按钮' : '显示下载并打包按钮',
       () => setWorkPackageButtonVisible(!workPackageButtonVisible)
     );
     addMenu('设置本地作品助手（目录+作品集规则）', () => openWorkPackageProtocol('cgpt-workpkg://configure'));
@@ -5881,22 +5909,48 @@
     runImageDownloadShortcut(button);
   }
 
-  function setWorkPackageButtonState(button, state = 'idle') {
+  function setWorkPackageButtonState(button, state = 'idle', detail = {}) {
     if (!button) return;
-    button.classList.remove('cgpt-work-package-called', 'cgpt-work-package-done');
-    button.disabled = state === 'running';
-    if (state === 'running') {
+    button.dataset.cgptWorkPackageState = state;
+    button.classList.remove('cgpt-work-package-called', 'cgpt-work-package-done', 'cgpt-work-package-warning');
+    button.disabled = ['preparing', 'downloading', 'packaging'].includes(state);
+    if (state === 'preparing') {
+      button.classList.add('cgpt-work-package-called');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">检查文案</span>`;
+      button.title = '正在检查剪贴板文案';
+      button.setAttribute('aria-label', '正在检查文案');
+      return;
+    }
+    if (state === 'downloading') {
+      const current = Math.max(0, Number(detail.current || 0));
+      const total = Math.max(current, Number(detail.total || 0));
+      button.classList.add('cgpt-work-package-called');
+      button.innerHTML = `${icons.download}<span class="cgpt-work-package-label">下载 ${current}/${total || '?'}</span>`;
+      button.title = `正在下载本组图片：${current}/${total || '?'}`;
+      button.setAttribute('aria-label', button.title);
+      return;
+    }
+    if (state === 'packaging') {
       button.classList.add('cgpt-work-package-called');
       button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">打包中</span>`;
-      button.title = '打包中：正在调用本地作品包脚本';
-      button.setAttribute('aria-label', '打包中');
+      button.title = '图片已下载，正在调用本地作品助手打包';
+      button.setAttribute('aria-label', '正在打包作品文件夹');
+      return;
+    }
+    if (state === 'needs-text') {
+      button.classList.add('cgpt-work-package-warning');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">请先复制文案</span>`;
+      button.title = '请先复制当前窗口的小红书文案，再点击下载并打包';
+      button.setAttribute('aria-label', '请先复制文案');
       return;
     }
     if (state === 'done') {
       button.classList.add('cgpt-work-package-done');
-      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">打包完成</span>`;
-      button.title = '打包完成';
-      button.setAttribute('aria-label', '打包完成');
+      const total = Math.max(0, Number(detail.total || 0));
+      const suffix = total ? ` ${total}/${total}` : '';
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">完成${suffix}</span>`;
+      button.title = total ? `下载并打包完成：${total}/${total} 张` : '下载并打包完成';
+      button.setAttribute('aria-label', button.title);
       return;
     }
     button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">下载并打包</span>`;
@@ -5909,7 +5963,7 @@
     event?.preventDefault?.();
     event?.stopPropagation?.();
     event?.stopImmediatePropagation?.();
-    setWorkPackageButtonState(button, 'running');
+    setWorkPackageButtonState(button, 'preparing');
     const slot = button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
     const imageButton = slot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
     const expectedImages = Number(imageButton?.dataset.cgptImageTotal || 0);
@@ -5917,8 +5971,13 @@
     const batchId = imageButton?.dataset.cgptWorkPackageBatchId || newDownloadBatchId();
     const frozenTask = await freezeWorkPackageTask(batchId, expectedImages);
     if (!frozenTask) {
-      showImageDownloadToast('请先复制当前窗口的文案', false);
-      setWorkPackageButtonState(button, 'idle');
+      showImageDownloadToast('请先复制当前窗口的小红书文案，再点“下载并打包”', false);
+      setWorkPackageButtonState(button, 'needs-text');
+      window.setTimeout(() => {
+        if (button.dataset.cgptWorkPackageState === 'needs-text') {
+          setWorkPackageButtonState(button, 'idle');
+        }
+      }, 2400);
       return;
     }
     showImageDownloadToast(`任务已冻结：${frozenTask.copyTitle || '已复制文案'} · ${expectedImages} 张`, true);
@@ -5928,7 +5987,10 @@
       || imageButton.dataset.cgptWorkPackageBatchId !== batchId
     )) {
       showImageDownloadToast(`先下载本组图片：${downloadedImages}/${expectedImages}`, true);
-      const downloadResult = await runImageDownloadShortcut(imageButton, batchId);
+      setWorkPackageButtonState(button, 'downloading', { current: downloadedImages, total: expectedImages });
+      const downloadResult = await runImageDownloadShortcut(imageButton, batchId, (current, total) => {
+        setWorkPackageButtonState(button, 'downloading', { current, total });
+      });
       if (!downloadResult || downloadResult.downloaded < downloadResult.total) {
         showImageDownloadToast('图片未下载完整，暂不打包', false);
         setWorkPackageButtonState(button, 'idle');
@@ -5936,7 +5998,8 @@
       }
       await sleep(450);
     }
-    showImageDownloadToast('打包中...', true);
+    setWorkPackageButtonState(button, 'packaging');
+    showImageDownloadToast('图片下载完成，正在打包成文件夹...', true);
     try {
       const protocolUrl = `${WORK_PACKAGE_PROTOCOL_URL}?batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}`;
       openWorkPackageProtocol(protocolUrl);
@@ -5947,7 +6010,7 @@
       return;
     }
     window.setTimeout(() => {
-      setWorkPackageButtonState(button, 'done');
+      setWorkPackageButtonState(button, 'done', { total: expectedImages });
       showImageDownloadToast('打包完成', true);
     }, 3600);
   }
@@ -5992,6 +6055,7 @@
       }, true);
       slot.append(button);
     }
+    button.hidden = !imageDownloadButtonVisible;
     let packageButton = slot.querySelector(`.${WORK_PACKAGE_CLASS}`);
     if (workPackageButtonVisible) {
       if (!packageButton) {
@@ -6008,6 +6072,7 @@
     } else if (packageButton) {
       packageButton.remove();
     }
+    slot.hidden = !imageDownloadButtonVisible && !workPackageButtonVisible;
     button.onclick = (event) => triggerImageDownloadButton(button, event);
     button.__cgptImageDownloadContainer = container;
     button.__cgptImageDownloadImages = groupElements;
@@ -6370,7 +6435,7 @@
     return downloadUrlsConcurrently(usableUrls, onProgress, 4, requestedBatchId);
   }
 
-  async function runImageDownloadShortcut(button, requestedBatchId = '') {
+  async function runImageDownloadShortcut(button, requestedBatchId = '', onProgress = null) {
     if (button.disabled) return null;
     const container = button.__cgptImageDownloadContainer
       || button.closest('[data-cgpt-image-download-container]')
@@ -6393,6 +6458,9 @@
       || images.length;
     button.disabled = true;
     setImageButtonProgress(button, 0, totalImages, true);
+    if (onProgress) {
+      try { onProgress(0, totalImages); } catch {}
+    }
 
     let downloaded = 0;
     try {
@@ -6403,6 +6471,9 @@
       const downloadResult = await directDownloadImages(images, (current, total) => {
         totalImages = total || totalImages;
         setImageButtonProgress(button, current, totalImages, true);
+        if (onProgress) {
+          try { onProgress(current, totalImages); } catch {}
+        }
       }, requestedBatchId);
       downloaded = Number(downloadResult?.ok || 0);
       if (downloadResult?.batchId) {
