@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @namespace    https://chatgpt.com/
-// @version      1.15.7
+// @version      1.15.8
 // @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -25,7 +25,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.15.7';
+  const SCRIPT_VERSION = '1.15.8';
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -68,6 +68,8 @@
   const DIAGNOSTIC_LOG_KEY = `${APP_ID}:diagnostic-log:v1`;
   const MAX_DIAGNOSTIC_LOGS = 220;
   const WORK_PACKAGE_VISIBLE_KEY = 'work-package-visible';
+  const WORK_PACKAGE_HELPER_READY_KEY = 'work-package-helper-ready-v1';
+  const WORK_PACKAGE_INSTALLER_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/master/%E5%AE%89%E8%A3%85GPT%E4%BD%9C%E5%93%81%E5%8A%A9%E6%89%8B.vbs';
   const IMAGE_DOWNLOAD_VISIBLE_KEY = 'image-download-visible';
   const HARD_NAVIGATION_FALLBACK_KEY = 'hard-navigation-fallback-enabled';
   const DRAG_MIME = `application/x-${APP_ID}`;
@@ -154,6 +156,13 @@
       return GM_getValue(WORK_PACKAGE_VISIBLE_KEY, true) !== false;
     } catch {
       return true;
+    }
+  })();
+  let workPackageHelperReady = (() => {
+    try {
+      return GM_getValue(WORK_PACKAGE_HELPER_READY_KEY, false) === true;
+    } catch {
+      return false;
     }
   })();
   let ungroupedCollapsed = (() => {
@@ -5029,10 +5038,93 @@
       workPackageButtonVisible ? '隐藏下载并打包按钮' : '显示下载并打包按钮',
       () => setWorkPackageButtonVisible(!workPackageButtonVisible)
     );
+    addMenu('下载安装/更新本地作品助手', () => downloadWorkPackageInstaller());
     addMenu('设置本地作品助手（目录+作品集规则）', () => openWorkPackageProtocol('cgpt-workpkg://configure'));
     addMenu('打开本地作品任务中心', () => openWorkPackageProtocol('cgpt-workpkg://center'));
     addMenu('检查本地作品助手', () => openWorkPackageProtocol('cgpt-workpkg://diagnose'));
     addMenu('复制诊断日志', () => copyDiagnosticLogs());
+  }
+
+  function setWorkPackageHelperReady(ready) {
+    workPackageHelperReady = Boolean(ready);
+    try {
+      GM_setValue(WORK_PACKAGE_HELPER_READY_KEY, workPackageHelperReady);
+    } catch {
+      // 油猴存储不可用时仅影响首次提示记忆，不影响本次操作。
+    }
+  }
+
+  function downloadWorkPackageInstaller() {
+    const fallback = () => window.open(WORK_PACKAGE_INSTALLER_URL, '_blank', 'noopener');
+    if (typeof GM_download !== 'function') {
+      fallback();
+      return;
+    }
+    showImageDownloadToast('正在下载“安装GPT作品助手.vbs”...', true);
+    GM_download({
+      url: WORK_PACKAGE_INSTALLER_URL,
+      name: '安装GPT作品助手.vbs',
+      saveAs: false,
+      onload: () => {
+        showImageDownloadToast('安装脚本已下载，请双击运行一次', true);
+        window.alert(
+          '安装脚本已下载到浏览器下载目录。\n\n请双击“安装GPT作品助手.vbs”一次，安装完成后回到 ChatGPT 再点“下载并打包”。\n\n默认位置：\n图片：Windows 下载文件夹\n作品：文档\\GPT作品库\n去重数据：作品库\\_作品历史数据'
+        );
+      },
+      onerror: () => {
+        showImageDownloadToast('自动下载失败，已打开手动下载页', false);
+        fallback();
+      },
+    });
+  }
+
+  function showWorkPackageFirstUseDialog() {
+    return new Promise((resolve) => {
+      const old = document.getElementById(`${APP_ID}-work-package-first-use`);
+      old?.remove();
+      const overlay = document.createElement('div');
+      overlay.id = `${APP_ID}-work-package-first-use`;
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.34);display:flex;align-items:center;justify-content:center;padding:20px';
+      overlay.innerHTML = `
+        <section role="dialog" aria-modal="true" aria-label="首次使用 GPT 作品助手" style="width:min(440px,calc(100vw - 32px));background:var(--main-surface-primary,#fff);color:var(--text-primary,#0d0d0d);border:1px solid rgba(127,127,127,.25);border-radius:18px;box-shadow:0 18px 60px rgba(0,0,0,.22);padding:22px;font:14px/1.6 system-ui,-apple-system,sans-serif">
+          <h2 style="font-size:18px;margin:0 0 8px">首次使用需要安装本地作品助手</h2>
+          <p style="margin:0 0 10px">网页负责下载图片，本地助手负责去重、整理和打包。只需下载安装脚本并双击一次。</p>
+          <div style="background:rgba(127,127,127,.09);border-radius:12px;padding:10px 12px;margin-bottom:16px">
+            <div>图片：Windows 下载文件夹</div>
+            <div>作品：文档\\GPT作品库</div>
+            <div>去重数据：作品库\\_作品历史数据</div>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+            <button data-action="cancel" style="border:0;background:transparent;padding:8px 12px;cursor:pointer">取消</button>
+            <button data-action="ready" style="border:1px solid rgba(127,127,127,.35);background:transparent;border-radius:10px;padding:8px 12px;cursor:pointer">我已安装，继续</button>
+            <button data-action="install" style="border:0;background:#10a37f;color:#fff;border-radius:10px;padding:8px 14px;cursor:pointer">下载安装助手</button>
+          </div>
+        </section>`;
+      const finish = (action) => {
+        overlay.remove();
+        resolve(action);
+      };
+      overlay.addEventListener('click', (event) => {
+        const action = event.target.closest('[data-action]')?.dataset.action;
+        if (action) finish(action);
+        else if (event.target === overlay) finish('cancel');
+      });
+      document.body.append(overlay);
+    });
+  }
+
+  async function ensureWorkPackageHelperReady() {
+    if (workPackageHelperReady) return true;
+    const action = await showWorkPackageFirstUseDialog();
+    if (action === 'install') {
+      downloadWorkPackageInstaller();
+      return false;
+    }
+    if (action === 'ready') {
+      setWorkPackageHelperReady(true);
+      return true;
+    }
+    return false;
   }
 
   async function freezeWorkPackageTask(batchId, expectedImages) {
@@ -5963,6 +6055,10 @@
     event?.preventDefault?.();
     event?.stopPropagation?.();
     event?.stopImmediatePropagation?.();
+    if (!await ensureWorkPackageHelperReady()) {
+      setWorkPackageButtonState(button, 'idle');
+      return;
+    }
     setWorkPackageButtonState(button, 'preparing');
     const slot = button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
     const imageButton = slot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);

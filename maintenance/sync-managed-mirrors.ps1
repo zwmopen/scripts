@@ -48,6 +48,16 @@ $mappings = @(
         Mirror = Join-Path $workPackageMirror $workPackageFriendlyInstaller
     },
     @{
+        Name = 'Work package root installer launcher'
+        Source = Join-Path $workPackageSource $workPackageFriendlyInstaller
+        Mirror = Join-Path $repoRoot $workPackageFriendlyInstaller
+    },
+    @{
+        Name = 'Work package bootstrap installer'
+        Source = Join-Path $workPackageSource 'bootstrap_install.ps1'
+        Mirror = Join-Path $repoRoot 'bootstrap_install.ps1'
+    },
+    @{
         Name = 'Work package core'
         Source = Join-Path $workPackageSource 'make_work_package.ps1'
         Mirror = Join-Path $workPackageMirror 'make_work_package.ps1'
