@@ -91,9 +91,9 @@ Preserve these rules when modifying the template:
 - Move same-level images into the package folder and order them by modification time before renaming.
 - Never treat legacy `分隔图.png` as a user-downloaded image when moving or cleaning duplicates.
 - On first migration or explicit `-RebuildHistory`, scan archived packages recursively to build the durable history database. Normal duplicate checks must read the database instead of rescanning every archived text and image.
-- If `portfolio_auto_group` is enabled, after a new package is created, group top-level loose package folders into visible `作品集_001`, `作品集_002`, etc. using `portfolio_batch_size` folders per portfolio. Accept both current `yyyyMMdd_HHmmss_` and legacy `.yyyyMMdd_HHmmss_` note folders.
+- If `portfolio_auto_group` is enabled, classify loose packages by title/copy topic. Group conversion works into `作品集_001[转]` and game/traffic works into `作品集_002[泛]`, using `portfolio_batch_size` folders per type. Never borrow across types; leave unknown works loose for review. Accept both current `yyyyMMdd_HHmmss_` and legacy `.yyyyMMdd_HHmmss_` note folders.
 - Write completed portfolio folders, optional ZIP files, and move logs under `portfolio_output_path`. If that setting is missing or blank, use `library_path` for backward compatibility.
-- Default `portfolio_auto_zip` to `false`. If the user enables it, create a same-level ZIP archive for each newly created portfolio folder, for example `作品集_005.zip`. The archive should contain the 14 package folders directly.
+- Default `portfolio_auto_zip` to `false`. If enabled, create a same-level ZIP for each new portfolio. The archive contains the 7 same-type package folders directly.
 - Skip existing portfolio folders, `_portfolio_move_logs`, files, archives, and child folders. If the loose package count is below the batch size, leave them in place.
 - Write portfolio preview/result CSV logs under `_portfolio_move_logs`; do not use blocking popups for the integrated one-click flow.
 - On success, show short stage toasts in sequence so the user can see progress nodes: `已创建作品包`; if grouping happened, `已整理作品集`; if ZIP succeeded, `已生成ZIP压缩包`; if ZIP failed, `作品集压缩失败`.
@@ -123,7 +123,7 @@ The installed tool reads `workpkg_config.json`. For another user, prefer changin
   "portfolio_zip_failed_message": "作品集压缩失败",
   "portfolio_auto_group": true,
   "portfolio_auto_zip": false,
-  "portfolio_batch_size": 14,
+  "portfolio_batch_size": 7,
   "portfolio_prefix": "作品集",
   "portfolio_log_folder": "_portfolio_move_logs"
 }
@@ -144,7 +144,7 @@ Minimum tests:
 - Same normalized copy with different image bytes: creates a new package and reports similar copy.
 - Visual-near but byte-different image set: stops before packaging, preserves downloads, reports the historical folder, and permits one explicit second-run bypass.
 - History rebuild preview: finds duplicated existing package folders without requiring clipboard text or downloaded images.
-- Portfolio grouping: with 13 existing loose package folders and one new package, creates the next `作品集_###`, moves 14 folders into it, creates `作品集_###.zip`, logs the move/zip, and still detects duplicate text inside that portfolio afterward.
+- Portfolio grouping: with 7 conversion folders, 7 game/traffic folders, and one unknown folder, create one `[转]` collection and one `[泛]` collection with 7 works each; leave the unknown folder loose and keep recursive duplicate detection working.
 - Syntax check passes for the installed `make_work_package.ps1`.
 - Absolute-library install: images are read from the runtime/download folder, the package is created under `library_path`, and no shadow library is created beside the runtime scripts.
 - Upgrade install: existing config values remain intact unless the corresponding installer parameter is explicitly supplied.

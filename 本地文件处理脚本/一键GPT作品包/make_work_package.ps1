@@ -13,7 +13,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.8.4"
+$workPackageScriptVersion = "1.8.5"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -302,7 +302,7 @@ function Get-WorkPackageConfig {
         image_inbox_path = ""
         portfolio_auto_group = $true
         portfolio_auto_zip = $false
-        portfolio_batch_size = 14
+        portfolio_batch_size = 7
         portfolio_prefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
         portfolio_log_folder = "_portfolio_move_logs"
         package_naming_mode = "title_conversation"
@@ -1211,6 +1211,37 @@ function New-PortfolioName {
     return "{0}_{1:000}" -f $Prefix, $Number
 }
 
+function Get-WorkFolderContentType {
+    param([System.IO.DirectoryInfo]$Folder)
+
+    $title = [string]$Folder.Name
+    $gamePattern = '(小游戏|游戏合集|破冰游戏|晨会游戏|酒桌游戏|聚会游戏|团建游戏|真心话|大冒险|惩罚题|题库|你划我猜|猜歌|害你在心口难开|小姐牌|emoji猜)'
+    $conversionPattern = '(团建|年会|公司出游|企业团队|HR|行政|一日|两天一夜|2天1夜|路线|攻略|民宿|山庄|小院|露营|漂流|溯溪|采摘|骑行|温泉|烧烤|围炉|农家乐|目的地)'
+    if ($title -match $gamePattern) { return "traffic" }
+    if ($title -match $conversionPattern) { return "conversion" }
+
+    $textSample = ""
+    try {
+        $textFile = Get-ChildItem -LiteralPath $Folder.FullName -File -Filter "*.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $textFile) {
+            $textSample = [System.IO.File]::ReadAllText($textFile.FullName)
+            if ($textSample.Length -gt 1200) { $textSample = $textSample.Substring(0, 1200) }
+        }
+    } catch { $textSample = "" }
+
+    $firstLine = Get-TitleLine -Text $textSample
+    if ($firstLine -match $gamePattern) { return "traffic" }
+    if (("$firstLine`n$textSample") -match $conversionPattern) { return "conversion" }
+    return "unknown"
+}
+
+function Get-PortfolioTypeSuffix {
+    param([string]$ContentType)
+    if ($ContentType -eq "traffic") { return "[泛]" }
+    if ($ContentType -eq "conversion") { return "[转]" }
+    return ""
+}
+
 function Get-PortfolioHistoryMaxNumber {
     param(
         [object]$Database,
@@ -1354,7 +1385,7 @@ function Invoke-PortfolioAutoGroup {
     }
 
     $portfolioNameCore = $PortfolioPrefix.TrimStart('.')
-    $portfolioPattern = "^\.?$([regex]::Escape($portfolioNameCore))_(\d+)$"
+    $portfolioPattern = "^\.?$([regex]::Escape($portfolioNameCore))_(\d+)(?:\[(?:转|泛)\])?$"
     $allDirs = @(Get-ChildItem -LiteralPath $LibraryDir -Directory -Force -ErrorAction SilentlyContinue)
 
     $portfolioDirs = @(Get-ChildItem -LiteralPath $PortfolioOutputDir -Directory -Force -ErrorAction SilentlyContinue)
@@ -1368,7 +1399,7 @@ function Invoke-PortfolioAutoGroup {
         $_.Name -match '^\.?\d{8}_\d{6}_'
     } | Sort-Object Name)
 
-    if ($workFolders.Count -eq 0 -or ($workFolders.Count -lt $BatchSize -and -not $FlushRemainder)) {
+    if ($workFolders.Count -eq 0) {
         $emptyResult.Leftover = $workFolders.Count
         return $emptyResult
     }
@@ -1381,35 +1412,44 @@ function Invoke-PortfolioAutoGroup {
         }
     }
 
-    $fullBatchCount = if ($FlushRemainder) {
-        [int][math]::Ceiling($workFolders.Count / $BatchSize)
-    } else {
-        [int][math]::Floor($workFolders.Count / $BatchSize)
-    }
-    $moveCount = if ($FlushRemainder) {
-        $workFolders.Count
-    } else {
-        $fullBatchCount * $BatchSize
-    }
-    $leftoverCount = $workFolders.Count - $moveCount
-    $selectedFolders = @($workFolders | Select-Object -First $moveCount)
     $plan = New-Object System.Collections.Generic.List[object]
+    $fullBatchCount = 0
+    $moveCount = 0
+    $leftoverCount = @($workFolders | Where-Object { (Get-WorkFolderContentType -Folder $_) -eq "unknown" }).Count
+    $portfolioOffset = 0
 
-    for ($i = 0; $i -lt $selectedFolders.Count; $i++) {
-        $folder = $selectedFolders[$i]
-        $batchIndex = [int][math]::Floor($i / $BatchSize)
-        $portfolioNumber = $maxExistingNumber + 1 + $batchIndex
-        $portfolioName = New-PortfolioName -Prefix $PortfolioPrefix -Number $portfolioNumber
-        $portfolioPath = Join-Path $PortfolioOutputDir $portfolioName
-        $destinationPath = Join-Path $portfolioPath $folder.Name
+    foreach ($contentType in @("conversion", "traffic")) {
+        $typedFolders = @($workFolders | Where-Object { (Get-WorkFolderContentType -Folder $_) -eq $contentType } | Sort-Object Name)
+        $typedBatchCount = if ($FlushRemainder) { [int][math]::Ceiling($typedFolders.Count / $BatchSize) } else { [int][math]::Floor($typedFolders.Count / $BatchSize) }
+        $typedMoveCount = if ($FlushRemainder) { $typedFolders.Count } else { $typedBatchCount * $BatchSize }
+        $leftoverCount += $typedFolders.Count - $typedMoveCount
+        $selectedFolders = @($typedFolders | Select-Object -First $typedMoveCount)
+        $typeSuffix = Get-PortfolioTypeSuffix -ContentType $contentType
 
-        $plan.Add([pscustomobject]@{
-            Portfolio = $portfolioName
-            PortfolioPath = $portfolioPath
-            SourcePath = $folder.FullName
-            DestinationPath = $destinationPath
-            WorkFolder = $folder.Name
-        })
+        for ($i = 0; $i -lt $selectedFolders.Count; $i++) {
+            $folder = $selectedFolders[$i]
+            $batchIndex = [int][math]::Floor($i / $BatchSize)
+            $portfolioNumber = $maxExistingNumber + 1 + $portfolioOffset + $batchIndex
+            $portfolioName = "$(New-PortfolioName -Prefix $PortfolioPrefix -Number $portfolioNumber)$typeSuffix"
+            $portfolioPath = Join-Path $PortfolioOutputDir $portfolioName
+            $destinationPath = Join-Path $portfolioPath $folder.Name
+            $plan.Add([pscustomobject]@{
+                Portfolio = $portfolioName
+                PortfolioPath = $portfolioPath
+                SourcePath = $folder.FullName
+                DestinationPath = $destinationPath
+                WorkFolder = $folder.Name
+                ContentType = $contentType
+            })
+        }
+        $fullBatchCount += $typedBatchCount
+        $moveCount += $typedMoveCount
+        $portfolioOffset += $typedBatchCount
+    }
+
+    if ($plan.Count -eq 0) {
+        $emptyResult.Leftover = $leftoverCount
+        return $emptyResult
     }
 
     $logDir = Join-Path $PortfolioOutputDir $LogFolderName
