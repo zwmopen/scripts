@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         ChatGPT 最近对话分组（飞书式目录）
+// @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.15.8
-// @description  把可拖动、可嵌套的对话分组原生融入 ChatGPT"最近"列表，并给图片组增加外置下载全部快捷按钮，支持一键下载本轮所有图片。
+// @version      1.16.0
+// @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -25,7 +26,10 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.15.8';
+  const SCRIPT_VERSION = '1.16.0';
+  // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
+  // 旧分组数据保留在原存储键中用于回滚和手动导出，但运行时不再渲染或更新它。
+  const SIDEBAR_GROUPING_ENABLED = false;
   const HEADER_ID = `${APP_ID}-header-actions`;
   const MENU_ID = `${APP_ID}-menu`;
   const STYLE_ID = `${APP_ID}-style`;
@@ -1219,6 +1223,26 @@
     const header = history.previousElementSibling
       || section?.querySelector('.group\\/sidebar-expando-section-header');
     return { history, list, section, header };
+  }
+
+  function removeLegacySidebarGroupingUi() {
+    const found = findRecentElements();
+    const legacyParking = document.getElementById(PARKING_ID);
+    if (found?.list && legacyParking) {
+      [...legacyParking.children].forEach((row) => found.list.append(row));
+    }
+    [
+      APP_ID,
+      HEADER_ID,
+      MENU_ID,
+      PARKING_ID,
+      RENAME_ID,
+      RENAME_STAGE_ID,
+      IMPORT_INPUT_ID,
+      `${APP_ID}-conversation-tree-menu`,
+    ].forEach((id) => document.getElementById(id)?.remove());
+    document.querySelectorAll('[data-cgpt-recent-menu-item], [data-cgpt-native-menu-item]')
+      .forEach((element) => element.remove());
   }
 
   function injectStyles() {
@@ -5016,14 +5040,10 @@
       const id = GM_registerMenuCommand(label, handler);
       if (id != null) userscriptMenuCommandIds.push(id);
     };
-    addMenu('导出 ChatGPT 辅助器数据（分组+提示词）', () => exportGroupData());
+    addMenu('导出 ChatGPT 助手数据（提示词+旧分组备份）', () => exportGroupData());
     addMenu('同步 GitHub 云端提示词', () => void syncCloudPrompts(true));
     addMenu('恢复上一版云端提示词', () => restorePreviousCloudPrompts());
     addMenu('导出本地提示词为云端文件', () => exportCloudPromptFile());
-    addMenu(
-      hardNavigationFallbackEnabled ? '关闭失败时整页跳转' : '允许失败时整页跳转（当前关闭）',
-      () => setHardNavigationFallbackEnabled(!hardNavigationFallbackEnabled)
-    );
     addMenu('打开提示词库', () => {
       ensurePromptButton();
       const button = document.getElementById(PROMPT_BUTTON_ID);
@@ -7063,8 +7083,8 @@
 
   const observer = new MutationObserver((mutations) => {
     if (document.hidden) return;
-    if (pendingNativeMenuChatId) augmentNativeConversationMenu();
-    if (Date.now() <= pendingRecentMenuUntil) augmentNativeRecentMenu();
+    if (SIDEBAR_GROUPING_ENABLED && pendingNativeMenuChatId) augmentNativeConversationMenu();
+    if (SIDEBAR_GROUPING_ENABLED && Date.now() <= pendingRecentMenuUntil) augmentNativeRecentMenu();
     if (rendering || Date.now() < ignoreMutationsUntil) return;
 
     let scanHistory = false;
@@ -7084,10 +7104,10 @@
           node.nodeType === 1
           && (node.matches?.('main, nav, aside, #history') || node.querySelector?.('main, nav, aside, #history'))
         ));
-      const touchesHistory = rootReplacement
+      const touchesHistory = SIDEBAR_GROUPING_ENABLED && (rootReplacement
         || target.closest?.('nav, aside, #history')
         || historyRoot?.contains?.(target)
-        || target.contains?.(historyRoot);
+        || target.contains?.(historyRoot));
       const touchesMain = rootReplacement || target.closest?.('main');
       const touchesComposer = touchesMain || target.closest?.('form, [data-testid*="composer"]');
 
@@ -7097,7 +7117,7 @@
       if (scanHistory && scanImages && scanComposer) break;
     }
 
-    if (scanHistory) scheduleScan();
+    if (SIDEBAR_GROUPING_ENABLED && scanHistory) scheduleScan();
     if (scanImages) scheduleImageDownloadButtons();
     if (scanComposer) schedulePromptButton();
   });
@@ -7105,7 +7125,7 @@
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
-    scheduleScan();
+    if (SIDEBAR_GROUPING_ENABLED) scheduleScan();
     scheduleImageDownloadButtons();
     schedulePromptButton(80);
   });
@@ -7114,27 +7134,33 @@
     if (document.hidden) return;
     if (location.href !== previousUrl) {
       previousUrl = location.href;
-      updateFallbackChatVisualState();
-      scheduleScan();
+      if (SIDEBAR_GROUPING_ENABLED) {
+        updateFallbackChatVisualState();
+        scheduleScan();
+      }
       scheduleImageDownloadButtons();
       schedulePromptButton(80);
     }
   }, 850);
   window.setInterval(() => {
     if (document.hidden) return;
-    syncLegacyChanges();
+    if (SIDEBAR_GROUPING_ENABLED) syncLegacyChanges();
     schedulePromptButton(400);
   }, 6000);
 
-  if (!localStorage.getItem(STORAGE_KEY)) saveState(true);
-  installConversationTreeDebugApi();
+  removeLegacySidebarGroupingUi();
+  injectStyles();
+  if (SIDEBAR_GROUPING_ENABLED) {
+    if (!localStorage.getItem(STORAGE_KEY)) saveState(true);
+    installConversationTreeDebugApi();
+  }
   registerUserscriptMenuCommands();
   refreshWorkPackageAccountName();
   installWorkPackageClipboardBridge();
   bindImageDownloadEvents();
   installImageDownloadDebugApi();
   addDiagnosticLog('script:init');
-  scanNativeChats();
+  if (SIDEBAR_GROUPING_ENABLED) scanNativeChats();
   ensurePromptButton();
   scheduleCloudPromptSync();
   scheduleImageDownloadButtons();
