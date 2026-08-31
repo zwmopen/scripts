@@ -13,7 +13,7 @@
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.8.5"
+$workPackageScriptVersion = "1.8.4"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -302,7 +302,7 @@ function Get-WorkPackageConfig {
         image_inbox_path = ""
         portfolio_auto_group = $true
         portfolio_auto_zip = $false
-        portfolio_batch_size = 7
+        portfolio_batch_size = 14
         portfolio_prefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
         portfolio_log_folder = "_portfolio_move_logs"
         package_naming_mode = "title_conversation"
@@ -336,7 +336,11 @@ function Get-WorkPackageConfig {
 function Show-Tip {
     param(
         [string]$Message,
-        [int]$Milliseconds = 2000
+        [int]$Milliseconds = 2000,
+        [string]$Status = "info",
+        [string]$Title = "GPT作品助手",
+        [string]$ActionTarget = "",
+        [string]$ActionLabel = "打开作品包"
     )
 
     if ($NoMessage) {
@@ -344,7 +348,50 @@ function Show-Tip {
         return
     }
 
-    $title = New-TextFromCodePoints @(0x4E00, 0x952E, 0x751F, 0x6210, 0x4F5C, 0x54C1, 0x5305)
+    # 1. 优先调用本地 shared-notification 系统的毛玻璃桌面通知
+    $notifyScript = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:SHARED_NOTIFICATION_ROOT)) {
+        $candidate = Join-Path $env:SHARED_NOTIFICATION_ROOT "scripts\notify.ps1"
+        if (Test-Path -LiteralPath $candidate) {
+            $notifyScript = $candidate
+        }
+    }
+    if (-not $notifyScript) {
+        $candidate = "D:\AICode\AI\skills\技能包\技能\shared-notification\scripts\notify.ps1"
+        if (Test-Path -LiteralPath $candidate) {
+            $notifyScript = $candidate
+        }
+    }
+
+    if ($notifyScript) {
+        try {
+            $validStatuses = @("success", "info", "warning", "partial", "failed", "error")
+            $safeStatus = if ($validStatuses -contains $Status.ToLowerInvariant()) { $Status.ToLowerInvariant() } else { "info" }
+            $notifyArgs = @(
+                '-NoProfile',
+                '-STA',
+                '-ExecutionPolicy', 'Bypass',
+                '-WindowStyle', 'Hidden',
+                '-File', $notifyScript,
+                '-Message', $Message,
+                '-Title', $Title,
+                '-Status', $safeStatus,
+                '-Source', 'chatgpt-workpkg',
+                '-AppName', 'GPT作品助手',
+                '-DurationMs', [Math]::Max(3000, $Milliseconds)
+            )
+            if (-not [string]::IsNullOrWhiteSpace($ActionTarget) -and (Test-Path -LiteralPath $ActionTarget)) {
+                $notifyArgs += @('-ActionTarget', $ActionTarget, '-ActionLabel', $ActionLabel)
+            }
+            Start-Process -FilePath "powershell.exe" -ArgumentList $notifyArgs -WindowStyle Hidden
+            return
+        } catch {
+            # 外部通知启动异常时平滑回退到内置弹窗
+        }
+    }
+
+    # 2. 回退机制：内置 WinForms 弹窗（用于无 shared-notification 的独立分发环境）
+    $fallbackTitle = New-TextFromCodePoints @(0x4E00, 0x952E, 0x751F, 0x6210, 0x4F5C, 0x54C1, 0x5305)
 
     try {
         Add-Type -AssemblyName System.Windows.Forms
@@ -426,7 +473,7 @@ public class WorkPkgToastForm : Form
     } catch {
         try {
             $shell = New-Object -ComObject WScript.Shell
-            $shell.Popup($Message, 1, $title, 64) | Out-Null
+            $shell.Popup($Message, 1, $fallbackTitle, 64) | Out-Null
         } catch {
         }
     }
@@ -1211,37 +1258,6 @@ function New-PortfolioName {
     return "{0}_{1:000}" -f $Prefix, $Number
 }
 
-function Get-WorkFolderContentType {
-    param([System.IO.DirectoryInfo]$Folder)
-
-    $title = [string]$Folder.Name
-    $gamePattern = '(小游戏|游戏合集|破冰游戏|晨会游戏|酒桌游戏|聚会游戏|团建游戏|真心话|大冒险|惩罚题|题库|你划我猜|猜歌|害你在心口难开|小姐牌|emoji猜)'
-    $conversionPattern = '(团建|年会|公司出游|企业团队|HR|行政|一日|两天一夜|2天1夜|路线|攻略|民宿|山庄|小院|露营|漂流|溯溪|采摘|骑行|温泉|烧烤|围炉|农家乐|目的地)'
-    if ($title -match $gamePattern) { return "traffic" }
-    if ($title -match $conversionPattern) { return "conversion" }
-
-    $textSample = ""
-    try {
-        $textFile = Get-ChildItem -LiteralPath $Folder.FullName -File -Filter "*.txt" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -ne $textFile) {
-            $textSample = [System.IO.File]::ReadAllText($textFile.FullName)
-            if ($textSample.Length -gt 1200) { $textSample = $textSample.Substring(0, 1200) }
-        }
-    } catch { $textSample = "" }
-
-    $firstLine = Get-TitleLine -Text $textSample
-    if ($firstLine -match $gamePattern) { return "traffic" }
-    if (("$firstLine`n$textSample") -match $conversionPattern) { return "conversion" }
-    return "unknown"
-}
-
-function Get-PortfolioTypeSuffix {
-    param([string]$ContentType)
-    if ($ContentType -eq "traffic") { return "[泛]" }
-    if ($ContentType -eq "conversion") { return "[转]" }
-    return ""
-}
-
 function Get-PortfolioHistoryMaxNumber {
     param(
         [object]$Database,
@@ -1385,7 +1401,7 @@ function Invoke-PortfolioAutoGroup {
     }
 
     $portfolioNameCore = $PortfolioPrefix.TrimStart('.')
-    $portfolioPattern = "^\.?$([regex]::Escape($portfolioNameCore))_(\d+)(?:\[(?:转|泛)\])?$"
+    $portfolioPattern = "^\.?$([regex]::Escape($portfolioNameCore))_(\d+)$"
     $allDirs = @(Get-ChildItem -LiteralPath $LibraryDir -Directory -Force -ErrorAction SilentlyContinue)
 
     $portfolioDirs = @(Get-ChildItem -LiteralPath $PortfolioOutputDir -Directory -Force -ErrorAction SilentlyContinue)
@@ -1399,7 +1415,7 @@ function Invoke-PortfolioAutoGroup {
         $_.Name -match '^\.?\d{8}_\d{6}_'
     } | Sort-Object Name)
 
-    if ($workFolders.Count -eq 0) {
+    if ($workFolders.Count -eq 0 -or ($workFolders.Count -lt $BatchSize -and -not $FlushRemainder)) {
         $emptyResult.Leftover = $workFolders.Count
         return $emptyResult
     }
@@ -1412,44 +1428,35 @@ function Invoke-PortfolioAutoGroup {
         }
     }
 
-    $plan = New-Object System.Collections.Generic.List[object]
-    $fullBatchCount = 0
-    $moveCount = 0
-    $leftoverCount = @($workFolders | Where-Object { (Get-WorkFolderContentType -Folder $_) -eq "unknown" }).Count
-    $portfolioOffset = 0
-
-    foreach ($contentType in @("conversion", "traffic")) {
-        $typedFolders = @($workFolders | Where-Object { (Get-WorkFolderContentType -Folder $_) -eq $contentType } | Sort-Object Name)
-        $typedBatchCount = if ($FlushRemainder) { [int][math]::Ceiling($typedFolders.Count / $BatchSize) } else { [int][math]::Floor($typedFolders.Count / $BatchSize) }
-        $typedMoveCount = if ($FlushRemainder) { $typedFolders.Count } else { $typedBatchCount * $BatchSize }
-        $leftoverCount += $typedFolders.Count - $typedMoveCount
-        $selectedFolders = @($typedFolders | Select-Object -First $typedMoveCount)
-        $typeSuffix = Get-PortfolioTypeSuffix -ContentType $contentType
-
-        for ($i = 0; $i -lt $selectedFolders.Count; $i++) {
-            $folder = $selectedFolders[$i]
-            $batchIndex = [int][math]::Floor($i / $BatchSize)
-            $portfolioNumber = $maxExistingNumber + 1 + $portfolioOffset + $batchIndex
-            $portfolioName = "$(New-PortfolioName -Prefix $PortfolioPrefix -Number $portfolioNumber)$typeSuffix"
-            $portfolioPath = Join-Path $PortfolioOutputDir $portfolioName
-            $destinationPath = Join-Path $portfolioPath $folder.Name
-            $plan.Add([pscustomobject]@{
-                Portfolio = $portfolioName
-                PortfolioPath = $portfolioPath
-                SourcePath = $folder.FullName
-                DestinationPath = $destinationPath
-                WorkFolder = $folder.Name
-                ContentType = $contentType
-            })
-        }
-        $fullBatchCount += $typedBatchCount
-        $moveCount += $typedMoveCount
-        $portfolioOffset += $typedBatchCount
+    $fullBatchCount = if ($FlushRemainder) {
+        [int][math]::Ceiling($workFolders.Count / $BatchSize)
+    } else {
+        [int][math]::Floor($workFolders.Count / $BatchSize)
     }
+    $moveCount = if ($FlushRemainder) {
+        $workFolders.Count
+    } else {
+        $fullBatchCount * $BatchSize
+    }
+    $leftoverCount = $workFolders.Count - $moveCount
+    $selectedFolders = @($workFolders | Select-Object -First $moveCount)
+    $plan = New-Object System.Collections.Generic.List[object]
 
-    if ($plan.Count -eq 0) {
-        $emptyResult.Leftover = $leftoverCount
-        return $emptyResult
+    for ($i = 0; $i -lt $selectedFolders.Count; $i++) {
+        $folder = $selectedFolders[$i]
+        $batchIndex = [int][math]::Floor($i / $BatchSize)
+        $portfolioNumber = $maxExistingNumber + 1 + $batchIndex
+        $portfolioName = New-PortfolioName -Prefix $PortfolioPrefix -Number $portfolioNumber
+        $portfolioPath = Join-Path $PortfolioOutputDir $portfolioName
+        $destinationPath = Join-Path $portfolioPath $folder.Name
+
+        $plan.Add([pscustomobject]@{
+            Portfolio = $portfolioName
+            PortfolioPath = $portfolioPath
+            SourcePath = $folder.FullName
+            DestinationPath = $destinationPath
+            WorkFolder = $folder.Name
+        })
     }
 
     $logDir = Join-Path $PortfolioOutputDir $LogFolderName
@@ -1871,7 +1878,7 @@ try {
         }
     } while ($null -eq $lockStream -and (Get-Date) -lt $queueDeadline)
     if ($null -eq $lockStream) {
-        Show-Tip -Message "本地打包队列等待超时，请稍后再试。"
+        Show-Tip -Message "本地打包队列等待超时，请稍后再试。" -Status "failed"
         if ($NoMessage) {
             Write-Output "QUEUE_TIMEOUT"
             Write-Output "Version=$workPackageScriptVersion"
@@ -1913,9 +1920,9 @@ try {
             -BackupPath $historyBackupPath `
             -RuntimeMirrorPath $historyRuntimeMirrorPath
         if ($flushResult.Moved -gt 0) {
-            Show-Tip -Message "已立即整理 $($flushResult.Moved) 个作品包。"
+            Show-Tip -Message "已立即整理 $($flushResult.Moved) 个作品包。" -Status "success" -ActionTarget $portfolioOutputDir -ActionLabel "打开作品集"
         } else {
-            Show-Tip -Message "当前没有待整理的作品包。"
+            Show-Tip -Message "当前没有待整理的作品包。" -Status "info"
         }
         Write-Output "PORTFOLIO_FLUSHED"
         Write-Output "Version=$workPackageScriptVersion"
@@ -1989,7 +1996,7 @@ try {
     $taskData = if ($null -ne $taskState) { $taskState.Data } else { $null }
     $taskPath = if ($null -ne $taskState) { [string]$taskState.Path } else { "" }
     if (-not [string]::IsNullOrWhiteSpace($BatchId) -and $null -eq $taskData) {
-        Show-Tip -Message "没有收到本次任务清单，请检查浏览器下载目录。"
+        Show-Tip -Message "没有收到本次任务清单，请检查浏览器下载目录。" -Status "warning"
         if ($NoMessage) {
             Write-Output "TASK_MISSING"
             Write-Output "Version=$workPackageScriptVersion"
@@ -2013,7 +2020,7 @@ try {
         $text = Get-ClipboardText
     }
     if ($null -eq $text -or [string]::IsNullOrWhiteSpace($text)) {
-        Show-Tip -Message (New-TextFromCodePoints @(0x8BF7, 0x5148, 0x590D, 0x5236, 0x6587, 0x6848))
+        Show-Tip -Message (New-TextFromCodePoints @(0x8BF7, 0x5148, 0x590D, 0x5236, 0x6587, 0x6848)) -Status "warning"
         return
     }
 
@@ -2034,7 +2041,7 @@ try {
         } else {
             "没有找到本次批次图片，请检查浏览器下载是否完成。"
         }
-        Show-Tip -Message $missingBatchMessage
+        Show-Tip -Message $missingBatchMessage -Status "warning"
         return
     }
     if (-not $inboxSelection.IsComplete) {
@@ -2044,7 +2051,7 @@ try {
             Save-WorkPackageTaskJson -Task $taskData -Path $taskPath
         }
         $incompleteMessage = "本组图片尚未下载完整：$($images.Count)/$($inboxSelection.ExpectedCount)，请稍后再打包。"
-        Show-Tip -Message $incompleteMessage
+        Show-Tip -Message $incompleteMessage -Status "warning"
         if ($NoMessage) {
             Write-Output "INCOMPLETE_BATCH"
             Write-Output "Version=$workPackageScriptVersion"
@@ -2123,7 +2130,7 @@ try {
         } else {
             Clear-ClipboardAfterSuccess
         }
-        Show-Tip -Message $duplicateExistingMessage
+        Show-Tip -Message $duplicateExistingMessage -Status "warning"
         if ($NoMessage) {
             Write-Output "DUPLICATE"
             Write-Output "Version=$workPackageScriptVersion"
@@ -2154,7 +2161,7 @@ try {
                 Set-WorkPackageTaskProperty -Task $taskData -Name "visualMaximumDistance" -Value $visualMatch.MaximumDistance
                 Save-WorkPackageTaskJson -Task $taskData -Path $taskPath
             }
-            Show-Tip -Message "检测到图片视觉近似历史作品，已停止打包；相似包路径已复制。"
+            Show-Tip -Message "检测到图片视觉近似历史作品，已停止打包；相似包路径已复制。" -Status "warning" -ActionTarget $similarPackagePath -ActionLabel "查看相似作品"
             if ($NoMessage) {
                 Write-Output "VISUAL_SIMILAR"
                 Write-Output "Version=$workPackageScriptVersion"
@@ -2383,7 +2390,7 @@ try {
     }
 
     foreach ($stageMessage in $stageMessages) {
-        Show-Tip -Message $stageMessage -Milliseconds $notificationDurationMs
+        Show-Tip -Message $stageMessage -Milliseconds $notificationDurationMs -Status "success" -ActionTarget $finalTargetDir -ActionLabel "打开作品包"
     }
 
     if ($NoMessage) {

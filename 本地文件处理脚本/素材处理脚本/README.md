@@ -11,9 +11,9 @@
    常用方式：
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File ".\江湖采集下载文件夹过长处理脚本.ps1" -RootPath "D:\AICode\AI\data\01-团建策划-江湖有旅人\01-素材库\1.团建攻略素材" -Mode Preview
-   powershell -ExecutionPolicy Bypass -File ".\江湖采集下载文件夹过长处理脚本.ps1" -RootPath "D:\AICode\AI\data\01-团建策划-江湖有旅人\01-素材库\1.团建攻略素材" -Mode Apply
-   powershell -ExecutionPolicy Bypass -File ".\江湖采集下载文件夹过长处理脚本.ps1" -RootPath "D:\AICode\AI\data\01-团建策划-江湖有旅人\01-素材库\1.团建攻略素材" -Mode Undo
+   powershell -ExecutionPolicy Bypass -File ".\江湖采集下载文件夹过长处理脚本.ps1" -RootPath "D:\AICode\项目推进\projects\江湖有旅人\主项目\01-素材库\1.团建攻略素材" -Mode Preview
+   powershell -ExecutionPolicy Bypass -File ".\江湖采集下载文件夹过长处理脚本.ps1" -RootPath "D:\AICode\项目推进\projects\江湖有旅人\主项目\01-素材库\1.团建攻略素材" -Mode Apply
+   powershell -ExecutionPolicy Bypass -File ".\江湖采集下载文件夹过长处理脚本.ps1" -RootPath "D:\AICode\项目推进\projects\江湖有旅人\主项目\01-素材库\1.团建攻略素材" -Mode Undo
    ```
 
 2. `安装-一键生成硬链接封面.py`
