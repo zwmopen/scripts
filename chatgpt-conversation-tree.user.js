@@ -62,6 +62,7 @@
   const MAX_BACKUPS = 8;
   const PROMPT_STORAGE_KEY = `${APP_ID}:prompts:v1`;
   const GM_PROMPT_KEY = 'prompts-v1';
+  const USERSCRIPT_RAW_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/master/chatgpt-conversation-tree.user.js';
   const CLOUD_PROMPT_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/master/chatgpt-cloud-prompts.json';
   const CLOUD_PROMPT_CACHE_KEY = 'cloud-prompts-cache-v1';
   const CLOUD_PROMPT_CACHE_STORAGE_KEY = `${APP_ID}:cloud-prompts-cache:v1`;
@@ -2760,6 +2761,76 @@
     }
   }
 
+  function compareVersions(v1, v2) {
+    const p1 = String(v1 || '').split('.').map((n) => parseInt(n, 10) || 0);
+    const p2 = String(v2 || '').split('.').map((n) => parseInt(n, 10) || 0);
+    const len = Math.max(p1.length, p2.length);
+    for (let i = 0; i < len; i += 1) {
+      const a = p1[i] || 0;
+      const b = p2[i] || 0;
+      if (a > b) return 1;
+      if (a < b) return -1;
+    }
+    return 0;
+  }
+
+  async function checkUserscriptUpdate(manual = true) {
+    if (manual) showImageDownloadToast('正在连接 GitHub 检查脚本更新…', true);
+    addDiagnosticLog('update:check-start', { currentVersion: SCRIPT_VERSION, manual });
+    try {
+      const url = `${USERSCRIPT_RAW_URL}?ts=${Date.now()}`;
+      let text = '';
+      if (typeof GM_xmlhttpRequest === 'function') {
+        text = await new Promise((resolve, reject) => {
+          GM_xmlhttpRequest({
+            method: 'GET',
+            url,
+            timeout: 12000,
+            onload: (res) => {
+              if (res.status >= 200 && res.status < 300) resolve(res.responseText || '');
+              else reject(new Error(`HTTP ${res.status}`));
+            },
+            onerror: () => reject(new Error('无法连接 GitHub 脚本仓库')),
+            ontimeout: () => reject(new Error('连接 GitHub 脚本仓库超时')),
+          });
+        });
+      } else {
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        text = await res.text();
+      }
+
+      const match = text.match(/@version\s+([0-9.]+)/i);
+      const remoteVersion = match ? match[1].trim() : '';
+      if (!remoteVersion) {
+        throw new Error('未解析到远程脚本版本号');
+      }
+
+      const cmp = compareVersions(remoteVersion, SCRIPT_VERSION);
+      if (cmp > 0) {
+        showImageDownloadToast(`发现新版本 v${remoteVersion}（当前 v${SCRIPT_VERSION}），正在跳转更新…`, true);
+        addDiagnosticLog('update:found-new-version', { currentVersion: SCRIPT_VERSION, remoteVersion });
+        window.setTimeout(() => {
+          window.open(USERSCRIPT_RAW_URL, '_blank', 'noopener');
+        }, 800);
+      } else {
+        if (manual) {
+          showImageDownloadToast(`当前已是最新版本 (v${SCRIPT_VERSION})`, true);
+        }
+        addDiagnosticLog('update:already-latest', { currentVersion: SCRIPT_VERSION, remoteVersion });
+      }
+    } catch (error) {
+      console.warn('[ChatGPT 助手] 检查更新失败：', error);
+      if (manual) {
+        showImageDownloadToast(`检查更新失败：${error.message || '网络异常'}`, false);
+        if (window.confirm(`检查在线更新失败（${error.message || '网络异常'}）。\n\n是否直接在新标签页打开脚本安装链接？`)) {
+          window.open(USERSCRIPT_RAW_URL, '_blank', 'noopener');
+        }
+      }
+      addDiagnosticLog('update:check-failed', { message: error?.message || String(error) });
+    }
+  }
+
   function registerUserscriptMenuCommands() {
     if (typeof GM_registerMenuCommand !== 'function') return;
     if (typeof GM_unregisterMenuCommand === 'function') {
@@ -2772,30 +2843,39 @@
       const id = GM_registerMenuCommand(label, handler);
       if (id != null) userscriptMenuCommandIds.push(id);
     };
-    addMenu('导出 ChatGPT 助手数据（提示词+旧分组备份）', () => exportGroupData());
-    addMenu('导入提示词备份', () => chooseImportFile('merge'));
-    addMenu('同步 GitHub 云端提示词', () => void syncCloudPrompts(true));
-    addMenu('恢复上一版云端提示词', () => restorePreviousCloudPrompts());
-    addMenu('导出本地提示词为云端文件', () => exportCloudPromptFile());
-    addMenu('打开提示词库', () => {
+
+    // 1. 脚本与提示词更新
+    addMenu(`🚀 检查脚本更新 (当前 v${SCRIPT_VERSION})`, () => void checkUserscriptUpdate(true));
+    addMenu('☁ 同步 GitHub 云端提示词', () => void syncCloudPrompts(true));
+    addMenu('📝 打开提示词库', () => {
       ensurePromptButton();
       const button = document.getElementById(PROMPT_BUTTON_ID);
       if (button) togglePromptPanel(button);
       else window.alert('没有找到 ChatGPT 输入框，暂时无法打开提示词库。');
     });
+
+    // 2. 数据与提示词备份
+    addMenu('📤 导出助手数据备份（含提示词+旧分组）', () => exportGroupData());
+    addMenu('📥 导入提示词备份', () => chooseImportFile('merge'));
+    addMenu('↶ 恢复上一版云端提示词', () => restorePreviousCloudPrompts());
+    addMenu('📄 导出本地提示词为云端文件', () => exportCloudPromptFile());
+
+    // 3. 界面显示开关
     addMenu(
-      imageDownloadButtonVisible ? '隐藏单独下载按钮' : '显示单独下载按钮',
+      imageDownloadButtonVisible ? '👁 隐藏单独下载按钮' : '👁 显示单独下载按钮',
       () => setImageDownloadButtonVisible(!imageDownloadButtonVisible)
     );
     addMenu(
-      workPackageButtonVisible ? '隐藏下载并打包按钮' : '显示下载并打包按钮',
+      workPackageButtonVisible ? '📦 隐藏下载并打包按钮' : '📦 显示下载并打包按钮',
       () => setWorkPackageButtonVisible(!workPackageButtonVisible)
     );
-    addMenu('下载安装/更新本地作品助手', () => downloadWorkPackageInstaller());
-    addMenu('设置本地作品助手（目录+作品集规则）', () => openWorkPackageProtocol('cgpt-workpkg://configure'));
-    addMenu('打开本地作品任务中心', () => openWorkPackageProtocol('cgpt-workpkg://center'));
-    addMenu('检查本地作品助手', () => openWorkPackageProtocol('cgpt-workpkg://diagnose'));
-    addMenu('复制诊断日志', () => copyDiagnosticLogs());
+
+    // 4. 本地助手与诊断
+    addMenu('🛠 设置本地作品助手（目录+作品集规则）', () => openWorkPackageProtocol('cgpt-workpkg://configure'));
+    addMenu('📋 打开本地作品任务中心', () => openWorkPackageProtocol('cgpt-workpkg://center'));
+    addMenu('🔍 检查本地作品助手环境', () => openWorkPackageProtocol('cgpt-workpkg://diagnose'));
+    addMenu('📥 下载安装/更新本地作品助手', () => downloadWorkPackageInstaller());
+    addMenu('📋 复制诊断日志', () => copyDiagnosticLogs());
   }
 
   // ==========================================
@@ -2822,6 +2902,8 @@
           insertPrompt(promptId);
         } else if (action === 'sync-cloud') {
           void syncCloudPrompts(true);
+        } else if (action === 'check-update') {
+          void checkUserscriptUpdate(true);
         } else if (action === 'toggle-help') {
           promptHelpVisible = !promptHelpVisible;
           renderPromptPanel();
