@@ -2883,6 +2883,18 @@
   // ==========================================
 
   function bindEvents() {
+    const handleOutsideInteraction = (event) => {
+      const panel = document.getElementById(PROMPT_PANEL_ID);
+      if (!panel || panel.hidden) return;
+      const target = event.target;
+      if (target && !target.closest?.(`#${PROMPT_PANEL_ID}, #${PROMPT_BUTTON_ID}`)) {
+        closePromptPanel();
+      }
+    };
+
+    document.addEventListener('pointerdown', handleOutsideInteraction, true);
+    document.addEventListener('touchstart', handleOutsideInteraction, { capture: true, passive: true });
+
     document.addEventListener('click', (event) => {
       const promptAction = event.target.closest?.('[data-cgpt-prompt-action]');
       if (promptAction) {
@@ -2921,9 +2933,7 @@
         }
         return;
       }
-      if (!event.target.closest?.(`#${PROMPT_PANEL_ID}, #${PROMPT_BUTTON_ID}`)) {
-        closePromptPanel();
-      }
+      handleOutsideInteraction(event);
     }, true);
 
     document.addEventListener('change', (event) => {
