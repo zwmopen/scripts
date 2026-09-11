@@ -18,6 +18,24 @@ jobs:
         with:
           ref: mobile-via-zip
           fetch-depth: 0
+      - name: Normalize runtime patch anchor
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path('chatgpt-conversation-tree.user.js')
+          text = path.read_text(encoding='utf-8')
+          text, count = re.subn(
+              r'^[ \t]*const MOBILE_SWIPE_EDGE_PX\s*=\s*34;[ \t]*$',
+              '  const MOBILE_SWIPE_EDGE_PX = 34;',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if count != 1:
+              raise SystemExit(f'Expected one MOBILE_SWIPE_EDGE_PX=34 anchor, got {count}')
+          path.write_text(text, encoding='utf-8')
+          PY
       - name: Apply Via runtime patch with RED-GREEN verification
         run: python maintenance/apply-mobile-via-runtime-fix.py
       - name: Verify mobile build
