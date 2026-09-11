@@ -6,6 +6,7 @@ on:
     paths:
       - 'chatgpt-conversation-tree.user.js'
       - 'tests/test_via_early_start.py'
+      - 'tests/test_mobile_via_runtime.py'
       - 'maintenance/apply-via-early-start-fix.py'
       - '.github/workflows/via-early-start.yml'
 
