@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.17.0
+// @version      1.18.0
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -26,7 +26,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.17.0';
+  const SCRIPT_VERSION = '1.18.0';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -681,6 +681,112 @@
       .replace(/^(打开|Open)\s*/i, '')
       .trim()
       .slice(0, 180);
+  }
+
+  function cleanWorkPackageTitle(rawTitle) {
+    if (!rawTitle) return '精选团建方案';
+    let t = String(rawTitle).trim();
+    t = t.replace(/^\.?(\d{4}|\d{8})_\d{4,6}_/, '');
+    t = t.replace(/^(?:[_\s]*COPY_FORMAT_\d+[_\s]*|[_\s]*XHS_\d+_START[_\s]*|[_\s]*XHS_START[_\s]*|<<<COPY_FORMAT:\d+>>>|<<<[A-Za-z0-9_:]+>>>)+/gi, '');
+    t = t.replace(/^(_mnt_data_|\/mnt\/data\/|[a-zA-Z]:[\\/])/i, '');
+    t = t.replace(/\.(png|jpg|jpeg|txt)$/i, '');
+    t = t.replace(/^(?:#+\s*|【小红书标题】|小红书第[12]版[：:\s]*|小红书标题[：:\s]*|标题(?:[①②12备选]*)[：:\s]*|Title[：:\s]*)/gi, '');
+    t = t.replace(/^[0-9一二三四五]+[、.．\s-]/, '');
+    t = t.replace(/^【(?:标题|小红书|方案|定制)】\s*/, '');
+    
+    if (/^(?:好的|收到|为你|为您|这里是|以下是|我这边|根据|请参考|已为你|已为您|没问题|如需|这是为你|这是为您|本方案|我来为你)/.test(t)) return '精选团建方案';
+    if (/(我这边没有看到|没有看到你这轮|当前会话里可见|文件名是)/.test(t)) return '精选团建方案';
+    if (/^(【?(?:团建信息|活动信息|行程信息|关于我们|交通路线|费用明细)】?)$/.test(t)) return '精选团建方案';
+
+    t = t.replace(/\s*#\S.*$/, '');
+    t = t.split(/\r?\n/)[0].trim();
+    t = t.replace(/（[^）]*）|\([^)]*\)/g, '');
+    t = t.replace(/[\(（][^()（）]*$/, '');
+
+    t = t.replace(/\|/g, '｜').replace(/丨/g, '｜');
+    // 核心白名单清洗（彻底清除所有 Emoji、孟加拉文、藏文、乱码装饰字符）
+    t = t.replace(/[^\u4e00-\u9fa5a-zA-Z0-9\s\+\-—｜·・/&]/g, ' ');
+    t = t.replace(/\s*(?:被全公司夸爆|全网首发|建议收藏|赶紧码住|HR快抄|直接抄|抄作业).*$/, '');
+
+    // 剥离博主牛皮癣与昵称后缀
+    t = t.trim();
+    t = t.replace(/(?:(?:江浙沪|同城|独立|本地|小红书)?(?:旅行|旅游)?(?:摄影师|生活家|探店|博主|推荐官)|叫我|我是|爱玩|爱吃)[\u4e00-\u9fa5A-Za-z0-9_]{0,12}$/, '');
+    t = t.replace(/(?<=[\u4e00-\u9fa5]{2})[\u4e00-\u9fa5]{1,2}(?:先生|女士|小姐|同学|姐姐|学姐|哥哥|学长|麻麻|妈妈|宝妈|酱|酱紫|叔|阿姨|小哥|妹子|大王)$/, '');
+    t = t.replace(/(?<=[\u4e00-\u9fa5]{2})小[\u4e00-\u9fa5]{1,2}$/, '');
+    t = t.replace(/(?<=[\u4e00-\u9fa5])\s*[A-Za-z0-9]{2,15}$/, '');
+    t = t.replace(/[\(（][^()（）]*[-_~^][^()（）]*[\)）].*$/, '');
+
+    t = t.replace(/[\s_]+/g, ' ').trim();
+    t = t.replace(/^[\_\-·・｜+&/\s]+|[\_\-·・｜+&/\s]+$/g, '');
+
+    if (t.length > 45) {
+      t = t.slice(0, 45).replace(/[\_\-·・｜+&/\s]+$/, '');
+    }
+    return t || '精选团建方案';
+  }
+
+  function extractWorkPackageTitle(copyText) {
+    if (!copyText || !copyText.trim()) return '精选团建方案';
+    
+    // 1. 优先在 <<<XHS_START>>> 区块中提取
+    const xhsMatch = copyText.match(/<<<XHS_START>>>(?<block>[\s\S]*?)<<<XHS_END>>>/);
+    if (xhsMatch && xhsMatch.groups?.block) {
+      const lines = xhsMatch.groups.block.split(/\r?\n/);
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || /^(<<<|```|#+\s*小红书|【小红书)/.test(line)) continue;
+        if (/^(【?(?:团建信息|活动信息|行程信息|关于我们|交通路线|费用明细)】?)$/.test(line)) continue;
+        if (/^(?:好的|收到|为你|为您|这里是|以下是|我这边|根据|请参考)/.test(line)) continue;
+        const titleMatch = line.match(/^(?:#+\s*|标题[：:]\s*)(.+)$/);
+        if (titleMatch) return cleanWorkPackageTitle(titleMatch[1]);
+        if (/(?:团建|攻略|游|玩|｜|\|)/.test(line) && line.length <= 55) {
+          return cleanWorkPackageTitle(line);
+        }
+      }
+    }
+
+    // 2. 优先在 <<<XHS_2_START>>> 区块中提取
+    const xhs2Match = copyText.match(/<<<XHS_2_START>>>(?<block>[\s\S]*?)<<<XHS_2_END>>>/);
+    if (xhs2Match && xhs2Match.groups?.block) {
+      const lines = xhs2Match.groups.block.split(/\r?\n/);
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || /^(<<<|```|#+\s*小红书|【小红书)/.test(line)) continue;
+        if (/^(【?(?:团建信息|活动信息|行程信息|关于我们|交通路线|费用明细)】?)$/.test(line)) continue;
+        if (/^(?:好的|收到|为你|为您|这里是|以下是|我这边|根据|请参考)/.test(line)) continue;
+        const titleMatch = line.match(/^(?:#+\s*|标题[：:]\s*)(.+)$/);
+        if (titleMatch) return cleanWorkPackageTitle(titleMatch[1]);
+        if (/(?:团建|攻略|游|玩|｜|\|)/.test(line) && line.length <= 55) {
+          return cleanWorkPackageTitle(line);
+        }
+      }
+    }
+
+    // 3. 全局显式标题匹配
+    for (const rawLine of copyText.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || /^(<<<|```|#+\s*小红书|#+\s*抖音)/.test(line)) continue;
+      const titleMatch = line.match(/^(?:#+\s*|小红书标题[：:]\s*|标题[：:]\s*)(.+)$/);
+      if (titleMatch && titleMatch[1].trim().length >= 4) {
+        return cleanWorkPackageTitle(titleMatch[1]);
+      }
+    }
+
+    // 4. 兜底首个有效行
+    for (const rawLine of copyText.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || /^(<<<|```|#+\s*小红书|#+\s*抖音)/.test(line)) continue;
+      if (/^(?:好的|收到|为你|为您|这里是|以下是|我这边|根据|请参考|已为你|已为您|没问题|如需|这是为你|这是为您|本方案|我来为你)/.test(line)) continue;
+      if (/(我这边没有看到|没有看到你这轮|当前会话里可见|文件名是)/.test(line)) continue;
+      if (/^(【?(?:团建信息|活动信息|行程信息|关于我们|交通路线|费用明细)】?)$/.test(line)) continue;
+      if (/^#\S/.test(line)) continue;
+      const cleaned = cleanWorkPackageTitle(line);
+      if (cleaned && cleaned !== '精选团建方案' && cleaned.length >= 4) {
+        return cleaned;
+      }
+    }
+
+    return '精选团建方案';
   }
 
   function escapeHtml(value) {
@@ -1888,7 +1994,7 @@
       createdAt: new Date().toISOString(),
       expectedImages: Math.max(0, Number(expectedImages || 0)),
       copyText,
-      copyTitle: compactTitle(copyText.split(/\r?\n/).find((line) => line.trim()) || '').slice(0, 160),
+      copyTitle: extractWorkPackageTitle(copyText),
       conversationTitle: currentWorkPackageConversationTitle(),
       accountName: currentWorkPackageAccountName(),
       conversationUrl: currentWorkPackageConversationUrl(),

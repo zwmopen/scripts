@@ -67,7 +67,7 @@ function Repair-LegacyConfig {
     $changed = $false
     $validNamingModes = @("title_conversation", "conversation_title", "title_only", "conversation_only")
     if ([string]$Config.package_naming_mode -notin $validNamingModes) {
-        Set-ObjectProperty -Object $Config -Name "package_naming_mode" -Value "title_conversation"
+        Set-ObjectProperty -Object $Config -Name "package_naming_mode" -Value "title_only"
         $changed = $true
     }
     return $changed
@@ -418,9 +418,9 @@ $namingCombo.DropDownStyle = "DropDownList"
 $namingCombo.Location = New-Object System.Drawing.Point(160, 30)
 $namingCombo.Size = New-Object System.Drawing.Size(450, 30)
 $namingOptions = @(
-    [pscustomobject]@{ Label = "文案标题（GPT 对话名）— 推荐，最容易找"; Value = "title_conversation" },
+    [pscustomobject]@{ Label = "只用文案标题（提纯无括号）— 推荐，最整洁纯净"; Value = "title_only" },
+    [pscustomobject]@{ Label = "文案标题（GPT 对话名）— 附带会话名称"; Value = "title_conversation" },
     [pscustomobject]@{ Label = "GPT 对话名（文案标题）— 模板名放前面"; Value = "conversation_title" },
-    [pscustomobject]@{ Label = "只用文案标题— 名称最短"; Value = "title_only" },
     [pscustomobject]@{ Label = "只用 GPT 对话名— 同模板作品可能重名"; Value = "conversation_only" }
 )
 foreach ($option in $namingOptions) {
@@ -575,7 +575,7 @@ function Update-NamingPreview {
     $selectedMode = if ($namingCombo.SelectedIndex -ge 0) {
         [string]$namingOptions[$namingCombo.SelectedIndex].Value
     } else {
-        "title_conversation"
+        "title_only"
     }
     $sampleName = switch ($selectedMode) {
         "conversation_title" { "$sampleConversation（$sampleTitle）" }
@@ -583,7 +583,8 @@ function Update-NamingPreview {
         "conversation_only" { $sampleConversation }
         default { "$sampleTitle（$sampleConversation）" }
     }
-    $namingPreview.Text = "实际示例：20260727_163006_$sampleName"
+    $sampleStamp = Get-Date -Format "MMdd_HHmm"
+    $namingPreview.Text = "实际示例：$sampleStamp`_$sampleName"
 }
 
 $namingCombo.Add_SelectedIndexChanged({ Update-NamingPreview })

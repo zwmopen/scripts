@@ -29,16 +29,154 @@ function Get-ClipboardText {
     }
 }
 
+function Get-PureWorkPackageTitle {
+    param([string]$RawTitle)
+
+    if ([string]::IsNullOrWhiteSpace($RawTitle)) {
+        return "精选团建方案"
+    }
+
+    $t = $RawTitle.Trim()
+
+    # 1. 剥离可能存在的旧时间戳与协议/文件前缀
+    $t = $t -replace '^\.?(\d{4}|\d{8})_\d{4,6}_', ''
+    $t = $t -replace '^(?:[_\s]*COPY_FORMAT_\d+[_\s]*|[_\s]*XHS_\d+_START[_\s]*|[_\s]*XHS_START[_\s]*|<<<COPY_FORMAT:\d+>>>|<<<[A-Za-z0-9_:]+>>>)+', ''
+    $t = $t -replace '^(_mnt_data_|/mnt/data/|[a-zA-Z]:[\\/])', ''
+    $t = $t -replace '\.(png|jpg|jpeg|txt)$', ''
+
+    # 2. 剥离前缀标签与编号（如 标题：、小红书标题：、1. 等）
+    $t = $t -replace '^(?:#+\s*|【小红书标题】|小红书第[12]版[：:\s]*|小红书标题[：:\s]*|标题(?:[①②12备选]*)[：:\s]*|Title[：:\s]*)', ''
+    $t = $t -replace '^[0-9一二三四五]+[、.．\s-]', ''
+    $t = $t -replace '^【(?:标题|小红书|方案|定制)】\s*', ''
+
+    # 3. 过滤大白话与纯元数据行
+    if ($t -match '^(?:好的|收到|为你|为您|这里是|以下是|我这边|根据|请参考|已为你|已为您|没问题|如需|这是为你|这是为您|本方案|我来为你)') {
+        return "精选团建方案"
+    }
+    if ($t -match '(我这边没有看到|没有看到你这轮|当前会话里可见|文件名是)') {
+        return "精选团建方案"
+    }
+    if ($t -match '^(【?(?:团建信息|活动信息|行程信息|关于我们|交通路线|费用明细)】?)$') {
+        return "精选团建方案"
+    }
+
+    # 4. 剥离末尾话题标签
+    $t = $t -replace '\s*#\S.*$', ''
+
+    # 5. 只取第一行
+    $t = ($t -split '\r?\n')[0].Trim()
+
+    # 6. 剥离括号内容（如会话标题、未闭合的半括号）
+    $t = $t -replace '（[^）]*）|\([^)]*\)', ''
+    $t = $t -replace '[\(（][^()（）]*$', ''
+
+    # 7. 规范化分隔符：| 与 丨 统一转为全角 ｜
+    $t = $t -replace '\|', '｜'
+    $t = $t -replace '丨', '｜'
+
+    # 8. 核心白名单清洗（彻底清除所有 Emoji、孟加拉文、藏文、乱码装饰字符）
+    # 只允许：中文、英文大小写、数字、全角竖线 ｜、常用连词符号 + - — · ・ / & 以及空格
+    $t = $t -replace '[^\u4e00-\u9fa5a-zA-Z0-9\s\+\-—｜·・/&]', ' '
+    $t = $t -replace '\s*(?:被全公司夸爆|全网首发|建议收藏|赶紧码住|HR快抄|直接抄|抄作业).*$', ''
+
+    # 9. 剥离原作者牛皮癣（小红书博主昵称与尊称后缀）
+    $t = $t.Trim()
+    $t = $t -replace '(?:(?:江浙沪|同城|独立|本地|小红书)?(?:旅行|旅游)?(?:摄影师|生活家|探店|博主|推荐官)|叫我|我是|爱玩|爱吃)[\u4e00-\u9fa5A-Za-z0-9_]{0,12}$', ''
+    $t = $t -replace '(?<=[\u4e00-\u9fa5]{2})[\u4e00-\u9fa5]{1,2}(?:先生|女士|小姐|同学|姐姐|学姐|哥哥|学长|麻麻|妈妈|宝妈|酱|酱紫|叔|阿姨|小哥|妹子|大王)$', ''
+    $t = $t -replace '(?<=[\u4e00-\u9fa5]{2})小[\u4e00-\u9fa5]{1,2}$', ''
+    $t = $t -replace '(?<=[\u4e00-\u9fa5])\s*[A-Za-z0-9]{2,15}$', ''
+    $t = $t -replace '[\(（][^()（）]*[-_~^][^()（）]*[\)）].*$', ''
+
+    # 10. 清理冗余符号与空白
+    $t = $t -replace '[\s_]+', ' '
+    $t = $t.Trim(" `t`r`n_-·・｜+&/")
+
+    # 11. 截断超长部分（保留最长 45 字）
+    if ($t.Length -gt 45) {
+        $t = $t.Substring(0, 45).TrimEnd(" `t`r`n_-·・｜+&/")
+    }
+
+    if ([string]::IsNullOrWhiteSpace($t)) {
+        return "精选团建方案"
+    }
+
+    return $t
+}
+
 function Get-TitleLine {
     param([string]$Text)
 
-    foreach ($line in ($Text -split "\r?\n")) {
-        if (-not [string]::IsNullOrWhiteSpace($line)) {
-            return $line.Trim()
+    if ([string]::IsNullOrWhiteSpace($Text)) { return "精选团建方案" }
+
+    # 1. 优先提取小红书第1版/小红书区间的标题
+    if ($Text -match '<<<XHS_START>>>(?<block>[\s\S]*?)<<<XHS_END>>>') {
+        $xhsBlock = $Matches['block']
+        foreach ($line in ($xhsBlock -split "\r?\n")) {
+            $trimmed = $line.Trim()
+            if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+            if ($trimmed -match '^(<<<|```|#+\s*小红书|【小红书)') { continue }
+            if ($trimmed -match '^(【?(?:团建信息|活动信息|行程信息|关于我们|交通路线|费用明细)】?)$') { continue }
+            if ($trimmed -match '^(?:好的|收到|为你|为您|这里是|以下是|我这边|根据|请参考)') { continue }
+            
+            # 命中显式标题行
+            if ($trimmed -match '^(?:#+\s*|标题[：:]\s*)(.+)$') {
+                return (Get-PureWorkPackageTitle -RawTitle $Matches[1])
+            }
+            # 命中首行成稿标题
+            if (($trimmed -match '团建|攻略|游|玩|｜|\|') -and $trimmed.Length -le 55) {
+                return (Get-PureWorkPackageTitle -RawTitle $trimmed)
+            }
         }
     }
 
-    return "untitled"
+    # 2. 检查小红书第2版区间的标题
+    if ($Text -match '<<<XHS_2_START>>>(?<block>[\s\S]*?)<<<XHS_2_END>>>') {
+        $xhsBlock = $Matches['block']
+        foreach ($line in ($xhsBlock -split "\r?\n")) {
+            $trimmed = $line.Trim()
+            if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+            if ($trimmed -match '^(<<<|```|#+\s*小红书|【小红书)') { continue }
+            if ($trimmed -match '^(【?(?:团建信息|活动信息|行程信息|关于我们|交通路线|费用明细)】?)$') { continue }
+            if ($trimmed -match '^(?:好的|收到|为你|为您|这里是|以下是|我这边|根据|请参考)') { continue }
+            if ($trimmed -match '^(?:#+\s*|标题[：:]\s*)(.+)$') {
+                return (Get-PureWorkPackageTitle -RawTitle $Matches[1])
+            }
+            if (($trimmed -match '团建|攻略|游|玩|｜|\|') -and $trimmed.Length -le 55) {
+                return (Get-PureWorkPackageTitle -RawTitle $trimmed)
+            }
+        }
+    }
+
+    # 3. 全文扫描显式标题标记
+    foreach ($line in ($Text -split "\r?\n")) {
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+        if ($trimmed -match '^(<<<|```|#+\s*小红书|#+\s*抖音)') { continue }
+        if ($trimmed -match '^(?:#+\s*|小红书标题[：:]\s*|标题[：:]\s*)(.+)$') {
+            $candidate = $Matches[1].Trim()
+            if ($candidate.Length -ge 4) {
+                return (Get-PureWorkPackageTitle -RawTitle $candidate)
+            }
+        }
+    }
+
+    # 4. 兜底扫描首个非标签、非大白话、非分隔符行
+    foreach ($line in ($Text -split "\r?\n")) {
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+        if ($trimmed -match '^(<<<|```|#+\s*小红书|#+\s*抖音)') { continue }
+        if ($trimmed -match '^(?:好的|收到|为你|为您|这里是|以下是|我这边|根据|请参考|已为你|已为您|没问题|如需|这是为你|这是为您|本方案|我来为你)') { continue }
+        if ($trimmed -match '(我这边没有看到|没有看到你这轮|当前会话里可见|文件名是)') { continue }
+        if ($trimmed -match '^(【?(?:团建信息|活动信息|行程信息|关于我们|交通路线|费用明细)】?)$') { continue }
+        if ($trimmed -match '^#\S') { continue }
+        
+        $pure = Get-PureWorkPackageTitle -RawTitle $trimmed
+        if ($pure -ne "精选团建方案" -and $pure.Length -ge 4) {
+            return $pure
+        }
+    }
+
+    return "精选团建方案"
 }
 
 function Get-SafeNamePart {
@@ -48,20 +186,17 @@ function Get-SafeNamePart {
     )
 
     if ([string]::IsNullOrWhiteSpace($Text)) {
-        return "untitled"
+        return "精选团建方案"
     }
 
-    $safe = $Text -replace '[<>:"/\\|?*\x00-\x1F]', '_'
-    $safe = $safe -replace '\s+', ' '
-    $safe = $safe.Trim()
-    $safe = $safe.TrimEnd('.', ' ')
-
-    if ([string]::IsNullOrWhiteSpace($safe)) {
-        $safe = "untitled"
-    }
+    $safe = Get-PureWorkPackageTitle -RawTitle $Text
 
     if ($MaxLength -gt 0 -and $safe.Length -gt $MaxLength) {
-        $safe = $safe.Substring(0, $MaxLength).TrimEnd('.', ' ')
+        $safe = $safe.Substring(0, $MaxLength).TrimEnd(" `t`r`n_-·・｜+&/")
+    }
+
+    if ([string]::IsNullOrWhiteSpace($safe)) {
+        return "精选团建方案"
     }
 
     return $safe
@@ -305,7 +440,8 @@ function Get-WorkPackageConfig {
         portfolio_batch_size = 14
         portfolio_prefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
         portfolio_log_folder = "_portfolio_move_logs"
-        package_naming_mode = "title_conversation"
+        package_naming_mode = "title_only"
+        package_timestamp_format = "MMdd_HHmm"
         completion_open_folder = $false
         completion_copy_path = $false
         notification_duration_ms = 850
@@ -521,7 +657,7 @@ function Get-PackagedTextFiles {
     }
 
     $folders = @(Get-ChildItem -LiteralPath $Directory -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -match '^\.?\d{8}_\d{6}_'
+        $_.Name -match '^\.?(\d{4}|\d{8})(_\d{4,6})?_'
     })
 
     foreach ($folder in $folders) {
@@ -671,6 +807,13 @@ function Get-WorkPackageInboxImages {
     $rows = @($latestBatch.Rows | Sort-Object Index)
     $declaredCount = [int](@($rows.Total | Sort-Object -Descending)[0])
     $expectedCount = [Math]::Max(1, [Math]::Max($declaredCount, $RequestedExpectedCount))
+    $matchedRows = @($rows | Where-Object { [int]$_.Total -eq $expectedCount })
+    if ($matchedRows.Count -gt 0) {
+        $rows = $matchedRows
+    } elseif ($declaredCount -gt 0) {
+        $rows = @($rows | Where-Object { [int]$_.Total -eq $declaredCount })
+        $expectedCount = $declaredCount
+    }
     $uniqueIndexes = @($rows.Index | Sort-Object -Unique)
 
     return [pscustomobject]@{
@@ -1412,7 +1555,7 @@ function Invoke-PortfolioAutoGroup {
     $workFolders = @($allDirs | Where-Object {
         $_.Name -notmatch $portfolioPattern -and
         $_.Name -ne $LogFolderName -and
-        $_.Name -match '^\.?\d{8}_\d{6}_'
+        $_.Name -match '^\.?(\d{4}|\d{8})(_\d{4,6})?_'
     } | Sort-Object Name)
 
     if ($workFolders.Count -eq 0 -or ($workFolders.Count -lt $BatchSize -and -not $FlushRemainder)) {
@@ -1799,7 +1942,11 @@ $portfolioPrefix = ([string]$config.portfolio_prefix).TrimStart('.')
 $portfolioLogFolder = [string]$config.portfolio_log_folder
 $packageNamingMode = [string]$config.package_naming_mode
 if ($packageNamingMode -notin @("title_conversation", "conversation_title", "title_only", "conversation_only")) {
-    $packageNamingMode = "title_conversation"
+    $packageNamingMode = "title_only"
+}
+$packageTimestampFormat = [string]$config.package_timestamp_format
+if ([string]::IsNullOrWhiteSpace($packageTimestampFormat)) {
+    $packageTimestampFormat = "MMdd_HHmm"
 }
 $completionOpenFolder = [bool]$config.completion_open_folder
 $completionCopyPath = [bool]$config.completion_copy_path
@@ -2207,12 +2354,28 @@ try {
     }
     $folderTitle = Get-SafeNamePart -Text $folderTitle -MaxLength 130
 
-    $targetDir = Join-Path $libraryDir "$stamp`_$folderTitle"
+    $folderStamp = switch ($packageTimestampFormat) {
+        "MMdd" { $packageTime.ToString("MMdd") }
+        "yyyyMMdd_HHmm" { $packageTime.ToString("yyyyMMdd_HHmm") }
+        "yyyyMMdd_HHmmss" { $packageTime.ToString("yyyyMMdd_HHmmss") }
+        "none" { "" }
+        default { $packageTime.ToString("MMdd_HHmm") }
+    }
+
+    $targetDir = if ([string]::IsNullOrWhiteSpace($folderStamp)) {
+        Join-Path $libraryDir $folderTitle
+    } else {
+        Join-Path $libraryDir "$folderStamp`_$folderTitle"
+    }
     $packageId = $stamp
 
     $index = 2
     while (Test-Path -LiteralPath $targetDir) {
-        $targetDir = Join-Path $libraryDir "$stamp`_$folderTitle`_$index"
+        $targetDir = if ([string]::IsNullOrWhiteSpace($folderStamp)) {
+            Join-Path $libraryDir "$folderTitle`_$index"
+        } else {
+            Join-Path $libraryDir "$folderStamp`_$folderTitle`_$index"
+        }
         $packageId = "$stamp`_$index"
         $index++
     }
