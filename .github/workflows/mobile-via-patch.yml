@@ -18,13 +18,14 @@ jobs:
         with:
           ref: mobile-via-zip
           fetch-depth: 0
-      - name: Normalize runtime patch anchor
+      - name: Normalize runtime patch inputs
         run: |
           python - <<'PY'
           from pathlib import Path
           import re
-          path = Path('chatgpt-conversation-tree.user.js')
-          text = path.read_text(encoding='utf-8')
+
+          source = Path('chatgpt-conversation-tree.user.js')
+          text = source.read_text(encoding='utf-8')
           text, count = re.subn(
               r'^[ \t]*const MOBILE_SWIPE_EDGE_PX\s*=\s*34;[ \t]*$',
               '  const MOBILE_SWIPE_EDGE_PX = 34;',
@@ -34,7 +35,18 @@ jobs:
           )
           if count != 1:
               raise SystemExit(f'Expected one MOBILE_SWIPE_EDGE_PX=34 anchor, got {count}')
-          path.write_text(text, encoding='utf-8')
+          source.write_text(text, encoding='utf-8')
+
+          patch = Path('maintenance/apply-mobile-via-runtime-fix.py')
+          patch_text = patch.read_text(encoding='utf-8')
+          if 'self.assertIn("screen.width", section)' not in patch_text:
+              raise SystemExit('Expected old screen.width assertion in runtime patch')
+          patch_text = patch_text.replace(
+              'self.assertIn("screen.width", section)',
+              'self.assertIn("screen?.width", section)',
+              1,
+          )
+          patch.write_text(patch_text, encoding='utf-8')
           PY
       - name: Apply Via runtime patch with RED-GREEN verification
         run: python maintenance/apply-mobile-via-runtime-fix.py
