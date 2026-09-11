@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.18.4-mobile.5
+// @version      1.18.5-mobile.6
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -27,7 +27,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.18.4-mobile.5';
+  const SCRIPT_VERSION = '1.18.5-mobile.6';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2642,14 +2642,87 @@
     return `${base}-${stamp}.zip`;
   }
 
+  function openMobileZipDownloadSink() {
+    let sink = null;
+    try {
+      sink = window.open('about:blank', '_blank');
+    } catch {}
+    if (!sink) return null;
+    try {
+      sink.document.open();
+      sink.document.write('<!doctype html><meta charset="utf-8"><title>正在准备 ZIP 下载</title><body style="font:16px/1.6 system-ui;padding:28px">ZIP 正在生成，完成后会自动交给浏览器下载…</body>');
+      sink.document.close();
+    } catch {}
+    return sink;
+  }
+
+  function closeMobileZipDownloadSink(sink) {
+    if (!sink) return;
+    try {
+      if (!sink.closed) sink.close();
+    } catch {}
+  }
+
+  function showMobileZipManualDownload(url, filename) {
+    const old = document.getElementById(`${APP_ID}-mobile-zip-manual-download`);
+    old?.remove();
+    const bar = document.createElement('div');
+    bar.id = `${APP_ID}-mobile-zip-manual-download`;
+    bar.style.cssText = 'position:fixed;left:12px;right:12px;bottom:18px;z-index:2147483647;padding:12px;border-radius:14px;background:var(--main-surface-primary,#fff);color:var(--text-primary,#111);box-shadow:0 10px 32px rgba(0,0,0,.24);display:flex;gap:10px;align-items:center;justify-content:space-between';
+    const textNode = document.createElement('span');
+    textNode.textContent = '浏览器拦截了自动下载，点这里下载 ZIP';
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.textContent = '下载ZIP';
+    link.style.cssText = 'font-weight:700;text-decoration:underline;white-space:nowrap';
+    link.addEventListener('click', () => {
+      window.setTimeout(() => bar.remove(), 1200);
+    }, { once: true });
+    bar.append(textNode, link);
+    document.body.append(bar);
+    window.setTimeout(() => bar.remove(), 30000);
+  }
+
+  function dispatchMobileZipBrowserDownload(zipBlob, filename, sink) {
+    const url = URL.createObjectURL(zipBlob);
+    if (sink && !sink.closed) {
+      try {
+        sink.location.replace(url);
+        window.setTimeout(() => closeMobileZipDownloadSink(sink), 5000);
+        window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+        return { triggered: true, mode: 'preopened-window' };
+      } catch (error) {
+        addDiagnosticLog('mobile-zip:sink-navigation-failed', {
+          message: error?.message || String(error),
+        });
+      }
+    }
+
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener';
+    anchor.style.display = 'none';
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    showMobileZipManualDownload(url, filename);
+    window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+    return { triggered: true, mode: 'anchor-fallback' };
+  }
+
   async function triggerMobileZipPackage(button) {
     if (!button || button.disabled) return;
+    const downloadSink = openMobileZipDownloadSink();
     setWorkPackageButtonState(button, 'preparing');
     const copyText = await readMobilePackageClipboardText();
     if (!isValidMobilePackageText(copyText)) {
       showImageDownloadToast('未识别到有效文案，禁止打包', false);
       setWorkPackageButtonState(button, 'needs-text');
       window.alert('未识别到有效文案。请先复制完整文案，再点击“下载ZIP”。\n\n没有文案时不会下载图片，也不会生成 ZIP。');
+      closeMobileZipDownloadSink(downloadSink);
       window.setTimeout(() => {
         if (button.dataset.cgptWorkPackageState === 'needs-text') setWorkPackageButtonState(button, 'idle');
       }, 2600);
@@ -2660,6 +2733,7 @@
     if (!imageUrls.length) {
       showImageDownloadToast('没有识别到当前作品的图片，未生成 ZIP', false);
       window.alert('没有识别到当前作品的图片，已停止打包。');
+      closeMobileZipDownloadSink(downloadSink);
       setWorkPackageButtonState(button, 'idle');
       return;
     }
@@ -2699,24 +2773,18 @@
       entries.push({ name: 'meta.json', data: `${JSON.stringify(task, null, 2)}\n` });
       setWorkPackageButtonState(button, 'packaging');
       const zipBlob = mobileZipBuild(entries);
-      const url = URL.createObjectURL(zipBlob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = mobileZipDownloadName(task);
-      anchor.rel = 'noopener';
-      anchor.style.display = 'none';
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+      const filename = mobileZipDownloadName(task);
+      const delivery = dispatchMobileZipBrowserDownload(zipBlob, filename, downloadSink);
       setWorkPackageButtonState(button, 'done', { total: imageUrls.length });
-      showImageDownloadToast(`ZIP 下载完成：${imageUrls.length} 张图片 + 文案`, true);
+      showImageDownloadToast(`ZIP 已生成，已触发浏览器下载：${imageUrls.length} 张图片 + 文案`, true);
       addDiagnosticLog('mobile-zip:done', {
         batchId,
         images: imageUrls.length,
         zipBytes: zipBlob.size,
+        deliveryMode: delivery.mode,
       });
     } catch (error) {
+      closeMobileZipDownloadSink(downloadSink);
       console.warn('[ChatGPT 手机版 ZIP] 打包失败：', error);
       addDiagnosticLog('mobile-zip:failed', {
         batchId,
