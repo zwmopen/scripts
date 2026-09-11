@@ -21,10 +21,15 @@ class MobileClipboardFallbackTests(unittest.TestCase):
         self.assertIn("rememberMobileCopiedText", block)
 
     def test_chatgpt_copy_button_is_captured(self):
-        block = SOURCE[SOURCE.index("function installMobileCopyCapture"):]
-        self.assertIn("document.addEventListener('click'", block)
-        self.assertIn("textCardForCopyButton", block)
-        self.assertIn("textContentForDownload", block)
+        helper_start = SOURCE.index("function mobileCopiedTextFromButton")
+        install_start = SOURCE.index("function installMobileCopyCapture")
+        helper = SOURCE[helper_start:install_start]
+        install = SOURCE[install_start:]
+        self.assertIn("textCardForCopyButton", helper)
+        self.assertIn("textContentForDownload", helper)
+        self.assertIn("document.addEventListener('click'", install)
+        self.assertIn("mobileCopiedTextFromButton(button)", install)
+        self.assertIn("rememberMobileCopiedText(copiedText, 'copy-button')", install)
 
     def test_zip_uses_clipboard_then_cache(self):
         start = SOURCE.index("async function readMobilePackageClipboardText")
