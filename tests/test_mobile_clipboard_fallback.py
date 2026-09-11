@@ -6,8 +6,8 @@ SOURCE = (ROOT / "chatgpt-conversation-tree.user.js").read_text(encoding="utf-8"
 
 class MobileClipboardFallbackTests(unittest.TestCase):
     def test_version_bumped(self):
-        self.assertIn("// @version      1.18.5-mobile.6", SOURCE)
-        self.assertIn("const SCRIPT_VERSION = '1.18.5-mobile.6';", SOURCE)
+        self.assertIn("// @version      1.18.6-mobile.7", SOURCE)
+        self.assertIn("const SCRIPT_VERSION = '1.18.6-mobile.7';", SOURCE)
 
     def test_copy_cache_exists(self):
         self.assertIn("let recentMobileCopiedText = '';", SOURCE)
