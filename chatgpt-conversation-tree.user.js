@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.18.0-mobile.1
+// @version      1.18.1-mobile.2
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -27,7 +27,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.18.0-mobile.1';
+  const SCRIPT_VERSION = '1.18.1-mobile.2';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -48,6 +48,8 @@
   const TEXT_DOWNLOAD_SLOT_CLASS = `${APP_ID}-text-download-slot`;
   const WORK_PACKAGE_CLASS = `${APP_ID}-work-package`;
   const IMAGE_DOWNLOAD_TOAST_ID = `${APP_ID}-image-download-toast`;
+  const MOBILE_ZIP_FLOAT_ID = `${APP_ID}-mobile-zip-float`;
+  const MOBILE_SIDEBAR_HANDLE_ID = `${APP_ID}-mobile-sidebar-handle`;
 
   // 本地协议与元数据标记
   const WORK_PACKAGE_PROTOCOL_URL = 'cgpt-workpkg://run';
@@ -63,7 +65,7 @@
   const MAX_BACKUPS = 8;
   const PROMPT_STORAGE_KEY = `${APP_ID}:prompts:v1`;
   const GM_PROMPT_KEY = 'prompts-v1';
-  const USERSCRIPT_RAW_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/master/chatgpt-conversation-tree.user.js';
+  const USERSCRIPT_RAW_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/mobile-via-zip/chatgpt-conversation-tree.user.js';
   const CLOUD_PROMPT_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/master/chatgpt-cloud-prompts.json';
   const CLOUD_PROMPT_CACHE_KEY = 'cloud-prompts-cache-v1';
   const CLOUD_PROMPT_CACHE_STORAGE_KEY = `${APP_ID}:cloud-prompts-cache:v1`;
@@ -2363,7 +2365,17 @@
 
   function isMobileZipMode() {
     const ua = String(navigator.userAgent || '');
-    return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+    const uaMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+    const touch = Number(navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window;
+    let coarsePointer = false;
+    try { coarsePointer = window.matchMedia('(pointer: coarse)').matches; } catch {}
+    const widths = [
+      Number(globalThis.screen?.width || 0),
+      Number(globalThis.screen?.availWidth || 0),
+      Number(window.innerWidth || 0),
+    ].filter((value) => value > 0);
+    const narrowScreen = widths.length ? Math.min(...widths) <= 900 : false;
+    return uaMobile || (touch && (coarsePointer || narrowScreen));
   }
 
   function cleanMobilePackageText(text = '') {
@@ -2394,6 +2406,12 @@
   }
 
   function mobilePackageImageUrls(button) {
+    if (button?.dataset?.cgptMobileFloating === '1') {
+      const forcedImages = Array.isArray(button.__cgptMobilePackageImages)
+        ? button.__cgptMobilePackageImages.filter((img) => img?.isConnected)
+        : [];
+      return uniqueImageUrls(forcedImages);
+    }
     const slot = button?.closest?.(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
     const imageButton = slot?.querySelector?.(`.${IMAGE_DOWNLOAD_CLASS}`);
     const container = imageButton?.__cgptImageDownloadContainer
@@ -2793,7 +2811,7 @@
     }
     button.hidden = !imageDownloadButtonVisible;
     let packageButton = slot.querySelector(`.${WORK_PACKAGE_CLASS}`);
-    if (workPackageButtonVisible) {
+    if (isMobileZipMode() || workPackageButtonVisible) {
       if (!packageButton) {
         packageButton = document.createElement('button');
         packageButton.type = 'button';
@@ -2808,7 +2826,7 @@
     } else if (packageButton) {
       packageButton.remove();
     }
-    slot.hidden = !imageDownloadButtonVisible && !workPackageButtonVisible;
+    slot.hidden = !imageDownloadButtonVisible && !(isMobileZipMode() || workPackageButtonVisible);
     button.onclick = (event) => triggerImageDownloadButton(button, event);
     button.__cgptImageDownloadContainer = container;
     button.__cgptImageDownloadImages = groupElements;
@@ -2837,6 +2855,74 @@
       button.classList.toggle('cgpt-image-download-done', done);
       if (downloaded) setImageButtonProgress(button, downloaded, totalCount, false);
     }
+  }
+
+  function latestMobileImageGroup() {
+    const main = document.querySelector('main') || document.body;
+    const turns = [...main.querySelectorAll('[data-testid^="conversation-turn"], [data-message-author-role], article, [class*="group/conversation-turn"]')];
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      const turn = turns[index];
+      const authorNode = turn.matches?.('[data-message-author-role]')
+        ? turn
+        : turn.querySelector?.('[data-message-author-role]');
+      const authorRole = authorNode?.getAttribute?.('data-message-author-role') || '';
+      if (authorRole && authorRole !== 'assistant') continue;
+      const images = contentImageElements(turn);
+      if (images.length) return { container: turn, images };
+    }
+    const images = contentImageElements(main);
+    if (!images.length) return null;
+    const last = images[images.length - 1];
+    const container = imageTurnContainer(last) || main;
+    const grouped = contentImageElements(container);
+    return { container, images: grouped.length ? grouped : [last] };
+  }
+
+  function ensureMobileZipFloatingButton() {
+    let button = document.getElementById(MOBILE_ZIP_FLOAT_ID);
+    if (!isMobileZipMode()) {
+      button?.remove();
+      return;
+    }
+    if (!button) {
+      button = document.createElement('button');
+      button.id = MOBILE_ZIP_FLOAT_ID;
+      button.type = 'button';
+      button.className = WORK_PACKAGE_CLASS;
+      button.dataset.cgptMobileFloating = '1';
+      button.setAttribute('data-cgpt-mobile-floating', '1');
+      button.style.cssText = [
+        'position:fixed',
+        'right:12px',
+        'bottom:max(92px,calc(env(safe-area-inset-bottom,0px) + 78px))',
+        'z-index:2147483000',
+        'min-width:74px',
+        'height:42px',
+        'padding:0 12px',
+        'border-radius:21px',
+        'border:1px solid rgba(127,127,127,.3)',
+        'background:var(--main-surface-primary,#fff)',
+        'color:var(--text-primary,#111)',
+        'box-shadow:0 6px 20px rgba(0,0,0,.18)',
+        'display:inline-flex',
+        'align-items:center',
+        'justify-content:center',
+        'gap:6px',
+        'font:600 12px/1 system-ui,-apple-system,sans-serif',
+      ].join(';');
+      document.body.append(button);
+      setWorkPackageButtonState(button, 'idle');
+    }
+    const group = latestMobileImageGroup();
+    button.__cgptMobilePackageContainer = group?.container || null;
+    button.__cgptMobilePackageImages = group?.images || [];
+    if (!button.disabled && button.dataset.cgptWorkPackageState !== 'done') {
+      setWorkPackageButtonState(button, 'idle');
+    }
+    button.style.opacity = group?.images?.length ? '1' : '.72';
+    button.title = group?.images?.length
+      ? `下载ZIP：当前识别到 ${group.images.length} 张图片`
+      : '下载ZIP：当前页面暂未识别到可打包图片';
   }
 
   function refreshImageDownloadButtons() {
@@ -2869,6 +2955,7 @@
       if (!validSlots.has(slot)) slot.remove();
     });
     refreshTextDownloadButtons();
+    ensureMobileZipFloatingButton();
   }
 
   function scheduleImageDownloadButtons() {
@@ -3304,7 +3391,7 @@
     schedulePromptButton(400);
   }, 6000);
 
-  const MOBILE_SWIPE_EDGE_PX = 34;
+  const MOBILE_SWIPE_EDGE_PX = 96;
   const MOBILE_SWIPE_DISTANCE_PX = 72;
   const MOBILE_SWIPE_MAX_VERTICAL_PX = 64;
   const MOBILE_SWIPE_MAX_DURATION_MS = 850;
@@ -3313,6 +3400,9 @@
     const selectors = wantOpen
       ? [
           '[data-testid="open-sidebar-button"]',
+          'button[data-testid*="sidebar" i]',
+          'button[data-testid*="menu" i]',
+          'button[aria-label*="menu" i]',
           'button[aria-label*="Open sidebar" i]',
           'button[aria-label*="Open navigation" i]',
           'button[title*="Open sidebar" i]',
@@ -3392,9 +3482,49 @@
     return false;
   }
 
+  function ensureMobileSidebarHandle() {
+    let handle = document.getElementById(MOBILE_SIDEBAR_HANDLE_ID);
+    if (!isMobileZipMode()) {
+      handle?.remove();
+      return;
+    }
+    if (handle) return;
+    handle = document.createElement('button');
+    handle.id = MOBILE_SIDEBAR_HANDLE_ID;
+    handle.type = 'button';
+    handle.textContent = '›';
+    handle.setAttribute('aria-label', '打开或关闭侧边栏');
+    handle.title = '点按切换侧边栏；也可从屏幕两侧内侧滑动';
+    handle.style.cssText = [
+      'position:fixed',
+      'left:4px',
+      'top:44vh',
+      'z-index:2147482999',
+      'width:24px',
+      'height:56px',
+      'border:0',
+      'border-radius:0 12px 12px 0',
+      'background:rgba(40,40,40,.42)',
+      'color:#fff',
+      'font:700 26px/1 system-ui,sans-serif',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'padding:0',
+      'touch-action:manipulation',
+    ].join(';');
+    handle.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setMobileNativeSidebarOpen(!mobileNativeSidebarVisible());
+    }, true);
+    document.body.append(handle);
+  }
+
   function installMobileSidebarSwipe() {
     if (!isMobileZipMode() || installMobileSidebarSwipe.installed) return;
     installMobileSidebarSwipe.installed = true;
+    ensureMobileSidebarHandle();
     let startX = 0;
     let startY = 0;
     let startAt = 0;
@@ -3474,6 +3604,7 @@
   bindEvents();
   bindImageDownloadEvents();
   installMobileSidebarSwipe();
+  ensureMobileZipFloatingButton();
   installImageDownloadDebugApi();
   installConversationTreeDebugApi();
   addDiagnosticLog('script:init');
