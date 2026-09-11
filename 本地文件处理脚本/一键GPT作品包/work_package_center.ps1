@@ -583,7 +583,7 @@ function Update-NamingPreview {
         "conversation_only" { $sampleConversation }
         default { "$sampleTitle（$sampleConversation）" }
     }
-    $sampleStamp = Get-Date -Format "MMdd_HHmm"
+    $sampleStamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $namingPreview.Text = "实际示例：$sampleStamp`_$sampleName"
 }
 

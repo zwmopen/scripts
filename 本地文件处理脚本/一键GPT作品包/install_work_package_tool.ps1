@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$TargetFolder,
     [string]$LibraryName,
     [string]$LibraryPath,
@@ -93,7 +93,7 @@ $config = [ordered]@{
     portfolio_prefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
     portfolio_log_folder = "_portfolio_move_logs"
     package_naming_mode = "title_only"
-    package_timestamp_format = "MMdd_HHmm"
+    package_timestamp_format = "yyyyMMdd_HHmmss"
     completion_open_folder = $false
     completion_copy_path = $false
     notification_duration_ms = 850
