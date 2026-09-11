@@ -6,14 +6,37 @@ on:
     paths:
       - 'chatgpt-conversation-tree.user.js'
       - 'tests/test_via_early_start.py'
+      - 'maintenance/apply-via-early-start-fix.py'
       - '.github/workflows/via-early-start.yml'
+
+permissions:
+  contents: write
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: mobile-via-early-start-fix
+          fetch-depth: 0
+      - name: Apply Via early-start fix
+        run: python maintenance/apply-via-early-start-fix.py
       - name: Run Via early-start regression
         run: python tests/test_via_early_start.py
-      - name: Syntax check
-        run: node --check chatgpt-conversation-tree.user.js
+      - name: Run existing mobile regressions
+        run: |
+          python tests/test_mobile_via_runtime.py
+          python tests/test_mobile_zip_userscript.py
+          python tests/test_mobile_sidebar_swipe.py
+      - name: Syntax and diff checks
+        run: |
+          node --check chatgpt-conversation-tree.user.js
+          git diff --check
+      - name: Commit verified fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add chatgpt-conversation-tree.user.js
+          git diff --cached --quiet || git commit -m "fix(mobile): isolate Via early-start enhancements"
+          git push origin HEAD:mobile-via-early-start-fix
