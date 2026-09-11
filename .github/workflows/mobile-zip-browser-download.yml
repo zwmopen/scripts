@@ -1,0 +1,24 @@
+name: Mobile ZIP browser download
+
+on:
+  push:
+    branches: [mobile-via-zip]
+    paths:
+      - 'chatgpt-conversation-tree.user.js'
+      - 'tests/test_mobile_zip_browser_download.py'
+      - 'maintenance/apply-mobile-zip-browser-download.py'
+      - '.github/workflows/mobile-zip-browser-download.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: mobile-via-zip
+          fetch-depth: 0
+      - name: RED regression
+        run: python tests/test_mobile_zip_browser_download.py
