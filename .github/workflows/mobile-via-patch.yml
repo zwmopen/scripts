@@ -13,18 +13,26 @@ jobs:
   patch-and-verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: mobile-via-zip
           fetch-depth: 0
-      - name: Apply patch with RED-GREEN verification
+      - name: Apply ZIP patch with RED-GREEN verification
         run: python maintenance/apply-mobile-via-zip.py
-      - name: Show resulting diff
-        run: git diff --check && git status --short && git diff --stat
+      - name: Apply sidebar swipe patch with RED-GREEN verification
+        run: python maintenance/apply-mobile-sidebar-swipe.py
+      - name: Verify final userscript and diff
+        run: |
+          python tests/test_mobile_zip_userscript.py
+          python tests/test_mobile_sidebar_swipe.py
+          node --check chatgpt-conversation-tree.user.js
+          git diff --check
+          git status --short
+          git diff --stat
       - name: Commit verified mobile build
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add chatgpt-conversation-tree.user.js tests/test_mobile_zip_userscript.py
-          git commit -m "feat(mobile): add Via ZIP packaging with required copy"
+          git add chatgpt-conversation-tree.user.js tests/test_mobile_zip_userscript.py tests/test_mobile_sidebar_swipe.py
+          git commit -m "feat(mobile): add Via ZIP packaging and sidebar swipe gestures"
           git push origin HEAD:mobile-via-zip
