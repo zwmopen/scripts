@@ -6,12 +6,39 @@ on:
     paths:
       - 'chatgpt-conversation-tree.user.js'
       - 'tests/test_mobile_clipboard_fallback.py'
+      - 'maintenance/apply-mobile-clipboard-fallback.py'
       - '.github/workflows/mobile-clipboard-fallback.yml'
+
+permissions:
+  contents: write
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: mobile-via-clipboard-fallback
+          fetch-depth: 0
+      - name: Apply clipboard fallback patch
+        run: python maintenance/apply-mobile-clipboard-fallback.py
       - name: Run clipboard fallback regression
         run: python tests/test_mobile_clipboard_fallback.py
+      - name: Run existing mobile regressions
+        run: |
+          python tests/test_mobile_zip_userscript.py
+          python tests/test_mobile_sidebar_swipe.py
+          python tests/test_mobile_no_floating_controls.py
+          python tests/test_mobile_via_runtime.py
+          python tests/test_via_early_start.py
+      - name: Syntax and diff checks
+        run: |
+          node --check chatgpt-conversation-tree.user.js
+          git diff --check
+      - name: Commit verified userscript
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add chatgpt-conversation-tree.user.js
+          git diff --cached --quiet || git commit -m "fix(mobile): cache copied text when clipboard read is blocked"
+          git push origin HEAD:mobile-via-clipboard-fallback
