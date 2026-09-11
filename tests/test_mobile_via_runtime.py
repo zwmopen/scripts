@@ -6,8 +6,8 @@ SOURCE = (ROOT / "chatgpt-conversation-tree.user.js").read_text(encoding="utf-8"
 
 class MobileViaRuntimeTests(unittest.TestCase):
     def test_version_bumped(self):
-        self.assertIn("// @version      1.18.2-mobile.3", SOURCE)
-        self.assertIn("const SCRIPT_VERSION = '1.18.2-mobile.3';", SOURCE)
+        self.assertIn("// @version      1.18.3-mobile.4", SOURCE)
+        self.assertIn("const SCRIPT_VERSION = '1.18.3-mobile.4';", SOURCE)
 
     def test_mobile_detection_does_not_depend_only_on_ua(self):
         start = SOURCE.index("function isMobileZipMode")
@@ -19,12 +19,18 @@ class MobileViaRuntimeTests(unittest.TestCase):
     def test_manual_update_channel_stays_on_mobile_branch(self):
         self.assertIn("const USERSCRIPT_RAW_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/mobile-via-zip/chatgpt-conversation-tree.user.js';", SOURCE)
 
-    def test_mobile_zip_has_fixed_fallback_button(self):
-        self.assertIn("MOBILE_ZIP_FLOAT_ID", SOURCE)
-        self.assertIn("function ensureMobileZipFloatingButton", SOURCE)
-        self.assertIn("data-cgpt-mobile-floating", SOURCE)
-        refresh = SOURCE[SOURCE.index("function refreshImageDownloadButtons"):SOURCE.index("function scheduleImageDownloadButtons")]
-        self.assertIn("ensureMobileZipFloatingButton()", refresh)
+    def test_mobile_floating_controls_are_removed(self):
+        zip_start = SOURCE.index("function ensureMobileZipFloatingButton")
+        zip_end = SOURCE.index("function refreshImageDownloadButtons", zip_start)
+        zip_section = SOURCE[zip_start:zip_end]
+        self.assertIn("document.getElementById(MOBILE_ZIP_FLOAT_ID)?.remove();", zip_section)
+        self.assertNotIn("document.createElement('button')", zip_section)
+
+        sidebar_start = SOURCE.index("function ensureMobileSidebarHandle")
+        sidebar_end = SOURCE.index("function installMobileSidebarSwipe", sidebar_start)
+        sidebar_section = SOURCE[sidebar_start:sidebar_end]
+        self.assertIn("document.getElementById(MOBILE_SIDEBAR_HANDLE_ID)?.remove();", sidebar_section)
+        self.assertNotIn("document.createElement('button')", sidebar_section)
 
     def test_mobile_zip_button_ignores_old_hidden_desktop_setting(self):
         start = SOURCE.index("function ensureImageDownloadButton")
@@ -36,11 +42,6 @@ class MobileViaRuntimeTests(unittest.TestCase):
         swipe = SOURCE[SOURCE.index("function installMobileSidebarSwipe"):]
         self.assertIn("startX <= MOBILE_SWIPE_EDGE_PX", swipe)
         self.assertIn("startX >= innerWidth - MOBILE_SWIPE_EDGE_PX", swipe)
-
-    def test_sidebar_has_visible_tap_fallback(self):
-        self.assertIn("MOBILE_SIDEBAR_HANDLE_ID", SOURCE)
-        self.assertIn("function ensureMobileSidebarHandle", SOURCE)
-        self.assertIn("setMobileNativeSidebarOpen(!mobileNativeSidebarVisible())", SOURCE)
 
 if __name__ == "__main__":
     unittest.main()
