@@ -1,10 +1,11 @@
-name: Apply mobile Via ZIP patch
+name: Apply mobile Via runtime patch
 
 on:
   push:
     branches: [mobile-via-zip]
     paths:
       - '.github/workflows/mobile-via-patch.yml'
+      - 'maintenance/apply-mobile-via-runtime-fix.py'
 
 permissions:
   contents: write
@@ -17,12 +18,11 @@ jobs:
         with:
           ref: mobile-via-zip
           fetch-depth: 0
-      - name: Apply ZIP patch with RED-GREEN verification
-        run: python maintenance/apply-mobile-via-zip.py
-      - name: Apply sidebar swipe patch with RED-GREEN verification
-        run: python maintenance/apply-mobile-sidebar-swipe.py
-      - name: Verify final userscript and diff
+      - name: Apply Via runtime patch with RED-GREEN verification
+        run: python maintenance/apply-mobile-via-runtime-fix.py
+      - name: Verify mobile build
         run: |
+          python tests/test_mobile_via_runtime.py
           python tests/test_mobile_zip_userscript.py
           python tests/test_mobile_sidebar_swipe.py
           node --check chatgpt-conversation-tree.user.js
@@ -33,6 +33,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add chatgpt-conversation-tree.user.js tests/test_mobile_zip_userscript.py tests/test_mobile_sidebar_swipe.py
-          git commit -m "feat(mobile): add Via ZIP packaging and sidebar swipe gestures"
+          git add chatgpt-conversation-tree.user.js tests/test_mobile_via_runtime.py
+          git commit -m "fix(mobile): make Via ZIP button and sidebar gestures reliable"
           git push origin HEAD:mobile-via-zip
