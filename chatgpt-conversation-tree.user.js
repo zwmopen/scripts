@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.18.2-mobile.3
+// @version      1.18.3-mobile.4
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -27,7 +27,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.18.2-mobile.3';
+  const SCRIPT_VERSION = '1.18.3-mobile.4';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2879,54 +2879,8 @@
   }
 
   function ensureMobileZipFloatingButton() {
-    let button = document.getElementById(MOBILE_ZIP_FLOAT_ID);
-    if (!isMobileZipMode()) {
-      button?.remove();
-      return;
-    }
-    if (!document.body) {
-      window.setTimeout(ensureMobileZipFloatingButton, 80);
-      return;
-    }
-    if (!button) {
-      button = document.createElement('button');
-      button.id = MOBILE_ZIP_FLOAT_ID;
-      button.type = 'button';
-      button.className = WORK_PACKAGE_CLASS;
-      button.dataset.cgptMobileFloating = '1';
-      button.setAttribute('data-cgpt-mobile-floating', '1');
-      button.style.cssText = [
-        'position:fixed',
-        'right:12px',
-        'bottom:max(92px,calc(env(safe-area-inset-bottom,0px) + 78px))',
-        'z-index:2147483000',
-        'min-width:74px',
-        'height:42px',
-        'padding:0 12px',
-        'border-radius:21px',
-        'border:1px solid rgba(127,127,127,.3)',
-        'background:var(--main-surface-primary,#fff)',
-        'color:var(--text-primary,#111)',
-        'box-shadow:0 6px 20px rgba(0,0,0,.18)',
-        'display:inline-flex',
-        'align-items:center',
-        'justify-content:center',
-        'gap:6px',
-        'font:600 12px/1 system-ui,-apple-system,sans-serif',
-      ].join(';');
-      document.body.append(button);
-      setWorkPackageButtonState(button, 'idle');
-    }
-    const group = latestMobileImageGroup();
-    button.__cgptMobilePackageContainer = group?.container || null;
-    button.__cgptMobilePackageImages = group?.images || [];
-    if (!button.disabled && button.dataset.cgptWorkPackageState !== 'done') {
-      setWorkPackageButtonState(button, 'idle');
-    }
-    button.style.opacity = group?.images?.length ? '1' : '.72';
-    button.title = group?.images?.length
-      ? `下载ZIP：当前识别到 ${group.images.length} 张图片`
-      : '下载ZIP：当前页面暂未识别到可打包图片';
+    // 1.18.3+: 不再展示右下角悬浮 ZIP 按钮，仅清理旧版本遗留节点。
+    document.getElementById(MOBILE_ZIP_FLOAT_ID)?.remove();
   }
 
   function refreshImageDownloadButtons() {
@@ -3487,46 +3441,8 @@
   }
 
   function ensureMobileSidebarHandle() {
-    let handle = document.getElementById(MOBILE_SIDEBAR_HANDLE_ID);
-    if (!isMobileZipMode()) {
-      handle?.remove();
-      return;
-    }
-    if (!document.body) {
-      window.setTimeout(ensureMobileSidebarHandle, 80);
-      return;
-    }
-    if (handle) return;
-    handle = document.createElement('button');
-    handle.id = MOBILE_SIDEBAR_HANDLE_ID;
-    handle.type = 'button';
-    handle.textContent = '›';
-    handle.setAttribute('aria-label', '打开或关闭侧边栏');
-    handle.title = '点按切换侧边栏；也可从屏幕两侧内侧滑动';
-    handle.style.cssText = [
-      'position:fixed',
-      'left:4px',
-      'top:44vh',
-      'z-index:2147482999',
-      'width:24px',
-      'height:56px',
-      'border:0',
-      'border-radius:0 12px 12px 0',
-      'background:rgba(40,40,40,.42)',
-      'color:#fff',
-      'font:700 26px/1 system-ui,sans-serif',
-      'display:flex',
-      'align-items:center',
-      'justify-content:center',
-      'padding:0',
-      'touch-action:manipulation',
-    ].join(';');
-    handle.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      setMobileNativeSidebarOpen(!mobileNativeSidebarVisible());
-    }, true);
-    document.body.append(handle);
+    // 1.18.3+: 不再展示左侧悬浮侧边栏把手；保留无 UI 的左右滑手势。
+    document.getElementById(MOBILE_SIDEBAR_HANDLE_ID)?.remove();
   }
 
   function installMobileSidebarSwipe() {
