@@ -21,7 +21,7 @@ class ViaEarlyStartTests(unittest.TestCase):
 
     def test_prompt_core_initializes_before_mobile_extras(self):
         startup = SOURCE[SOURCE.rindex("// 启动引导"):]
-        self.assertLess(startup.index("ensurePromptButton();"), startup.index("installMobileSidebarSwipe();"))
+        self.assertLess(startup.index("ensurePromptButton();"), startup.index("initMobileEnhancementsSafely();"))
 
     def test_mobile_extras_are_fault_isolated(self):
         self.assertIn("function initMobileEnhancementsSafely()", SOURCE)
