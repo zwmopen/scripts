@@ -6,6 +6,7 @@ on:
     paths:
       - 'chatgpt-conversation-tree.user.js'
       - 'tests/test_mobile_clipboard_fallback.py'
+      - 'tests/test_mobile_via_runtime.py'
       - 'maintenance/apply-mobile-clipboard-fallback.py'
       - '.github/workflows/mobile-clipboard-fallback.yml'
 
