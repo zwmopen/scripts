@@ -6,6 +6,8 @@ on:
     paths:
       - 'chatgpt-conversation-tree.user.js'
       - 'tests/test_mobile_zip_browser_download.py'
+      - 'tests/test_mobile_clipboard_fallback.py'
+      - 'tests/test_mobile_via_runtime.py'
       - 'maintenance/apply-mobile-zip-browser-download.py'
       - '.github/workflows/mobile-zip-browser-download.yml'
 
@@ -20,5 +22,26 @@ jobs:
         with:
           ref: mobile-via-zip
           fetch-depth: 0
-      - name: RED regression
+      - name: Apply browser-download patch
+        run: python maintenance/apply-mobile-zip-browser-download.py
+      - name: Run browser-download regression
         run: python tests/test_mobile_zip_browser_download.py
+      - name: Run existing mobile regressions
+        run: |
+          python tests/test_mobile_zip_userscript.py
+          python tests/test_mobile_sidebar_swipe.py
+          python tests/test_mobile_no_floating_controls.py
+          python tests/test_mobile_clipboard_fallback.py
+          python tests/test_mobile_via_runtime.py
+          python tests/test_via_early_start.py
+      - name: Syntax and diff checks
+        run: |
+          node --check chatgpt-conversation-tree.user.js
+          git diff --check
+      - name: Commit verified userscript
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add chatgpt-conversation-tree.user.js
+          git diff --cached --quiet || git commit -m "fix(mobile): trigger browser ZIP download before async work"
+          git push origin HEAD:mobile-via-zip
