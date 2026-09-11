@@ -17,6 +17,9 @@ class MobileZipBrowserDownloadTests(unittest.TestCase):
     def test_current_page_progress_ui_exists(self):
         self.assertIn("function ensureMobileZipProgressBar", SOURCE)
         self.assertIn("function updateMobileZipProgress", SOURCE)
+        ui_start = SOURCE.index("function ensureMobileZipProgressBar")
+        ui_end = SOURCE.index("function updateMobileZipProgress", ui_start)
+        self.assertIn("document.body.append", SOURCE[ui_start:ui_end])
         start = SOURCE.index("async function triggerMobileZipPackage")
         end = SOURCE.index("function setWorkPackageButtonState", start)
         block = SOURCE[start:end]
@@ -41,8 +44,8 @@ class MobileZipBrowserDownloadTests(unittest.TestCase):
         start = SOURCE.index("function showMobileZipManualDownload")
         end = SOURCE.index("function dispatchMobileZipBrowserDownload", start)
         block = SOURCE[start:end]
-        self.assertIn("document.body.append", block)
         self.assertIn("link.download = filename", block)
+        self.assertIn("link.removeAttribute('target')", block)
         self.assertNotIn("window.open", block)
 
     def test_success_message_reports_browser_handoff(self):
