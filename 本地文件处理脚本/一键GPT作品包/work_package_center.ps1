@@ -339,7 +339,7 @@ $inboxBrowse.Location = New-Object System.Drawing.Point(800, 84)
 $inboxBrowse.Size = New-Object System.Drawing.Size(90, 32)
 $inboxBrowse.Add_Click({ Browse-Directory -TextBox $inboxBox -Description "选择浏览器下载图片的目录" })
 $settingsTab.Controls.Add($inboxBrowse)
-$toolTip.SetToolTip($inboxBox, "填写 Edge 或 Chrome 的实际下载位置，例如 D:\Download。支持直接粘贴完整路径。")
+$toolTip.SetToolTip($inboxBox, "填写 Edge 或 Chrome 的实际下载位置，例如 C:\Users\z\Downloads。支持直接粘贴完整路径。")
 
 Add-Label -Parent $settingsTab -Text "成品库目录（整理完成后的作品长期放在哪里）" -Left 24 -Top 128 -Width 430 | Out-Null
 $libraryBox = New-Object System.Windows.Forms.TextBox
