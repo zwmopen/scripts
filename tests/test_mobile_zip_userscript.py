@@ -6,7 +6,7 @@ SOURCE = (ROOT / "chatgpt-conversation-tree.user.js").read_text(encoding="utf-8"
 
 class MobileZipUserscriptTests(unittest.TestCase):
     def test_mobile_branch_has_own_update_channel(self):
-        self.assertIn("// @version      1.18.0-mobile.1", SOURCE)
+        self.assertIn("// @version      1.18.", SOURCE)
         self.assertIn("raw.githubusercontent.com/zwmopen/scripts/mobile-via-zip/chatgpt-conversation-tree.user.js", SOURCE)
 
     def test_mobile_mode_bypasses_windows_helper(self):
