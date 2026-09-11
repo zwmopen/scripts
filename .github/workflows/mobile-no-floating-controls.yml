@@ -1,0 +1,17 @@
+name: Mobile no floating controls
+
+on:
+  push:
+    branches: [mobile-via-no-float]
+    paths:
+      - 'chatgpt-conversation-tree.user.js'
+      - 'tests/test_mobile_no_floating_controls.py'
+      - '.github/workflows/mobile-no-floating-controls.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Run no-floating-controls regression
+        run: python tests/test_mobile_no_floating_controls.py
