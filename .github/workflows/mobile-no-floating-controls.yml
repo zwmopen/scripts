@@ -6,12 +6,41 @@ on:
     paths:
       - 'chatgpt-conversation-tree.user.js'
       - 'tests/test_mobile_no_floating_controls.py'
+      - 'tests/test_mobile_via_runtime.py'
+      - 'tests/test_mobile_sidebar_swipe.py'
+      - 'tests/test_via_early_start.py'
+      - 'maintenance/apply-mobile-no-float.py'
       - '.github/workflows/mobile-no-floating-controls.yml'
+
+permissions:
+  contents: write
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: mobile-via-no-float
+          fetch-depth: 0
+      - name: Apply no-floating-controls patch
+        run: python maintenance/apply-mobile-no-float.py
       - name: Run no-floating-controls regression
         run: python tests/test_mobile_no_floating_controls.py
+      - name: Run mobile regression suite
+        run: |
+          python tests/test_mobile_via_runtime.py
+          python tests/test_mobile_zip_userscript.py
+          python tests/test_mobile_sidebar_swipe.py
+          python tests/test_via_early_start.py
+      - name: Syntax and diff checks
+        run: |
+          node --check chatgpt-conversation-tree.user.js
+          git diff --check
+      - name: Commit verified userscript
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add chatgpt-conversation-tree.user.js
+          git diff --cached --quiet || git commit -m "fix(mobile): remove floating controls and keep gestures"
+          git push origin HEAD:mobile-via-no-float
