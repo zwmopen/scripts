@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.18.3-mobile.4
+// @version      1.18.4-mobile.5
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -27,7 +27,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.18.3-mobile.4';
+  const SCRIPT_VERSION = '1.18.4-mobile.5';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -103,6 +103,8 @@
   let workPackageAccountName = '';
   let workPackageAccountLookupPromise = null;
   let pendingImportMode = 'merge';
+  let recentMobileCopiedText = '';
+  let mobileCopyCaptureInstalled = false;
 
   let imageDownloadButtonVisible = (() => {
     try {
@@ -2393,16 +2395,80 @@
     return cleaned.length >= 20 && cleaned.replace(/\s+/g, '').length >= 12;
   }
 
-  async function readMobilePackageClipboardText() {
-    if (!navigator.clipboard?.readText) return '';
-    try {
-      return cleanMobilePackageText(await navigator.clipboard.readText());
-    } catch (error) {
-      addDiagnosticLog('mobile-zip:clipboard-read-failed', {
-        message: error?.message || String(error),
-      });
-      return '';
+  function rememberMobileCopiedText(text = '', source = 'unknown') {
+    const cleaned = cleanMobilePackageText(text);
+    if (!isValidMobilePackageText(cleaned)) return false;
+    recentMobileCopiedText = cleaned;
+    try { sessionStorage.setItem(`${APP_ID}:mobile-copied-text`, cleaned); } catch {}
+    addDiagnosticLog('mobile-zip:copy-captured', {
+      source,
+      length: cleaned.length,
+    });
+    return true;
+  }
+
+  function mobileCopiedTextFromButton(button) {
+    if (!button) return '';
+    const card = textCardForCopyButton(button);
+    if (card) {
+      const cardText = textContentForDownload(card);
+      if (isValidMobilePackageText(cardText)) return cardText;
     }
+    const turn = button.closest?.('[data-testid^="conversation-turn"], [data-message-author-role], article, [class*="group/conversation-turn"]');
+    if (!turn) return '';
+    const clone = turn.cloneNode(true);
+    clone.querySelectorAll?.('button, svg, script, style, textarea, input, .cgpt-image-download-slot, .cgpt-text-download-slot')
+      .forEach((element) => element.remove());
+    return cleanMobilePackageText(clone.innerText || clone.textContent || '');
+  }
+
+  function installMobileCopyCapture() {
+    if (mobileCopyCaptureInstalled) return;
+    mobileCopyCaptureInstalled = true;
+
+    document.addEventListener('copy', () => {
+      const selectedText = String(window.getSelection?.()?.toString() || '');
+      rememberMobileCopiedText(selectedText, 'selection-copy');
+    }, true);
+
+    document.addEventListener('click', (event) => {
+      const button = event.target?.closest?.('button');
+      if (!button) return;
+      const label = elementText(button);
+      if (!/复制|copy/i.test(label)) return;
+      const copiedText = mobileCopiedTextFromButton(button);
+      rememberMobileCopiedText(copiedText, 'copy-button');
+    }, true);
+  }
+
+  async function readMobilePackageClipboardText() {
+    if (navigator.clipboard?.readText) {
+      try {
+        const clipboardText = cleanMobilePackageText(await navigator.clipboard.readText());
+        if (isValidMobilePackageText(clipboardText)) {
+          rememberMobileCopiedText(clipboardText, 'clipboard-api');
+          return clipboardText;
+        }
+      } catch (error) {
+        addDiagnosticLog('mobile-zip:clipboard-read-failed', {
+          message: error?.message || String(error),
+        });
+      }
+    }
+
+    if (isValidMobilePackageText(recentMobileCopiedText)) {
+      return cleanMobilePackageText(recentMobileCopiedText);
+    }
+
+    try {
+      const sessionText = cleanMobilePackageText(sessionStorage.getItem(`${APP_ID}:mobile-copied-text`) || '');
+      if (isValidMobilePackageText(sessionText)) {
+        recentMobileCopiedText = sessionText;
+        return sessionText;
+      }
+    } catch {}
+
+    return cleanMobilePackageText(recentMobileCopiedText);
   }
 
   function mobilePackageImageUrls(button) {
@@ -3544,6 +3610,7 @@
   installWorkPackageClipboardBridge();
   bindEvents();
   bindImageDownloadEvents();
+  installMobileCopyCapture();
   ensurePromptButton();
   schedulePromptButton(80);
   initMobileEnhancementsSafely();
