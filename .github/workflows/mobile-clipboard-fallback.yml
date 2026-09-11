@@ -1,0 +1,17 @@
+name: Mobile clipboard fallback
+
+on:
+  push:
+    branches: [mobile-via-clipboard-fallback]
+    paths:
+      - 'chatgpt-conversation-tree.user.js'
+      - 'tests/test_mobile_clipboard_fallback.py'
+      - '.github/workflows/mobile-clipboard-fallback.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Run clipboard fallback regression
+        run: python tests/test_mobile_clipboard_fallback.py
