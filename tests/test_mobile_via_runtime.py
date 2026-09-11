@@ -6,8 +6,8 @@ SOURCE = (ROOT / "chatgpt-conversation-tree.user.js").read_text(encoding="utf-8"
 
 class MobileViaRuntimeTests(unittest.TestCase):
     def test_version_bumped(self):
-        self.assertIn("// @version      1.18.3-mobile.4", SOURCE)
-        self.assertIn("const SCRIPT_VERSION = '1.18.3-mobile.4';", SOURCE)
+        self.assertIn("// @version      1.18.4-mobile.5", SOURCE)
+        self.assertIn("const SCRIPT_VERSION = '1.18.4-mobile.5';", SOURCE)
 
     def test_mobile_detection_does_not_depend_only_on_ua(self):
         start = SOURCE.index("function isMobileZipMode")
