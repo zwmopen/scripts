@@ -2,14 +2,14 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.17.0
+// @version      1.18.0-mobile.1
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @run-at       document-idle
-// @updateURL    https://raw.githubusercontent.com/zwmopen/scripts/master/chatgpt-conversation-tree.user.js
-// @downloadURL  https://raw.githubusercontent.com/zwmopen/scripts/master/chatgpt-conversation-tree.user.js
+// @updateURL    https://raw.githubusercontent.com/zwmopen/scripts/mobile-via-zip/chatgpt-conversation-tree.user.js
+// @downloadURL  https://raw.githubusercontent.com/zwmopen/scripts/mobile-via-zip/chatgpt-conversation-tree.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
@@ -20,13 +20,14 @@
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      raw.githubusercontent.com
+// @connect      *
 // ==/UserScript==
 
 (() => {
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.17.0';
+  const SCRIPT_VERSION = '1.18.0-mobile.1';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2360,6 +2361,289 @@
     runImageDownloadShortcut(button);
   }
 
+  function isMobileZipMode() {
+    const ua = String(navigator.userAgent || '');
+    return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+  }
+
+  function cleanMobilePackageText(text = '') {
+    const titleMarker = new RegExp(`<!--${WORK_PACKAGE_TITLE_MARKER}[A-Za-z0-9+/=]+-->`, 'g');
+    const metadataMarker = new RegExp(`<!--${WORK_PACKAGE_METADATA_MARKER}[A-Za-z0-9+/=]+-->`, 'g');
+    return String(text || '')
+      .replace(titleMarker, '')
+      .replace(metadataMarker, '')
+      .replace(/\u200B/g, '')
+      .trim();
+  }
+
+  function isValidMobilePackageText(text = '') {
+    const cleaned = cleanMobilePackageText(text);
+    return cleaned.length >= 20 && cleaned.replace(/\s+/g, '').length >= 12;
+  }
+
+  async function readMobilePackageClipboardText() {
+    if (!navigator.clipboard?.readText) return '';
+    try {
+      return cleanMobilePackageText(await navigator.clipboard.readText());
+    } catch (error) {
+      addDiagnosticLog('mobile-zip:clipboard-read-failed', {
+        message: error?.message || String(error),
+      });
+      return '';
+    }
+  }
+
+  function mobilePackageImageUrls(button) {
+    const slot = button?.closest?.(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
+    const imageButton = slot?.querySelector?.(`.${IMAGE_DOWNLOAD_CLASS}`);
+    const container = imageButton?.__cgptImageDownloadContainer
+      || button?.closest?.('[data-cgpt-image-download-container]')
+      || button?.closest?.('[data-testid^="conversation-turn"], [data-message-author-role], article, [class*="group/conversation-turn"]')
+      || document;
+    let images = Array.isArray(imageButton?.__cgptImageDownloadImages)
+      ? imageButton.__cgptImageDownloadImages.filter((img) => img?.isConnected)
+      : [];
+    if (!images.length) images = groupImageElements(container);
+    return uniqueImageUrls(images);
+  }
+
+  function mobileZipCrc32(bytes) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i += 1) {
+      crc ^= bytes[i];
+      for (let bit = 0; bit < 8; bit += 1) {
+        crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+      }
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function mobileZipDosDateTime(date = new Date()) {
+    const year = Math.max(1980, date.getFullYear());
+    return {
+      time: ((date.getHours() & 31) << 11) | ((date.getMinutes() & 63) << 5) | ((Math.floor(date.getSeconds() / 2)) & 31),
+      date: (((year - 1980) & 127) << 9) | (((date.getMonth() + 1) & 15) << 5) | (date.getDate() & 31),
+    };
+  }
+
+  function mobileZipBuild(entries) {
+    const encoder = new TextEncoder();
+    const localParts = [];
+    const centralParts = [];
+    const { time, date } = mobileZipDosDateTime();
+    let offset = 0;
+    let centralSize = 0;
+
+    entries.forEach((entry) => {
+      const nameBytes = encoder.encode(String(entry.name || 'file.bin'));
+      const data = entry.data instanceof Uint8Array ? entry.data : encoder.encode(String(entry.data ?? ''));
+      if (data.byteLength > 0xffffffff || offset > 0xffffffff) throw new Error('ZIP 文件过大，手机端暂不支持 ZIP64');
+      const crc = mobileZipCrc32(data);
+      const flags = 0x0800;
+
+      const local = new Uint8Array(30);
+      const lv = new DataView(local.buffer);
+      lv.setUint32(0, 0x04034b50, true);
+      lv.setUint16(4, 20, true);
+      lv.setUint16(6, flags, true);
+      lv.setUint16(8, 0, true);
+      lv.setUint16(10, time, true);
+      lv.setUint16(12, date, true);
+      lv.setUint32(14, crc, true);
+      lv.setUint32(18, data.byteLength, true);
+      lv.setUint32(22, data.byteLength, true);
+      lv.setUint16(26, nameBytes.byteLength, true);
+      lv.setUint16(28, 0, true);
+      localParts.push(local, nameBytes, data);
+
+      const central = new Uint8Array(46);
+      const cv = new DataView(central.buffer);
+      cv.setUint32(0, 0x02014b50, true);
+      cv.setUint16(4, 20, true);
+      cv.setUint16(6, 20, true);
+      cv.setUint16(8, flags, true);
+      cv.setUint16(10, 0, true);
+      cv.setUint16(12, time, true);
+      cv.setUint16(14, date, true);
+      cv.setUint32(16, crc, true);
+      cv.setUint32(20, data.byteLength, true);
+      cv.setUint32(24, data.byteLength, true);
+      cv.setUint16(28, nameBytes.byteLength, true);
+      cv.setUint16(30, 0, true);
+      cv.setUint16(32, 0, true);
+      cv.setUint16(34, 0, true);
+      cv.setUint16(36, 0, true);
+      cv.setUint32(38, 0, true);
+      cv.setUint32(42, offset, true);
+      centralParts.push(central, nameBytes);
+
+      offset += local.byteLength + nameBytes.byteLength + data.byteLength;
+      centralSize += central.byteLength + nameBytes.byteLength;
+    });
+
+    const end = new Uint8Array(22);
+    const ev = new DataView(end.buffer);
+    ev.setUint32(0, 0x06054b50, true);
+    ev.setUint16(4, 0, true);
+    ev.setUint16(6, 0, true);
+    ev.setUint16(8, entries.length, true);
+    ev.setUint16(10, entries.length, true);
+    ev.setUint32(12, centralSize, true);
+    ev.setUint32(16, offset, true);
+    ev.setUint16(20, 0, true);
+    return new Blob([...localParts, ...centralParts, end], { type: 'application/zip' });
+  }
+
+  function mobileImageExtension(url, contentType = '') {
+    const type = String(contentType || '').toLowerCase();
+    if (type.includes('png')) return 'png';
+    if (type.includes('webp')) return 'webp';
+    if (type.includes('gif')) return 'gif';
+    if (type.includes('avif')) return 'avif';
+    if (type.includes('jpeg') || type.includes('jpg')) return 'jpg';
+    try {
+      const match = new URL(url, location.href).pathname.match(/\.([a-z0-9]{3,5})$/i);
+      if (match?.[1] && /^(?:jpe?g|png|webp|gif|avif)$/i.test(match[1])) return match[1].toLowerCase().replace('jpeg', 'jpg');
+    } catch {}
+    return 'jpg';
+  }
+
+  async function mobileFetchImageBytes(url) {
+    try {
+      const response = await fetch(url, { credentials: 'include', cache: 'no-store' });
+      if (response.ok) {
+        return {
+          bytes: new Uint8Array(await response.arrayBuffer()),
+          contentType: response.headers.get('content-type') || '',
+        };
+      }
+    } catch {}
+
+    if (typeof GM_xmlhttpRequest !== 'function') throw new Error('当前脚本环境无法读取图片文件');
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        responseType: 'arraybuffer',
+        timeout: 45000,
+        onload: async (response) => {
+          if (Number(response.status || 0) < 200 || Number(response.status || 0) >= 300) {
+            reject(new Error(`图片请求失败：HTTP ${response.status || '?'}`));
+            return;
+          }
+          try {
+            let buffer = response.response;
+            if (buffer instanceof Blob) buffer = await buffer.arrayBuffer();
+            if (ArrayBuffer.isView(buffer)) buffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+            if (!(buffer instanceof ArrayBuffer)) throw new Error('图片响应不是二进制数据');
+            const typeMatch = String(response.responseHeaders || '').match(/^content-type:\s*([^\r\n]+)/im);
+            resolve({ bytes: new Uint8Array(buffer), contentType: typeMatch?.[1] || '' });
+          } catch (error) {
+            reject(error);
+          }
+        },
+        onerror: () => reject(new Error('图片请求失败')),
+        ontimeout: () => reject(new Error('图片请求超时')),
+      });
+    });
+  }
+
+  function mobileZipDownloadName(task) {
+    const base = compactTitle(task?.copyTitle || task?.conversationTitle || 'ChatGPT作品')
+      .replace(/[\\/:*?"<>|]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 52) || 'ChatGPT作品';
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
+    return `${base}-${stamp}.zip`;
+  }
+
+  async function triggerMobileZipPackage(button) {
+    if (!button || button.disabled) return;
+    setWorkPackageButtonState(button, 'preparing');
+    const copyText = await readMobilePackageClipboardText();
+    if (!isValidMobilePackageText(copyText)) {
+      showImageDownloadToast('未识别到有效文案，禁止打包', false);
+      setWorkPackageButtonState(button, 'needs-text');
+      window.alert('未识别到有效文案。请先复制完整文案，再点击“下载ZIP”。\n\n没有文案时不会下载图片，也不会生成 ZIP。');
+      window.setTimeout(() => {
+        if (button.dataset.cgptWorkPackageState === 'needs-text') setWorkPackageButtonState(button, 'idle');
+      }, 2600);
+      return;
+    }
+
+    const imageUrls = mobilePackageImageUrls(button);
+    if (!imageUrls.length) {
+      showImageDownloadToast('没有识别到当前作品的图片，未生成 ZIP', false);
+      window.alert('没有识别到当前作品的图片，已停止打包。');
+      setWorkPackageButtonState(button, 'idle');
+      return;
+    }
+
+    const batchId = newDownloadBatchId();
+    const task = {
+      schemaVersion: 1,
+      taskId: batchId,
+      batchId,
+      status: 'packed-mobile',
+      createdAt: new Date().toISOString(),
+      expectedImages: imageUrls.length,
+      copyTitle: compactTitle(copyText.split(/\r?\n/).find((line) => line.trim()) || '').slice(0, 160),
+      conversationTitle: currentWorkPackageConversationTitle(),
+      accountName: currentWorkPackageAccountName(),
+      conversationUrl: currentWorkPackageConversationUrl(),
+      pageUrl: location.href,
+      scriptVersion: SCRIPT_VERSION,
+      packageMode: 'mobile-zip',
+    };
+
+    try {
+      const entries = [];
+      setWorkPackageButtonState(button, 'downloading', { current: 0, total: imageUrls.length });
+      for (let index = 0; index < imageUrls.length; index += 1) {
+        const item = await mobileFetchImageBytes(imageUrls[index]);
+        if (!item.bytes?.byteLength) throw new Error(`第 ${index + 1} 张图片为空`);
+        const ext = mobileImageExtension(imageUrls[index], item.contentType);
+        entries.push({
+          name: `${String(index + 1).padStart(2, '0')}.${ext}`,
+          data: item.bytes,
+        });
+        setWorkPackageButtonState(button, 'downloading', { current: index + 1, total: imageUrls.length });
+      }
+
+      entries.push({ name: '文案.txt', data: `${copyText}\n` });
+      entries.push({ name: 'meta.json', data: `${JSON.stringify(task, null, 2)}\n` });
+      setWorkPackageButtonState(button, 'packaging');
+      const zipBlob = mobileZipBuild(entries);
+      const url = URL.createObjectURL(zipBlob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = mobileZipDownloadName(task);
+      anchor.rel = 'noopener';
+      anchor.style.display = 'none';
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+      setWorkPackageButtonState(button, 'done', { total: imageUrls.length });
+      showImageDownloadToast(`ZIP 下载完成：${imageUrls.length} 张图片 + 文案`, true);
+      addDiagnosticLog('mobile-zip:done', {
+        batchId,
+        images: imageUrls.length,
+        zipBytes: zipBlob.size,
+      });
+    } catch (error) {
+      console.warn('[ChatGPT 手机版 ZIP] 打包失败：', error);
+      addDiagnosticLog('mobile-zip:failed', {
+        batchId,
+        message: error?.message || String(error),
+      });
+      showImageDownloadToast('ZIP 打包失败，未生成不完整作品包', false);
+      window.alert(`ZIP 打包失败：${error?.message || String(error)}\n\n没有生成不完整的作品包。`);
+      setWorkPackageButtonState(button, 'idle');
+    }
+  }
+
   function setWorkPackageButtonState(button, state = 'idle', detail = {}) {
     if (!button) return;
     button.dataset.cgptWorkPackageState = state;
@@ -2383,9 +2667,9 @@
     }
     if (state === 'packaging') {
       button.classList.add('cgpt-work-package-called');
-      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">打包中</span>`;
-      button.title = '图片已下载，正在调用本地作品助手打包';
-      button.setAttribute('aria-label', '正在打包作品文件夹');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">${isMobileZipMode() ? '生成ZIP' : '打包中'}</span>`;
+      button.title = isMobileZipMode() ? '图片已读取，正在生成手机 ZIP' : '图片已下载，正在调用本地作品助手打包';
+      button.setAttribute('aria-label', isMobileZipMode() ? '正在生成手机 ZIP' : '正在打包作品文件夹');
       return;
     }
     if (state === 'needs-text') {
@@ -2404,9 +2688,12 @@
       button.setAttribute('aria-label', button.title);
       return;
     }
-    button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">下载并打包</span>`;
-    button.title = '下载本组全部图片，并打包成作品文件夹';
-    button.setAttribute('aria-label', '下载本组图片并打包成文件夹');
+    const idleLabel = isMobileZipMode() ? '下载ZIP' : '下载并打包';
+    button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">${idleLabel}</span>`;
+    button.title = isMobileZipMode()
+      ? '将本组图片、已复制文案和元数据打包为 ZIP 下载到手机'
+      : '下载本组全部图片，并打包成作品文件夹';
+    button.setAttribute('aria-label', isMobileZipMode() ? '下载手机作品 ZIP' : '下载本组图片并打包成文件夹');
   }
 
   async function triggerWorkPackageButton(button, event = null) {
@@ -2414,6 +2701,10 @@
     event?.preventDefault?.();
     event?.stopPropagation?.();
     event?.stopImmediatePropagation?.();
+    if (isMobileZipMode()) {
+      await triggerMobileZipPackage(button);
+      return;
+    }
     if (!await ensureWorkPackageHelperReady()) {
       setWorkPackageButtonState(button, 'idle');
       return;
@@ -3013,6 +3304,167 @@
     schedulePromptButton(400);
   }, 6000);
 
+  const MOBILE_SWIPE_EDGE_PX = 34;
+  const MOBILE_SWIPE_DISTANCE_PX = 72;
+  const MOBILE_SWIPE_MAX_VERTICAL_PX = 64;
+  const MOBILE_SWIPE_MAX_DURATION_MS = 850;
+
+  function mobileSidebarButton(wantOpen) {
+    const selectors = wantOpen
+      ? [
+          '[data-testid="open-sidebar-button"]',
+          'button[aria-label*="Open sidebar" i]',
+          'button[aria-label*="Open navigation" i]',
+          'button[title*="Open sidebar" i]',
+          'button[aria-label*="打开侧边栏"]',
+          'button[aria-label*="打开菜单"]',
+        ]
+      : [
+          '[data-testid="close-sidebar-button"]',
+          'button[aria-label*="Close sidebar" i]',
+          'button[aria-label*="Close navigation" i]',
+          'button[title*="Close sidebar" i]',
+          'button[aria-label*="关闭侧边栏"]',
+          'button[aria-label*="关闭菜单"]',
+        ];
+    for (const selector of selectors) {
+      const button = [...document.querySelectorAll(selector)].find((node) => isElementVisible(node));
+      if (button) return button;
+    }
+
+    const buttons = [...document.querySelectorAll('button')].filter((node) => isElementVisible(node));
+    const pattern = wantOpen
+      ? /open sidebar|open navigation|打开侧边栏|打开菜单|菜单/i
+      : /close sidebar|close navigation|关闭侧边栏|关闭菜单/i;
+    return buttons.find((button) => pattern.test(elementText(button))) || null;
+  }
+
+  function mobileNativeSidebarVisible() {
+    if (mobileSidebarButton(false)) return true;
+    const candidates = [...document.querySelectorAll('nav, aside, [role="navigation"]')];
+    return candidates.some((node) => {
+      if (!isElementVisible(node)) return false;
+      const rect = node.getBoundingClientRect?.();
+      if (!rect) return false;
+      return rect.width >= Math.min(220, innerWidth * 0.58)
+        && rect.height >= innerHeight * 0.55
+        && rect.left < innerWidth * 0.35
+        && rect.right > 0;
+    });
+  }
+
+  function setMobileNativeSidebarOpen(wantOpen) {
+    const open = mobileNativeSidebarVisible();
+    if (open === wantOpen) return true;
+    const button = mobileSidebarButton(wantOpen);
+    if (button) {
+      button.click();
+      return true;
+    }
+
+    if (!wantOpen) {
+      const sidebar = [...document.querySelectorAll('nav, aside, [role="navigation"]')]
+        .find((node) => {
+          if (!isElementVisible(node)) return false;
+          const rect = node.getBoundingClientRect?.();
+          return rect && rect.width > 180 && rect.height > innerHeight * 0.5 && rect.left < innerWidth * 0.35;
+        });
+      if (sidebar) {
+        const sidebarRect = sidebar.getBoundingClientRect();
+        const backdrop = [...document.querySelectorAll('button, [role="button"], div')]
+          .filter((node) => node !== sidebar && !sidebar.contains(node) && isElementVisible(node))
+          .find((node) => {
+            const rect = node.getBoundingClientRect?.();
+            if (!rect) return false;
+            const style = getComputedStyle(node);
+            return ['fixed', 'absolute'].includes(style.position)
+              && rect.left <= sidebarRect.right + 4
+              && rect.right >= innerWidth - 4
+              && rect.top <= 4
+              && rect.bottom >= innerHeight - 4;
+          });
+        if (backdrop) {
+          backdrop.click();
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function installMobileSidebarSwipe() {
+    if (!isMobileZipMode() || installMobileSidebarSwipe.installed) return;
+    installMobileSidebarSwipe.installed = true;
+    let startX = 0;
+    let startY = 0;
+    let startAt = 0;
+    let mode = '';
+    let claimed = false;
+
+    const reset = () => {
+      startX = 0;
+      startY = 0;
+      startAt = 0;
+      mode = '';
+      claimed = false;
+    };
+
+    document.addEventListener('touchstart', (event) => {
+      if (event.touches?.length !== 1) {
+        reset();
+        return;
+      }
+      const touch = event.touches[0];
+      startX = touch.clientX;
+      startY = touch.clientY;
+      startAt = Date.now();
+      claimed = false;
+      if (startX <= MOBILE_SWIPE_EDGE_PX) mode = 'open';
+      else if (startX >= innerWidth - MOBILE_SWIPE_EDGE_PX) mode = 'close';
+      else mode = '';
+    }, { capture: true, passive: true });
+
+    document.addEventListener('touchmove', (event) => {
+      if (!mode || event.touches?.length !== 1) return;
+      const touch = event.touches[0];
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+      const horizontalIntent = Math.abs(dx) >= 18 && Math.abs(dx) > Math.abs(dy) * 1.35;
+      const correctDirection = mode === 'open' ? dx > 0 : dx < 0;
+      if (horizontalIntent && correctDirection) {
+        claimed = true;
+        event.preventDefault();
+      }
+    }, { capture: true, passive: false });
+
+    document.addEventListener('touchend', (event) => {
+      if (!mode || event.changedTouches?.length !== 1) {
+        reset();
+        return;
+      }
+      const touch = event.changedTouches[0];
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+      const duration = Date.now() - startAt;
+      const verticalInvalid = Math.abs(dy) > MOBILE_SWIPE_MAX_VERTICAL_PX
+        || Math.abs(dy) > Math.abs(dx) * 0.75;
+      const fastEnough = duration <= MOBILE_SWIPE_MAX_DURATION_MS;
+      let handled = false;
+
+      if (!verticalInvalid && fastEnough) {
+        if (mode === 'open' && startX <= MOBILE_SWIPE_EDGE_PX && dx >= MOBILE_SWIPE_DISTANCE_PX) {
+          handled = setMobileNativeSidebarOpen(true);
+        } else if (mode === 'close' && startX >= innerWidth - MOBILE_SWIPE_EDGE_PX && dx <= -MOBILE_SWIPE_DISTANCE_PX) {
+          handled = setMobileNativeSidebarOpen(false);
+        }
+      }
+      if (handled || claimed) event.preventDefault();
+      reset();
+    }, { capture: true, passive: false });
+
+    document.addEventListener('touchcancel', reset, { capture: true, passive: true });
+  }
+
   // 启动引导
   removeLegacySidebarGroupingUi();
   injectStyles();
@@ -3021,6 +3473,7 @@
   installWorkPackageClipboardBridge();
   bindEvents();
   bindImageDownloadEvents();
+  installMobileSidebarSwipe();
   installImageDownloadDebugApi();
   installConversationTreeDebugApi();
   addDiagnosticLog('script:init');
