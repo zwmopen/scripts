@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$TargetFolder,
     [string]$LibraryName,
     [string]$LibraryPath,
@@ -87,7 +87,7 @@ $config = [ordered]@{
     portfolio_group_done_message = New-TextFromCodePoints @(0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6)
     portfolio_zip_done_message = New-TextFromCodePoints @(0x5DF2, 0x751F, 0x6210, 0x005A, 0x0049, 0x0050, 0x538B, 0x7F29, 0x5305)
     portfolio_zip_failed_message = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6, 0x538B, 0x7F29, 0x5931, 0x8D25)
-    portfolio_auto_group = $true
+    portfolio_auto_group = $false
     portfolio_auto_zip = $false
     portfolio_batch_size = 14
     portfolio_prefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)

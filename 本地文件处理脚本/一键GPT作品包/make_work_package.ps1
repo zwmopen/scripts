@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ClipboardTextOverride,
     [string]$ConversationMetadataJsonOverride,
     [string]$BatchId,
@@ -435,7 +435,7 @@ function Get-WorkPackageConfig {
         library_path = ""
         portfolio_output_path = ""
         image_inbox_path = ""
-        portfolio_auto_group = $true
+        portfolio_auto_group = $false
         portfolio_auto_zip = $false
         portfolio_batch_size = 14
         portfolio_prefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
