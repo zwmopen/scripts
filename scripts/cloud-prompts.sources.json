@@ -1,0 +1,83 @@
+{
+  "$comment": "云端提示词库的唯一真源清单：改这里指向的技能 md，改完跑 node scripts/sync-cloud-prompts.mjs",
+  "targetFile": "chatgpt-cloud-prompts.json",
+  "maxBytes": 2097152,
+  "entries": [
+    {
+      "id": "prompt:carousel-migrator-v5",
+      "title": "原模板复刻｜小红书团建轻复刻直出 V5.0｜全量直接出图完整版",
+      "sources": [
+        {
+          "file": "../teambuilding-template-migrator/references/replica-v5-full.md"
+        }
+      ],
+      "skill": {
+        "repo": "zwmopen/teambuilding-template-migrator",
+        "ref": "master",
+        "manifest": "prompt.manifest.json",
+        "promptId": "carousel-migrator-v5"
+      }
+    },
+    {
+      "id": "prompt:carousel-migrator-v4-8",
+      "title": "轮播母版迁移器 V4.8｜首批图片自动母版＋显性计划＋动态页数＋统一命名与视觉特征锁定＋真实现场摄影增强版",
+      "sources": [
+        {
+          "file": "../teambuilding-template-migrator/references/migrator-v4.8.md"
+        }
+      ],
+      "skill": {
+        "repo": "zwmopen/teambuilding-template-migrator",
+        "ref": "master",
+        "manifest": "prompt.manifest.json",
+        "promptId": "carousel-migrator-v4-8"
+      }
+    },
+    {
+      "id": "prompt:carousel-migrator-v4-7",
+      "title": "套模板复刻｜轮播母版迁移器 V4.7｜统一命名与视觉特征锁定版",
+      "sources": [
+        {
+          "file": "../teambuilding-template-migrator/references/migrator-v4.7.md"
+        }
+      ],
+      "skill": {
+        "repo": "zwmopen/teambuilding-template-migrator",
+        "ref": "master",
+        "manifest": "prompt.manifest.json",
+        "promptId": "carousel-migrator-v4-7"
+      }
+    },
+    {
+      "id": "prompt:teambuilding-copy-skill-public",
+      "title": "团建文案 Skill｜公开版｜小红书自然攻略／小红书高密度种草／抖音攻略 三版",
+      "sources": [
+        {
+          "file": "../xiaohongshutuanjianwenan/SKILL.md"
+        },
+        {
+          "file": "../xiaohongshutuanjianwenan/references/title-rules.md",
+          "heading": "## 附：参考文件（来自同名技能仓库 references/）\n\n### 标题规则（title-rules.md）"
+        },
+        {
+          "file": "../xiaohongshutuanjianwenan/references/public-rules.md",
+          "heading": "### 公开版总规则（public-rules.md）"
+        },
+        {
+          "file": "../xiaohongshutuanjianwenan/references/high-density-template.md",
+          "heading": "### 高密度种草模板（high-density-template.md）"
+        },
+        {
+          "file": "../xiaohongshutuanjianwenan/references/high-density-example.md",
+          "heading": "### 高密度种草示例（high-density-example.md）"
+        }
+      ],
+      "skill": {
+        "repo": "zwmopen/xiaohongshutuanjianwenan",
+        "ref": "main",
+        "manifest": "prompt.manifest.json",
+        "promptId": "teambuilding-copy-skill-public"
+      }
+    }
+  ]
+}

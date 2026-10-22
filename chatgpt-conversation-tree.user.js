@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.18.0
+// @version      1.19.0
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -26,7 +26,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.18.0';
+  const SCRIPT_VERSION = '1.19.0';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -71,6 +71,14 @@
   const CLOUD_PROMPT_AUTO_SYNC_INTERVAL = 24 * 60 * 60 * 1000;
   const MAX_CLOUD_PROMPT_BACKUPS = 5;
   const MAX_CLOUD_PROMPT_RESPONSE_BYTES = 2 * 1024 * 1024;
+  // [2026-10-23] 技能直连：云端条目可只写 { skill: { repo, ref, manifest, id } }，
+  // 插入时按 repo 的 prompt.manifest.json 现拉文件拼装，用户只升级技能仓库即可。
+  // 拉取失败退回到条目自带的 content 快照，保证断网/代理失效时仍可用。
+  const SKILL_RAW_BASE = 'https://raw.githubusercontent.com/';
+  const SKILL_CONTENT_CACHE_KEY = `${APP_ID}:skill-prompt-cache:v1`;
+  const SKILL_CONTENT_CACHE_TTL = 6 * 60 * 60 * 1000;
+  const SKILL_FETCH_TIMEOUT = 15000;
+  const MAX_SKILL_FILE_BYTES = 1024 * 1024;
   const DIAGNOSTIC_LOG_KEY = `${APP_ID}:diagnostic-log:v1`;
   const MAX_DIAGNOSTIC_LOGS = 220;
   const WORK_PACKAGE_VISIBLE_KEY = 'work-package-visible';
@@ -273,6 +281,7 @@
   function normalizeCloudPromptItem(item, index = 0) {
     const title = compactTitle(item?.title || '').slice(0, 160);
     const content = String(item?.content || '').trim().slice(0, 50000);
+    const skill = normalizeSkillRef(item?.skill);
     if (!title && !content) return null;
     const sourceId = String(
       item?.sourceId || String(item?.id || `item-${index + 1}`).replace(/^cloud:/, '')
@@ -284,8 +293,22 @@
       source: 'cloud',
       title: title || compactTitle(content).slice(0, 28) || '未命名云端提示词',
       content,
+      skill,
       createdAt: promptTimestamp(item?.createdAt, updatedAt),
       updatedAt,
+    };
+  }
+
+  /** 云端条目的技能引用：{ repo:"owner/name", ref:"master", manifest:"prompt.manifest.json", promptId:"..." } */
+  function normalizeSkillRef(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const repo = String(raw.repo || '').trim();
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return null;
+    return {
+      repo,
+      ref: String(raw.ref || 'HEAD').trim() || 'HEAD',
+      manifest: String(raw.manifest || 'prompt.manifest.json').trim() || 'prompt.manifest.json',
+      promptId: String(raw.promptId || raw.id || '').trim(),
     };
   }
 
@@ -455,6 +478,160 @@
       try { return JSON.parse(body); }
       catch { throw new Error('云端提示词不是有效 JSON'); }
     });
+  }
+
+  // ---------------------------------------------------------------
+  // 技能直连（2026-10-23）
+  // 云端条目可以只声明 skill 引用，插入时按技能仓库的 prompt.manifest.json
+  // 拉取 SKILL.md + references 拼装成完整提示词。用户只需要升级技能仓库。
+  // 顺序：本地缓存(TTL 6h) -> GitHub raw -> 条目自带快照 content
+  // ---------------------------------------------------------------
+
+  function requestRawText(url, timeout = SKILL_FETCH_TIMEOUT) {
+    if (typeof GM_xmlhttpRequest === 'function') {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url,
+          timeout,
+          headers: { Accept: 'text/plain, application/json' },
+          onload(response) {
+            if (response.status < 200 || response.status >= 300) {
+              reject(new Error(`HTTP ${response.status}`));
+              return;
+            }
+            const body = String(response.responseText || '');
+            if (body.length > MAX_SKILL_FILE_BYTES) {
+              reject(new Error('技能文件超过 1MB，已拒绝加载'));
+              return;
+            }
+            resolve(body);
+          },
+          onerror: () => reject(new Error('无法连接 GitHub')),
+          ontimeout: () => reject(new Error('连接 GitHub 超时')),
+        });
+      });
+    }
+    return fetch(url, { cache: 'no-store' }).then(async (response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const body = await response.text();
+      if (body.length > MAX_SKILL_FILE_BYTES) throw new Error('技能文件超过 1MB，已拒绝加载');
+      return body;
+    });
+  }
+
+  function skillCacheStore() {
+    try {
+      const raw = GM_getValue(SKILL_CONTENT_CACHE_KEY, null)
+        || JSON.parse(localStorage.getItem(SKILL_CONTENT_CACHE_KEY) || 'null');
+      return raw && typeof raw === 'object' ? raw : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function skillCacheSave(store) {
+    try { GM_setValue(SKILL_CONTENT_CACHE_KEY, store); } catch {}
+    try { localStorage.setItem(SKILL_CONTENT_CACHE_KEY, JSON.stringify(store)); } catch {}
+  }
+
+  function skillCacheId(skill, promptId) {
+    return `${skill.repo}@${skill.ref}#${promptId || '-'}`;
+  }
+
+  function readSkillCache(skill, promptId) {
+    const entry = skillCacheStore()[skillCacheId(skill, promptId)];
+    if (!entry || !entry.content) return null;
+    return entry;
+  }
+
+  function stripSkillFrontmatter(text) {
+    return String(text || '').replace(/^---\n[\s\S]*?\n---\n/, '');
+  }
+
+  function stripSkillExportNoise(text) {
+    const lines = String(text || '').split('\n');
+    let i = 0;
+    while (i < 3 && lines[i] !== undefined) {
+      const line = lines[i].trim();
+      if (!/\.(txt|md|docx?)$/i.test(line) && line !== '文档') break;
+      i++;
+    }
+    return lines.slice(i).join('\n');
+  }
+
+  function composeSkillFiles(files) {
+    const blocks = [];
+    for (const file of files) {
+      if (!file || !file.text) continue;
+      const body = String(file.text).trim();
+      blocks.push(file.heading ? `${file.heading}\n\n${body}` : body);
+    }
+    return blocks.join('\n\n---\n\n').trim();
+  }
+
+  async function fetchSkillPromptContent(skill, promptId) {
+    const base = `${SKILL_RAW_BASE}${skill.repo}/${skill.ref}/`;
+    const manifestText = await requestRawText(`${base}${skill.manifest}?ts=${Date.now()}`);
+    let manifest;
+    try { manifest = JSON.parse(manifestText); }
+    catch { throw new Error('技能清单不是有效 JSON'); }
+    const prompts = Array.isArray(manifest?.prompts) ? manifest.prompts : [];
+    if (!prompts.length) throw new Error('技能清单里没有 prompts');
+    const wanted = promptId || skill.promptId || '';
+    const target = prompts.find((entry) => entry && (entry.id === wanted || entry.promptId === wanted))
+      || (prompts.length === 1 ? prompts[0] : null);
+    if (!target) throw new Error(`技能清单里找不到 ${wanted || '(未指定 id)'}`);
+    const fileSpecs = Array.isArray(target.files) ? target.files : [];
+    if (!fileSpecs.length) throw new Error('技能清单条目没有 files');
+    const files = [];
+    for (const spec of fileSpecs) {
+      const path = String(spec?.path || '').trim();
+      if (!path) continue;
+      const raw = await requestRawText(`${base}${path}?ts=${Date.now()}`);
+      let text = raw;
+      if (spec.stripFrontmatter || /(^|\/)SKILL\.md$/i.test(path)) text = stripSkillFrontmatter(text);
+      if (spec.stripExportNoise !== false) text = stripSkillExportNoise(text);
+      files.push({ text, heading: spec.heading || '' });
+    }
+    const content = composeSkillFiles(files);
+    if (!content) throw new Error('技能拼装结果为空');
+    return { content, title: target.title || '', version: String(manifest?.version || '') };
+  }
+
+  /**
+   * 解析条目最终要插入的正文。
+   * 返回 { content, from }，from ∈ skill-cache / skill-remote / snapshot
+   */
+  async function resolvePromptContent(item) {
+    const snapshot = String(item?.content || '');
+    const skill = item?.skill;
+    if (!skill) return { content: snapshot, from: 'snapshot' };
+    const promptId = skill.promptId || String(item.sourceId || '').replace(/^prompt:/, '');
+    const cached = readSkillCache(skill, promptId);
+    if (cached && Date.now() - Number(cached.at || 0) < SKILL_CONTENT_CACHE_TTL) {
+      return { content: cached.content, from: 'skill-cache' };
+    }
+    try {
+      const fresh = await fetchSkillPromptContent(skill, promptId);
+      const store = skillCacheStore();
+      store[skillCacheId(skill, promptId)] = {
+        content: fresh.content,
+        title: fresh.title,
+        skillVersion: fresh.version,
+        at: Date.now(),
+      };
+      skillCacheSave(store);
+      return { content: fresh.content, from: 'skill-remote' };
+    } catch (error) {
+      addDiagnosticLog('prompt:skill-fetch-failed', {
+        repo: skill.repo,
+        promptId,
+        message: error?.message || String(error),
+      });
+      if (cached?.content) return { content: cached.content, from: 'skill-cache' };
+      return { content: snapshot, from: 'snapshot' };
+    }
   }
 
   async function syncCloudPrompts(manual = false) {
@@ -1747,16 +1924,34 @@
     return false;
   }
 
-  function insertPrompt(promptId) {
+  async function insertPrompt(promptId) {
     const item = findPromptItem(promptId);
-    if (!item?.content) return;
-    const ok = insertTextIntoComposer(item.content);
+    if (!item) return;
+    let content = item.content || '';
+    let from = item.source || 'local';
+    // 声明了 skill 引用的条目：优先现拉技能仓库内容，失败退回快照
+    if (item.skill) {
+      if (item.skill.repo) showImageDownloadToast('正在读取技能最新版本…', true);
+      const resolved = await resolvePromptContent(item);
+      content = resolved.content || content;
+      from = resolved.from;
+      if (from === 'snapshot' && !content) {
+        showImageDownloadToast('技能拉取失败且没有本地快照', false);
+        return;
+      }
+      if (from === 'snapshot' && item.content) {
+        showImageDownloadToast('技能拉取失败，已插入本地快照版本', false);
+      }
+      if (from === 'skill-remote') showImageDownloadToast('已读取技能最新版本', true);
+    }
+    if (!content) return;
+    const ok = insertTextIntoComposer(content);
     if (ok) {
       closePromptPanel();
       addDiagnosticLog('prompt:insert', {
         id: item.id,
         title: item.title,
-        source: item.source || 'local',
+        source: from,
       });
     }
   }
@@ -3017,7 +3212,7 @@
         } else if (action === 'delete') {
           deletePrompt(promptId);
         } else if (action === 'insert') {
-          insertPrompt(promptId);
+          void insertPrompt(promptId);
         } else if (action === 'sync-cloud') {
           void syncCloudPrompts(true);
         } else if (action === 'check-update') {
@@ -3064,7 +3259,7 @@
       ) {
         event.preventDefault();
         event.stopPropagation();
-        insertPrompt(promptRow.dataset.promptId || '');
+        void insertPrompt(promptRow.dataset.promptId || '');
       }
     }, true);
   }
