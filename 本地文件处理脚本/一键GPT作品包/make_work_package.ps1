@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ClipboardTextOverride,
     [string]$ConversationMetadataJsonOverride,
     [string]$BatchId,
@@ -1871,14 +1871,23 @@ $configPath = Join-Path $scriptDir "workpkg_config.json"
 $config = Get-WorkPackageConfig -Path $configPath
 $libraryName = [string]$config.library_name
 $configuredInboxPath = [Environment]::ExpandEnvironmentVariables(([string]$config.image_inbox_path).Trim())
+# 2026-10-23: image_inbox_path now accepts multiple directories separated by ';'.
+# Reason: images are written straight into the product library (_收件区) instead of the
+# browser Downloads folder, but older batches may still sit in Downloads. Scanning both
+# keeps the packaging step working during the transition.
 if ([string]::IsNullOrWhiteSpace($configuredInboxPath)) {
-    $imageInboxDir = $scriptDir
+    $imageInboxDirs = @($scriptDir)
 } else {
-    if (-not [System.IO.Path]::IsPathRooted($configuredInboxPath)) {
-        throw "workpkg_config.json image_inbox_path must be an absolute path: $configuredInboxPath"
-    }
-    $imageInboxDir = [System.IO.Path]::GetFullPath($configuredInboxPath)
+    $inboxParts = @($configuredInboxPath -split ';' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($inboxParts.Count -eq 0) { $inboxParts = @($configuredInboxPath) }
+    $imageInboxDirs = @($inboxParts | ForEach-Object {
+        if (-not [System.IO.Path]::IsPathRooted($_)) {
+            throw "workpkg_config.json image_inbox_path must be an absolute path: $_"
+        }
+        [System.IO.Path]::GetFullPath($_)
+    })
 }
+$imageInboxDir = $imageInboxDirs[0]
 $configuredLibraryPath = [Environment]::ExpandEnvironmentVariables(([string]$config.library_path).Trim())
 if ([string]::IsNullOrWhiteSpace($configuredLibraryPath)) {
     $libraryDir = Join-Path $scriptDir $libraryName
@@ -1969,6 +1978,18 @@ try {
         $inboxExists = Test-Path -LiteralPath $imageInboxDir -PathType Container
         $libraryExists = Test-Path -LiteralPath $libraryDir -PathType Container
         $portfolioOutputExists = Test-Path -LiteralPath $portfolioOutputDir -PathType Container
+        $inboxLines = @(foreach ($inboxDir in $imageInboxDirs) {
+            $exists = Test-Path -LiteralPath $inboxDir -PathType Container
+            $count = if ($exists) {
+                @(Get-TopLevelImages -Directory $inboxDir -ExcludeNames $imageExcludeNames).Count
+            } else {
+                0
+            }
+            "图片下载目录：$inboxDir"
+            "目录状态：$(if ($exists) { '正常' } else { '不存在' })"
+            "当前图片：$count 张"
+            ""
+        })
         $inboxImageCount = if ($inboxExists) {
             @(Get-TopLevelImages -Directory $imageInboxDir -ExcludeNames $imageExcludeNames).Count
         } else {
@@ -1977,10 +1998,7 @@ try {
         $diagnosticMessage = @(
             "GPT 作品包环境检查"
             ""
-            "图片下载目录：$imageInboxDir"
-            "目录状态：$(if ($inboxExists) { '正常' } else { '不存在' })"
-            "当前图片：$inboxImageCount 张"
-            ""
+            $inboxLines
             "成品库：$libraryDir"
             "目录状态：$(if ($libraryExists) { '正常' } else { '尚未创建，将在首次打包时创建' })"
             ""
@@ -1995,7 +2013,7 @@ try {
         }
         Write-Output "DIAGNOSTIC"
         Write-Output "Version=$workPackageScriptVersion"
-        Write-Output "ImageInbox=$imageInboxDir"
+        Write-Output "ImageInbox=$($imageInboxDirs -join ';')"
         Write-Output "InboxExists=$inboxExists"
         Write-Output "InboxImages=$inboxImageCount"
         Write-Output "Library=$libraryDir"
@@ -2139,7 +2157,20 @@ try {
         return
     }
 
-    $taskState = Wait-WorkPackageTask -Directory $imageInboxDir -RequestedBatchId $BatchId -WaitSeconds 20
+    # 2026-10-23: with multiple inbox directories, wait across all of them within one
+    # shared 20s budget instead of 20s per directory.
+    $taskState = $null
+    if ($imageInboxDirs.Count -le 1) {
+        $taskState = Wait-WorkPackageTask -Directory $imageInboxDir -RequestedBatchId $BatchId -WaitSeconds 20
+    } else {
+        $waitDeadline = (Get-Date).AddSeconds(20)
+        foreach ($inboxDir in $imageInboxDirs) {
+            $remaining = [int][Math]::Ceiling(($waitDeadline - (Get-Date)).TotalSeconds)
+            if ($remaining -lt 1) { $remaining = 1 }
+            $candidateTask = Wait-WorkPackageTask -Directory $inboxDir -RequestedBatchId $BatchId -WaitSeconds $remaining
+            if ($null -ne $candidateTask) { $taskState = $candidateTask; break }
+        }
+    }
     $taskData = if ($null -ne $taskState) { $taskState.Data } else { $null }
     $taskPath = if ($null -ne $taskState) { [string]$taskState.Path } else { "" }
     if (-not [string]::IsNullOrWhiteSpace($BatchId) -and $null -eq $taskData) {
@@ -2171,11 +2202,32 @@ try {
         return
     }
 
-    $inboxSelection = Get-WorkPackageInboxImages `
-        -Directory $imageInboxDir `
-        -ExcludeNames $imageExcludeNames `
-        -RequestedBatchId $BatchId `
-        -RequestedExpectedCount $ExpectedImageCount
+    # 2026-10-23: pick the inbox directory that actually contains this batch.
+    $inboxSelection = $null
+    foreach ($inboxDir in $imageInboxDirs) {
+        if (-not (Test-Path -LiteralPath $inboxDir -PathType Container)) { continue }
+        $candidateSelection = Get-WorkPackageInboxImages `
+            -Directory $inboxDir `
+            -ExcludeNames $imageExcludeNames `
+            -RequestedBatchId $BatchId `
+            -RequestedExpectedCount $ExpectedImageCount
+        if ($null -eq $inboxSelection) {
+            $inboxSelection = $candidateSelection
+            continue
+        }
+        $candidateCount = @($candidateSelection.Images).Count
+        $currentCount = @($inboxSelection.Images).Count
+        if ($candidateCount -gt $currentCount) { $inboxSelection = $candidateSelection }
+    }
+    if ($null -eq $inboxSelection) {
+        $inboxSelection = [pscustomobject]@{
+            Images = @()
+            BatchId = $BatchId
+            ExpectedCount = [Math]::Max(0, $ExpectedImageCount)
+            IsComplete = $false
+            BatchFound = $false
+        }
+    }
     $images = @($inboxSelection.Images)
     if ($images.Count -eq 0) {
         if ($null -ne $taskData) {

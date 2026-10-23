@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.20.0
+// @version      1.21.0
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.20.0';
+  const SCRIPT_VERSION = '1.21.0';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2144,7 +2144,7 @@
       onload: () => {
         showImageDownloadToast('安装脚本已下载，请双击运行一次', true);
         window.alert(
-          '安装脚本已下载到浏览器下载目录。\n\n请双击“安装GPT作品助手.vbs”一次，安装完成后回到 ChatGPT 再点“下载并打包”。\n\n默认位置：\n图片：Windows 下载文件夹\n作品：文档\\GPT作品库\n去重数据：作品库\\_作品历史数据'
+          '安装脚本已下载到浏览器下载目录。\n\n请双击“安装GPT作品助手.vbs”一次，安装完成后回到 ChatGPT 再点“下载并打包”。\n\n工作目录（都在成品库内部，不再经过下载文件夹）：\n图片：成品库\\_收件区\n作品：成品库\\<时间戳>-<标题>\\\n去重数据：成品库\\_内部台账与历史数据\\_作品历史数据\n\n还要多做一步：右键油猴图标 → 菜单里点「📁 开启图片直存」→ 选「成品库\\_收件区」，图片才会直接落进成品库。'
         );
       },
       onerror: () => {
@@ -2164,11 +2164,11 @@
       overlay.innerHTML = `
         <section role="dialog" aria-modal="true" aria-label="首次使用 GPT 作品助手" style="width:min(440px,calc(100vw - 32px));background:var(--main-surface-primary,#fff);color:var(--text-primary,#0d0d0d);border:1px solid rgba(127,127,127,.25);border-radius:18px;box-shadow:0 18px 60px rgba(0,0,0,.22);padding:22px;font:14px/1.6 system-ui,-apple-system,sans-serif">
           <h2 style="font-size:18px;margin:0 0 8px">首次使用需要安装本地作品助手</h2>
-          <p style="margin:0 0 10px">网页负责下载图片，本地助手负责去重、整理和打包。只需下载安装脚本并双击一次。</p>
+          <p style="margin:0 0 10px">网页负责把图片直接写进成品库收件区，本地助手负责去重、整理和打包。只需下载安装脚本并双击一次。</p>
           <div style="background:rgba(127,127,127,.09);border-radius:12px;padding:10px 12px;margin-bottom:16px">
-            <div>图片：Windows 下载文件夹</div>
-            <div>作品：文档\\GPT作品库</div>
-            <div>去重数据：作品库\\_作品历史数据</div>
+            <div>图片：成品库\\_收件区（直存，不经下载文件夹）</div>
+            <div>作品：成品库\\&lt;时间戳&gt;-&lt;标题&gt;\\</div>
+            <div>去重数据：成品库\\_内部台账与历史数据\\_作品历史数据</div>
           </div>
           <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
             <button data-action="cancel" style="border:0;background:transparent;padding:8px 12px;cursor:pointer">取消</button>
@@ -2658,7 +2658,7 @@
       return window.showDirectoryPicker({
         id: 'cgpt-workpkg-sink',
         mode: 'readwrite',
-        startIn: 'downloads',
+        startIn: 'documents',
       });
     } catch (error) {
       console.warn('[直存] 无法打开目录选择器：', error);
@@ -2860,19 +2860,35 @@
         showImageDownloadToast('未获得目录写入权限，直存未启用', false);
         return;
       }
-      // 作品助手是按「浏览器下载目录 + batchId」取件的：换到别处时打包会找不到图，必须让用户知情
-      const looksLikeDownloads = /^downloads$/i.test(String(handle.name || '').trim());
-      if (!looksLikeDownloads) {
+      // 作品助手是从「成品库\_收件区」取件的：选错目录会让打包找不到图，必须让用户知情
+      const pickedName = String(handle.name || '').trim();
+      const looksLikeInbox = /收件/i.test(pickedName);
+      const looksLikeDownloads = /^downloads$/i.test(pickedName);
+      if (looksLikeDownloads) {
         const proceed = window.confirm(
-          `已选择目录：${handle.name}\n\n`
-          + '提醒：本地作品助手是按「浏览器下载目录」找图片和任务文件的。\n'
-          + '如果这个目录不是下载目录，点「下载并打包」时助手可能找不到图片，打包会失败。\n\n'
-          + '· 只想让下载更顺手 → 点「确定」继续。\n'
-          + '· 想同时保留「下载并打包」→ 点「取消」，改选下载目录（通常叫 Downloads）。'
+          `已选择：${pickedName}\n\n`
+          + '这是浏览器默认下载文件夹。选它的话，图片会先落到「下载」里、再由作品助手搬进成品库——'
+          + '就是你之前嫌绕的那条老路。\n\n'
+          + '建议改选成品库里的「_收件区」，一步到位进成品库。\n\n'
+          + '· 仍然要用下载文件夹 → 点「确定」\n'
+          + '· 换成收件区 → 点「取消」，重新选目录'
         );
         if (!proceed) {
           showImageDownloadToast('已取消，直存保持关闭', false);
-          addDiagnosticLog('fs-sink:configure-aborted-non-downloads', { label: handle.name });
+          addDiagnosticLog('fs-sink:configure-aborted-downloads', { label: pickedName });
+          return;
+        }
+      } else if (!looksLikeInbox) {
+        const proceed = window.confirm(
+          `已选择：${pickedName}\n\n`
+          + '提醒：作品助手是从「成品库\\_收件区」取图片和任务文件的。\n'
+          + '这个目录不是收件区的话，点「下载并打包」时助手会找不到图片，打包会失败。\n\n'
+          + '· 只想让「下载本组图片」更顺手（不管打包）→ 点「确定」\n'
+          + '· 想同时保留「下载并打包」→ 点「取消」，改选「成品库\\_收件区」'
+        );
+        if (!proceed) {
+          showImageDownloadToast('已取消，直存保持关闭', false);
+          addDiagnosticLog('fs-sink:configure-aborted-not-inbox', { label: pickedName });
           return;
         }
       }
@@ -3601,7 +3617,7 @@
       addMenu(`📁 直存目录：${fsSinkLabel || '等待授权'}（点击更换）`, () => void fsSinkConfigure());
       addMenu('↩ 关闭直存，改回浏览器下载', () => void fsSinkDisable());
     } else {
-      addMenu('📁 开启图片直存（不经浏览器下载弹窗）', () => void fsSinkConfigure());
+      addMenu('📁 开启图片直存（选成品库里的「_收件区」）', () => void fsSinkConfigure());
     }
 
     // 4. 本地助手与诊断

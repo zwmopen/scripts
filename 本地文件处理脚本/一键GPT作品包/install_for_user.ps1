@@ -54,7 +54,9 @@ try {
             [System.IO.Path]::GetFullPath($DefaultLibraryPath)
         }
         $defaultInbox = if ([string]::IsNullOrWhiteSpace($DefaultInboxPath)) {
-            Get-DownloadsFolder
+            # 2026-10-23：默认收件区放进成品库内部，避免图片先落到「下载」文件夹再被搬一次。
+            # 助手只扫这个目录的顶层、且只认 chatgpt-workpkg-<batch>-.. 前缀，不会误碰作品夹。
+            Join-Path $defaultLibrary "_收件区"
         } else {
             [System.IO.Path]::GetFullPath($DefaultInboxPath)
         }
