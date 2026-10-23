@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.21.0
+// @version      1.22.0
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.21.0';
+  const SCRIPT_VERSION = '1.22.0';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -88,6 +88,20 @@
   const WORK_PACKAGE_HELPER_READY_KEY = 'work-package-helper-ready-v1';
   const WORK_PACKAGE_INSTALLER_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/master/%E5%AE%89%E8%A3%85GPT%E4%BD%9C%E5%93%81%E5%8A%A9%E6%89%8B.vbs';
   const IMAGE_DOWNLOAD_VISIBLE_KEY = 'image-download-visible';
+
+  // ===== 2026-10-23 宿主钩子 =====
+  // 内容制作 App 这类宿主可以先注入 window.__CGPT_APP_HOOKS__，把「图片保存」交给
+  // 宿主自己的落盘通道（如本地 4327 服务）。脚本本体保持纯净，vendor 副本就能整文件
+  // 跟随上游升级，不必再人工打补丁。
+  //   hooks.saveFile(url, name) -> Promise<boolean>   true 表示宿主已保存成功
+  const APP_HOOKS = (() => {
+    try {
+      const host = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+      return (host && host.__CGPT_APP_HOOKS__) || {};
+    } catch {
+      return {};
+    }
+  })();
 
   // ===== 2026-10-23 直存通道（File System Access API）=====
   // 用户授权一次目录后，图片与作品包 task JSON 直接写入该目录，不再经过浏览器的
@@ -2757,6 +2771,7 @@
 
   async function fsSinkWriteFile(name, blob) {
     if (!fsSinkHandle || !fsSinkReady || !blob) return false;
+    if (!(blob instanceof Blob) || !blob.size) return false;
     if (blob.size > FS_SINK_MAX_BYTES) {
       console.warn('[直存] 文件过大，改用浏览器下载：', name, blob.size);
       return false;
@@ -2802,7 +2817,11 @@
           responseType: 'blob',
           timeout: 60000,
           onload: (response) => {
-            resolve(response.status >= 200 && response.status < 300 ? response.response : null);
+            const ok = response.status >= 200 && response.status < 300;
+            const value = ok ? response.response : null;
+            // 某些宿主（如 App 的 GM 垫片）不支持 responseType: blob，只会回文本，
+            // 这里必须校验类型，否则会把文本当成图片写进目录。
+            resolve(value instanceof Blob ? value : null);
           },
           onerror: () => resolve(null),
           ontimeout: () => resolve(null),
@@ -2816,6 +2835,15 @@
 
   /** 统一保存入口：能用直存就直存，否则回落 gmDownload */
   async function saveFileSmart(url, name) {
+    // 宿主钩子优先：内容制作 App 走本地 4327 服务直存
+    if (typeof APP_HOOKS.saveFile === 'function') {
+      try {
+        const handled = await APP_HOOKS.saveFile(url, name);
+        if (handled) return true;
+      } catch (error) {
+        console.warn('[保存] 宿主钩子失败，回落内置通道：', error);
+      }
+    }
     if (fsSinkEnabled && fsSinkReady && fsSinkHandle) {
       const blob = await fetchBlobForSink(url);
       if (await fsSinkWriteFile(name, blob)) return true;
