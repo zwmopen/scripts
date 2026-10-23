@@ -20,6 +20,9 @@
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      raw.githubusercontent.com
+// @connect      chatgpt.com
+// @connect      *.oaiusercontent.com
+// @connect      *.openai.com
 // ==/UserScript==
 
 (() => {
@@ -2774,32 +2777,40 @@
     }
   }
 
-  function fetchBlobForSink(url) {
+  async function fetchBlobForSink(url) {
+    // 1) 先走页面内 fetch：同源或 CDN 允许跨域时最快，也不会触发 GM 跨域授权弹窗
+    try {
+      const response = await fetch(url, { credentials: 'include', cache: 'no-store' });
+      if (response.ok) {
+        const type = String(response.headers.get('content-type') || '').toLowerCase();
+        // 排除退回登录页 / 错误页的 HTML，避免把网页内容当成图片写进目录
+        if (!type.includes('text/html')) return await response.blob();
+      }
+    } catch {}
+    // blob: URL 只能页面内取，到这儿就结束
+    if (/^blob:/i.test(url)) return null;
+    // 2) 跨域被拦时用 GM_xmlhttpRequest 兜住
     return new Promise((resolve) => {
-      // blob: URL 只能页面内 fetch，GM_xmlhttpRequest 处理不了
-      if (/^blob:/i.test(url)) {
-        fetch(url).then((r) => (r.ok ? r.blob() : null)).then(resolve).catch(() => resolve(null));
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        resolve(null);
         return;
       }
-      if (typeof GM_xmlhttpRequest === 'function') {
-        try {
-          GM_xmlhttpRequest({
-            method: 'GET',
-            url,
-            responseType: 'blob',
-            timeout: 60000,
-            onload: (response) => {
-              resolve(response.status >= 200 && response.status < 300 ? response.response : null);
-            },
-            onerror: () => resolve(null),
-            ontimeout: () => resolve(null),
-          });
-          return;
-        } catch (error) {
-          console.warn('[直存] GM_xmlhttpRequest 取流失败，改用 fetch：', error);
-        }
+      try {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url,
+          responseType: 'blob',
+          timeout: 60000,
+          onload: (response) => {
+            resolve(response.status >= 200 && response.status < 300 ? response.response : null);
+          },
+          onerror: () => resolve(null),
+          ontimeout: () => resolve(null),
+        });
+      } catch (error) {
+        console.warn('[直存] GM_xmlhttpRequest 取流失败：', error);
+        resolve(null);
       }
-      fetch(url).then((r) => (r.ok ? r.blob() : null)).then(resolve).catch(() => resolve(null));
     });
   }
 
@@ -2849,13 +2860,29 @@
         showImageDownloadToast('未获得目录写入权限，直存未启用', false);
         return;
       }
+      // 作品助手是按「浏览器下载目录 + batchId」取件的：换到别处时打包会找不到图，必须让用户知情
+      const looksLikeDownloads = /^downloads$/i.test(String(handle.name || '').trim());
+      if (!looksLikeDownloads) {
+        const proceed = window.confirm(
+          `已选择目录：${handle.name}\n\n`
+          + '提醒：本地作品助手是按「浏览器下载目录」找图片和任务文件的。\n'
+          + '如果这个目录不是下载目录，点「下载并打包」时助手可能找不到图片，打包会失败。\n\n'
+          + '· 只想让下载更顺手 → 点「确定」继续。\n'
+          + '· 想同时保留「下载并打包」→ 点「取消」，改选下载目录（通常叫 Downloads）。'
+        );
+        if (!proceed) {
+          showImageDownloadToast('已取消，直存保持关闭', false);
+          addDiagnosticLog('fs-sink:configure-aborted-non-downloads', { label: handle.name });
+          return;
+        }
+      }
       fsSinkHandle = handle;
       fsSinkReady = true;
       fsSinkRememberLabel(handle.name);
       await fsSinkSaveHandle(handle);
       setFsSinkCategoryEnabled(true);
       showImageDownloadToast(`直存已开启：${handle.name}`, true);
-      addDiagnosticLog('fs-sink:configured', { label: handle.name });
+      addDiagnosticLog('fs-sink:configured', { label: handle.name, looksLikeDownloads });
     } catch (error) {
       // 用户取消
       addDiagnosticLog('fs-sink:configure-cancelled', { message: error?.message || String(error) });
