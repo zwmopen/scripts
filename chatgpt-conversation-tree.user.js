@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.19.0
+// @version      1.20.0
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -26,7 +26,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.19.0';
+  const SCRIPT_VERSION = '1.20.0';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -86,6 +86,18 @@
   const WORK_PACKAGE_INSTALLER_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/master/%E5%AE%89%E8%A3%85GPT%E4%BD%9C%E5%93%81%E5%8A%A9%E6%89%8B.vbs';
   const IMAGE_DOWNLOAD_VISIBLE_KEY = 'image-download-visible';
 
+  // ===== 2026-10-23 直存通道（File System Access API）=====
+  // 用户授权一次目录后，图片与作品包 task JSON 直接写入该目录，不再经过浏览器的
+  // 下载管理器（也就没有「此网站尝试下载多个文件」确认框）。
+  // 写入失败 / 未授权 / 浏览器不支持 → 自动回落到原来的 GM_download，绝不阻断下载。
+  // 注意：作品助手是按「下载目录 + batchId」取件的，所以直存目录建议保持浏览器默认下载目录。
+  const FS_SINK_DB_NAME = `${APP_ID}:fs-sink`;
+  const FS_SINK_STORE = 'handles';
+  const FS_SINK_KEY = 'workpkg-dir';
+  const FS_SINK_ENABLED_KEY = 'fs-sink-enabled-v1';
+  const FS_SINK_LABEL_KEY = 'fs-sink-label-v1';
+  const FS_SINK_MAX_BYTES = 40 * 1024 * 1024;
+
   // 图标
   const icons = {
     download: '<svg viewBox="0 0 18 18"><path d="M9 3v8"/><path d="m5.5 8 3.5 3.5L12.5 8"/><path d="M4 14.5h10"/></svg>',
@@ -132,6 +144,27 @@
       return false;
     }
   })();
+
+  // 直存通道运行期状态
+  let fsSinkEnabled = (() => {
+    try {
+      return GM_getValue(FS_SINK_ENABLED_KEY, false) === true;
+    } catch {
+      return false;
+    }
+  })();
+  let fsSinkLabel = (() => {
+    try {
+      return String(GM_getValue(FS_SINK_LABEL_KEY, '') || '');
+    } catch {
+      return '';
+    }
+  })();
+  let fsSinkHandle = null;      // FileSystemDirectoryHandle（存在 IndexedDB）
+  let fsSinkReady = false;      // 句柄已就绪且 readwrite 权限已授予
+  let fsSinkInitPromise = null;
+  let fsSinkPendingPick = null; // 点击入口预拉起的目录选择器 Promise
+  let fsSinkWriteCount = 0;     // 本次页面生命周期内直存成功数（用于诊断）
 
   // ==========================================
   // 1. 数据结构与历史兼容层（用于安全导出旧分组）
@@ -2198,16 +2231,18 @@
     };
 
     const blob = new Blob([JSON.stringify(task, null, 2)], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `chatgpt-workpkg-task-${batchId}.json`;
-    anchor.rel = 'noopener';
-    anchor.style.display = 'none';
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 3000);
+    const taskFileName = `chatgpt-workpkg-task-${batchId}.json`;
+    // 直存可用时直接写盘，避免再多一个浏览器下载；否则保持原来的链接下载
+    if (fsSinkReady && fsSinkHandle) {
+      const written = await fsSinkWriteFile(taskFileName, blob);
+      if (written) {
+        addDiagnosticLog('workpkg:task-frozen-direct', { batchId, fileName: taskFileName });
+      } else {
+        downloadBlobFallback(blob, taskFileName);
+      }
+    } else {
+      downloadBlobFallback(blob, taskFileName);
+    }
     await sleep(180);
     addDiagnosticLog('workpkg:task-frozen', {
       batchId,
@@ -2508,6 +2543,333 @@
     return `chatgpt-workpkg-${batchId}-${String(index + 1).padStart(2, '0')}-of-${String(total).padStart(2, '0')}.${ext}`;
   }
 
+  // ---------- 直存通道：File System Access API ----------
+  // 设计原则（不许破坏既有链路）：
+  //   1) 未开启 / 未授权 / 浏览器不支持 / 单张写失败 → 一律回落到 gmDownload
+  //   2) 句柄存 IndexedDB，不存 GM 存储（FileSystemDirectoryHandle 不能序列化成字符串）
+  //   3) showDirectoryPicker 必须在用户手势的同步栈里调用，所以只在点击入口尝试
+
+  function fsSinkSupported() {
+    try {
+      return typeof window.showDirectoryPicker === 'function';
+    } catch {
+      return false;
+    }
+  }
+
+  function fsSinkOpenDb() {
+    return new Promise((resolve, reject) => {
+      let request;
+      try {
+        request = indexedDB.open(FS_SINK_DB_NAME, 1);
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(FS_SINK_STORE)) db.createObjectStore(FS_SINK_STORE);
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('indexedDB open failed'));
+    });
+  }
+
+  async function fsSinkReadHandle() {
+    try {
+      const db = await fsSinkOpenDb();
+      return await new Promise((resolve) => {
+        const tx = db.transaction(FS_SINK_STORE, 'readonly');
+        const req = tx.objectStore(FS_SINK_STORE).get(FS_SINK_KEY);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  async function fsSinkSaveHandle(handle) {
+    try {
+      const db = await fsSinkOpenDb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(FS_SINK_STORE, 'readwrite');
+        tx.objectStore(FS_SINK_STORE).put(handle, FS_SINK_KEY);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      return true;
+    } catch (error) {
+      console.warn('[直存] 句柄保存失败：', error);
+      return false;
+    }
+  }
+
+  async function fsSinkDropHandle() {
+    try {
+      const db = await fsSinkOpenDb();
+      await new Promise((resolve) => {
+        const tx = db.transaction(FS_SINK_STORE, 'readwrite');
+        tx.objectStore(FS_SINK_STORE).delete(FS_SINK_KEY);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    } catch {}
+  }
+
+  function fsSinkRememberLabel(name) {
+    const label = String(name || '').trim();
+    if (!label) return;
+    fsSinkLabel = label;
+    try { GM_setValue(FS_SINK_LABEL_KEY, label); } catch {}
+  }
+
+  /** 只查权限，不弹窗。用于页面加载时判断句柄还能不能用。 */
+  async function fsSinkQueryPermission(handle, mode = 'readwrite') {
+    if (!handle || typeof handle.queryPermission !== 'function') return 'denied';
+    try {
+      return await handle.queryPermission({ mode });
+    } catch {
+      return 'denied';
+    }
+  }
+
+  /** 申请权限。必须在用户手势里调用，否则 Chrome 会 reject。 */
+  async function fsSinkRequestPermission(handle, mode = 'readwrite') {
+    if (!handle) return 'denied';
+    try {
+      const state = await handle.queryPermission({ mode });
+      if (state === 'granted') return 'granted';
+      const asked = await handle.requestPermission({ mode });
+      return asked;
+    } catch (error) {
+      console.warn('[直存] 权限申请失败：', error);
+      return 'denied';
+    }
+  }
+
+  /** 同步唤起目录选择器（保留 user activation），返回 Promise<handle> 或 null */
+  function fsSinkPickDirectorySync() {
+    if (!fsSinkSupported()) return null;
+    try {
+      return window.showDirectoryPicker({
+        id: 'cgpt-workpkg-sink',
+        mode: 'readwrite',
+        startIn: 'downloads',
+      });
+    } catch (error) {
+      console.warn('[直存] 无法打开目录选择器：', error);
+      return null;
+    }
+  }
+
+  async function fsSinkInit() {
+    if (fsSinkInitPromise) return fsSinkInitPromise;
+    fsSinkInitPromise = (async () => {
+      if (!fsSinkEnabled || !fsSinkSupported()) {
+        fsSinkReady = false;
+        return false;
+      }
+      const handle = await fsSinkReadHandle();
+      if (!handle) {
+        fsSinkReady = false;
+        return false;
+      }
+      fsSinkHandle = handle;
+      fsSinkRememberLabel(handle.name);
+      // 页面加载阶段不弹权限窗，只在已 granted 时直接启用
+      const state = await fsSinkQueryPermission(handle);
+      fsSinkReady = state === 'granted';
+      addDiagnosticLog('fs-sink:init', { label: fsSinkLabel, permission: state, ready: fsSinkReady });
+      return fsSinkReady;
+    })();
+    return fsSinkInitPromise;
+  }
+
+  /**
+   * 必须从点击事件的同步栈里调用：把目录选择器先拉起来，结果留给下载流程消费。
+   * 这样即使后面链路里 await 了一堆东西，也不会因为丢失 user activation 而无法授权。
+   */
+  function fsSinkCapturePickerNow() {
+    if (fsSinkPendingPick) return;
+    if (!fsSinkEnabled || fsSinkReady || fsSinkHandle || !fsSinkSupported()) return;
+    fsSinkPendingPick = fsSinkPickDirectorySync();
+  }
+
+  /**
+   * 点击入口调用：确保本次下载能用直存。
+   * 会尽力在用户手势里完成授权；任何失败都返回 false 让上层回落，不抛错。
+   */
+  async function fsSinkEnsureReady({ allowPicker = false } = {}) {
+    if (!fsSinkEnabled || !fsSinkSupported()) return false;
+    if (fsSinkReady && fsSinkHandle) return true;
+    let pending = fsSinkPendingPick;
+    fsSinkPendingPick = null;
+    if (!pending && allowPicker) pending = fsSinkPickDirectorySync();
+    if (pending) {
+      try {
+        const handle = await pending;
+        fsSinkRememberLabel(handle.name);
+        // showDirectoryPicker({mode:'readwrite'}) 已带写权限，通常直接 granted
+        let state = await fsSinkQueryPermission(handle);
+        if (state !== 'granted') state = await fsSinkRequestPermission(handle);
+        if (state !== 'granted') {
+          addDiagnosticLog('fs-sink:permission-denied', { label: handle.name, state });
+          return false;
+        }
+        fsSinkHandle = handle;
+        fsSinkReady = true;
+        await fsSinkSaveHandle(handle);
+        setFsSinkCategoryEnabled(true);
+        addDiagnosticLog('fs-sink:picked', { label: handle.name });
+        return true;
+      } catch (error) {
+        // 用户取消选择：把直存开关关掉，避免每次点下载都被弹窗打断
+        addDiagnosticLog('fs-sink:pick-cancelled', { message: error?.message || String(error) });
+        setFsSinkCategoryEnabled(false);
+        showImageDownloadToast('已取消选择目录，本次改走浏览器下载', false);
+        return false;
+      }
+    }
+    if (fsSinkHandle) {
+      const state = await fsSinkRequestPermission(fsSinkHandle);
+      fsSinkReady = state === 'granted';
+      return fsSinkReady;
+    }
+    await fsSinkInit();
+    return fsSinkReady;
+  }
+
+  function setFsSinkCategoryEnabled(enabled) {
+    const next = Boolean(enabled);
+    const changed = fsSinkEnabled !== next;
+    fsSinkEnabled = next;
+    try { GM_setValue(FS_SINK_ENABLED_KEY, next); } catch {}
+    if (!changed) return;
+    // 延迟重注册：避免在当前菜单命令自身的回调里把自己注销掉
+    window.setTimeout(() => {
+      try { registerUserscriptMenuCommands(); } catch {}
+    }, 0);
+  }
+
+  async function fsSinkWriteFile(name, blob) {
+    if (!fsSinkHandle || !fsSinkReady || !blob) return false;
+    if (blob.size > FS_SINK_MAX_BYTES) {
+      console.warn('[直存] 文件过大，改用浏览器下载：', name, blob.size);
+      return false;
+    }
+    try {
+      const fileHandle = await fsSinkHandle.getFileHandle(name, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      fsSinkWriteCount += 1;
+      return true;
+    } catch (error) {
+      console.warn('[直存] 写入失败，回落浏览器下载：', name, error);
+      addDiagnosticLog('fs-sink:write-failed', { name, message: error?.message || String(error) });
+      // 权限可能被系统回收，标记为不可用，本次走回落
+      fsSinkReady = false;
+      return false;
+    }
+  }
+
+  function fetchBlobForSink(url) {
+    return new Promise((resolve) => {
+      // blob: URL 只能页面内 fetch，GM_xmlhttpRequest 处理不了
+      if (/^blob:/i.test(url)) {
+        fetch(url).then((r) => (r.ok ? r.blob() : null)).then(resolve).catch(() => resolve(null));
+        return;
+      }
+      if (typeof GM_xmlhttpRequest === 'function') {
+        try {
+          GM_xmlhttpRequest({
+            method: 'GET',
+            url,
+            responseType: 'blob',
+            timeout: 60000,
+            onload: (response) => {
+              resolve(response.status >= 200 && response.status < 300 ? response.response : null);
+            },
+            onerror: () => resolve(null),
+            ontimeout: () => resolve(null),
+          });
+          return;
+        } catch (error) {
+          console.warn('[直存] GM_xmlhttpRequest 取流失败，改用 fetch：', error);
+        }
+      }
+      fetch(url).then((r) => (r.ok ? r.blob() : null)).then(resolve).catch(() => resolve(null));
+    });
+  }
+
+  /** 统一保存入口：能用直存就直存，否则回落 gmDownload */
+  async function saveFileSmart(url, name) {
+    if (fsSinkEnabled && fsSinkReady && fsSinkHandle) {
+      const blob = await fetchBlobForSink(url);
+      if (await fsSinkWriteFile(name, blob)) return true;
+    }
+    return gmDownload(url, name);
+  }
+
+  /** 用临时 <a download> 保存内存里的 blob（直存不可用时的回落路径） */
+  function downloadBlobFallback(blob, name) {
+    try {
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = name;
+      anchor.rel = 'noopener';
+      anchor.style.display = 'none';
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 3000);
+      return true;
+    } catch (error) {
+      console.warn('[直存] 回落下载失败：', name, error);
+      return false;
+    }
+  }
+
+  async function fsSinkConfigure() {
+    if (!fsSinkSupported()) {
+      window.alert('当前浏览器不支持「直存目录」能力。\n请使用 Chrome / Edge 111 以上版本，或先在菜单里关闭直存。');
+      return;
+    }
+    const pending = fsSinkPickDirectorySync();
+    if (!pending) {
+      window.alert('没能打开目录选择器。\n请直接点击任意一条回复下方的「下载本组图片」按钮一次，在弹窗里选择目录即可完成授权。');
+      return;
+    }
+    try {
+      const handle = await pending;
+      const state = await fsSinkRequestPermission(handle);
+      if (state !== 'granted') {
+        showImageDownloadToast('未获得目录写入权限，直存未启用', false);
+        return;
+      }
+      fsSinkHandle = handle;
+      fsSinkReady = true;
+      fsSinkRememberLabel(handle.name);
+      await fsSinkSaveHandle(handle);
+      setFsSinkCategoryEnabled(true);
+      showImageDownloadToast(`直存已开启：${handle.name}`, true);
+      addDiagnosticLog('fs-sink:configured', { label: handle.name });
+    } catch (error) {
+      // 用户取消
+      addDiagnosticLog('fs-sink:configure-cancelled', { message: error?.message || String(error) });
+    }
+  }
+
+  async function fsSinkDisable() {
+    fsSinkReady = false;
+    fsSinkHandle = null;
+    await fsSinkDropHandle();
+    setFsSinkCategoryEnabled(false);
+    showImageDownloadToast('已关闭直存，改回浏览器下载', true);
+  }
+
   function gmDownload(url, name) {
     return new Promise((resolve) => {
       if (typeof GM_download === 'function' && !/^blob:/i.test(url)) {
@@ -2555,7 +2917,7 @@
       while (nextIndex < total) {
         const index = nextIndex;
         nextIndex += 1;
-        const success = await gmDownload(urls[index], directDownloadName(index, total, urls[index], batchId));
+        const success = await saveFileSmart(urls[index], directDownloadName(index, total, urls[index], batchId));
         if (success) ok += 1;
         if (onProgress) {
           try { onProgress(ok, total); } catch {}
@@ -2585,6 +2947,8 @@
 
   async function runImageDownloadShortcut(button, requestedBatchId = '', onProgress = null) {
     if (button.disabled) return null;
+    // 直存：趁点击事件的同步栈把目录选择器拉起来（此刻才有 user activation）
+    fsSinkCapturePickerNow();
     const container = button.__cgptImageDownloadContainer
       || button.closest('[data-cgpt-image-download-container]')
       || document;
@@ -2603,6 +2967,10 @@
     let totalImages = Number(button.dataset.cgptImageTotal || 0)
       || uniqueImageUrls(images).length
       || images.length;
+    // 先落实直存授权（用户刚在弹窗里选完目录），失败则本次走浏览器下载
+    if (fsSinkEnabled) {
+      try { await fsSinkEnsureReady(); } catch {}
+    }
     button.disabled = true;
     setImageButtonProgress(button, 0, totalImages, true);
     if (onProgress) {
@@ -2715,6 +3083,8 @@
     event?.preventDefault?.();
     event?.stopPropagation?.();
     event?.stopImmediatePropagation?.();
+    // 直存：趁点击事件的同步栈把目录选择器拉起来
+    fsSinkCapturePickerNow();
     if (!await ensureWorkPackageHelperReady()) {
       setWorkPackageButtonState(button, 'idle');
       return;
@@ -2947,6 +3317,30 @@
         lastStep() {
           return unsafeWindow.__cgptImageDownloadLastStep || null;
         },
+        fsSink() {
+          return {
+            supported: fsSinkSupported(),
+            enabled: fsSinkEnabled,
+            ready: fsSinkReady,
+            label: fsSinkLabel,
+            hasHandle: Boolean(fsSinkHandle),
+            writeCount: fsSinkWriteCount,
+            pendingPick: Boolean(fsSinkPendingPick),
+          };
+        },
+        async fsSinkProbe() {
+          if (!fsSinkReady || !fsSinkHandle) return { ok: false, reason: 'not-ready' };
+          try {
+            const name = `__cgpt-sink-probe-${Date.now()}.txt`;
+            const ok = await fsSinkWriteFile(name, new Blob(['probe'], { type: 'text/plain' }));
+            if (ok) {
+              try { await fsSinkHandle.removeEntry(name); } catch {}
+            }
+            return { ok, label: fsSinkLabel };
+          } catch (error) {
+            return { ok: false, reason: error?.message || String(error) };
+          }
+        },
       };
     } catch {}
   }
@@ -3171,6 +3565,18 @@
       () => setWorkPackageButtonVisible(!workPackageButtonVisible)
     );
 
+    // 3.5 直存目录（File System Access API）
+    if (!fsSinkSupported()) {
+      addMenu('📁 直存目录（当前浏览器不支持）', () => {
+        window.alert('当前浏览器不支持「直存目录」能力。\n请使用 Chrome / Edge 111 以上版本。');
+      });
+    } else if (fsSinkEnabled) {
+      addMenu(`📁 直存目录：${fsSinkLabel || '等待授权'}（点击更换）`, () => void fsSinkConfigure());
+      addMenu('↩ 关闭直存，改回浏览器下载', () => void fsSinkDisable());
+    } else {
+      addMenu('📁 开启图片直存（不经浏览器下载弹窗）', () => void fsSinkConfigure());
+    }
+
     // 4. 本地助手与诊断
     addMenu('🛠 设置本地作品助手（目录+作品集规则）', () => openWorkPackageProtocol('cgpt-workpkg://configure'));
     addMenu('📋 打开本地作品任务中心', () => openWorkPackageProtocol('cgpt-workpkg://center'));
@@ -3325,6 +3731,7 @@
   installImageDownloadDebugApi();
   installConversationTreeDebugApi();
   addDiagnosticLog('script:init');
+  void fsSinkInit();
   ensurePromptButton();
   scheduleCloudPromptSync();
   scheduleImageDownloadButtons();
