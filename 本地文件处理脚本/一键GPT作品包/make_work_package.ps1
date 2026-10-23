@@ -853,6 +853,108 @@ function Save-WorkPackageTaskJson {
     [System.IO.File]::WriteAllText($Path, $json, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+function Resolve-CityFolder {
+    param(
+        [string]$LibraryDir,
+        [string]$Title,
+        [string]$FullText,
+        [string]$Fallback
+    )
+
+    # 2026-10-23: same routing rule as the Web-CDP production line
+    # (chatgpt-cdp-production/SKILL.md, "10 大标准货架").
+    # Pass 1 - match a shelf folder that already exists on disk, using its own name
+    #          as the keyword. Earliest position wins; on a tie the longer keyword wins
+    #          so "中秋国庆" beats "中秋".
+    # Pass 2 - fall back to the standard shelf alias table and create that shelf.
+    # Pass 3 - the "其它城市" bucket, then the library root.
+
+    if ([string]::IsNullOrWhiteSpace($LibraryDir) -or -not (Test-Path -LiteralPath $LibraryDir -PathType Container)) {
+        return $Fallback
+    }
+
+    $shelfSuffix = New-TextFromCodePoints @(0x6210, 0x54C1)
+    $otherMarker = New-TextFromCodePoints @(0x5176, 0x5B83, 0x57CE, 0x5E02)
+
+    $measure = {
+        param([string]$Word)
+        if ([string]::IsNullOrWhiteSpace($Word)) { return -1 }
+        if (-not [string]::IsNullOrWhiteSpace($Title)) {
+            $idx = $Title.IndexOf($Word, [System.StringComparison]::OrdinalIgnoreCase)
+            if ($idx -ge 0) { return $idx }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($FullText)) {
+            $idx = $FullText.IndexOf($Word, [System.StringComparison]::OrdinalIgnoreCase)
+            # offset so any full-text hit ranks behind every title hit
+            if ($idx -ge 0) { return $idx + 100000 }
+        }
+        return -1
+    }
+
+    # ---- Pass 1: existing shelf folders on disk ----
+    $diskDirs = @(Get-ChildItem -LiteralPath $LibraryDir -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name.EndsWith($shelfSuffix) -and
+        -not $_.Name.StartsWith("_") -and
+        $_.Name.Length -gt $shelfSuffix.Length
+    })
+    $bestDir = $null
+    $bestIndex = [int]::MaxValue
+    $bestLength = 0
+    foreach ($dir in $diskDirs) {
+        $word = $dir.Name.Substring(0, $dir.Name.Length - $shelfSuffix.Length)
+        $idx = & $measure $word
+        if ($idx -lt 0) { continue }
+        if ($idx -lt $bestIndex -or ($idx -eq $bestIndex -and $word.Length -gt $bestLength)) {
+            $bestIndex = $idx
+            $bestLength = $word.Length
+            $bestDir = $dir.FullName
+        }
+    }
+    if ($null -ne $bestDir) { return $bestDir }
+
+    # ---- Pass 2: standard shelf aliases (created on demand) ----
+    $shelves = @(
+        @{ Name = "中秋国庆成品"; Words = @("中秋", "国庆", "十一长假", "月饼", "游园会", "美陈") },
+        @{ Name = "团建游戏成品"; Words = @("破冰", "晨会", "年会互动", "无道具", "惩罚合集") },
+        @{ Name = "上海成品";     Words = @("上海", "崇明", "长兴岛", "青浦", "淀山湖", "外滩", "佘山") },
+        @{ Name = "莫干山成品";   Words = @("莫干山", "德清", "下渚湖") },
+        @{ Name = "安吉成品";     Words = @("安吉", "云上草原", "竹海") },
+        @{ Name = "千岛湖成品";   Words = @("千岛湖", "淳安", "环湖骑行", "桨板", "皮划艇") },
+        @{ Name = "桐庐成品";     Words = @("桐庐", "大奇山", "雅鲁", "富春江") },
+        @{ Name = "杭州成品";     Words = @("杭州", "余杭", "富阳", "桐洲岛", "萧山", "临安", "大明山", "青山湖", "径山") },
+        @{ Name = "苏州成品";     Words = @("苏州", "太湖", "西山岛", "东山岛", "阳澄湖", "金鸡湖", "留园") }
+    )
+    $bestShelf = $null
+    $bestShelfIndex = [int]::MaxValue
+    $bestShelfLength = 0
+    foreach ($shelf in $shelves) {
+        foreach ($word in $shelf.Words) {
+            $idx = & $measure $word
+            if ($idx -lt 0) { continue }
+            if ($idx -lt $bestShelfIndex -or ($idx -eq $bestShelfIndex -and $word.Length -gt $bestShelfLength)) {
+                $bestShelfIndex = $idx
+                $bestShelfLength = $word.Length
+                $bestShelf = $shelf.Name
+            }
+        }
+    }
+    if ($null -ne $bestShelf) {
+        $shelfDir = Join-Path $LibraryDir $bestShelf
+        if (-not (Test-Path -LiteralPath $shelfDir -PathType Container)) {
+            try { New-Item -ItemType Directory -Path $shelfDir -Force | Out-Null } catch {}
+        }
+        if (Test-Path -LiteralPath $shelfDir -PathType Container) { return $shelfDir }
+    }
+
+    # ---- Pass 3: catch-all bucket ----
+    $otherDir = @(Get-ChildItem -LiteralPath $LibraryDir -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
+        -not $_.Name.StartsWith("_") -and $_.Name.IndexOf($otherMarker) -ge 0
+    } | Select-Object -First 1)
+    if ($otherDir.Count -gt 0) { return $otherDir[0].FullName }
+
+    return $Fallback
+}
+
 function Wait-WorkPackageTask {
     param(
         [string]$Directory,
@@ -2414,19 +2516,21 @@ try {
         default { $packageTime.ToString("yyyyMMdd_HHmmss") }
     }
 
+    # 2026-10-23: package folder now lands inside the matching city folder.
+    $packageRootDir = Resolve-CityFolder -LibraryDir $libraryDir -Title $folderTitle -FullText $text -Fallback $libraryDir
     $targetDir = if ([string]::IsNullOrWhiteSpace($folderStamp)) {
-        Join-Path $libraryDir $folderTitle
+        Join-Path $packageRootDir $folderTitle
     } else {
-        Join-Path $libraryDir "$folderStamp`_$folderTitle"
+        Join-Path $packageRootDir "$folderStamp`_$folderTitle"
     }
     $packageId = $stamp
 
     $index = 2
     while (Test-Path -LiteralPath $targetDir) {
         $targetDir = if ([string]::IsNullOrWhiteSpace($folderStamp)) {
-            Join-Path $libraryDir "$folderTitle`_$index"
+            Join-Path $packageRootDir "$folderTitle`_$index"
         } else {
-            Join-Path $libraryDir "$folderStamp`_$folderTitle`_$index"
+            Join-Path $packageRootDir "$folderStamp`_$folderTitle`_$index"
         }
         $packageId = "$stamp`_$index"
         $index++
