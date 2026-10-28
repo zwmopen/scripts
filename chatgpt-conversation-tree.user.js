@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.2
+// @version      1.22.3
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.2';
+  const SCRIPT_VERSION = '1.22.3';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2397,20 +2397,30 @@
 
   function findActionRowForImage(imgOrGallery) {
     if (!imgOrGallery) return null;
+    const turn = imageTurnContainer(imgOrGallery);
+    // 1. 优先在当前回复（turn）容器中全局查找标准操作栏（包含复制、省略号等）
+    if (turn) {
+      const directTurnRow = findImageActionRow(turn);
+      if (directTurnRow) return directTurnRow;
+    }
+
+    // 2. 向上攀爬寻找同级或后续兄弟节点中的操作行（排除图片本身内部的浮层按钮）
     let node = imgOrGallery;
     for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
       if (!node || node.matches?.('main') || node === document.body) break;
 
-      // 1. 在当前父节点内部直接查找操作行
-      const directRow = findImageActionRow(node);
-      if (directRow) return directRow;
-
-      // 2. 在祖先节点的后续兄弟节点（通常是紧接着的 actions 底部栏）中查找
+      // 在祖先节点的后续兄弟节点中查找（通常是紧接着的 actions 底部栏）
       let sibling = node.nextElementSibling;
       while (sibling) {
         const sibRow = findImageActionRow(sibling);
         if (sibRow) return sibRow;
         sibling = sibling.nextElementSibling;
+      }
+
+      // 如果当前父节点不是图片/画廊本身，在其内部查找操作栏
+      if (node !== imgOrGallery) {
+        const directRow = findImageActionRow(node);
+        if (directRow) return directRow;
       }
     }
     return null;
@@ -2418,6 +2428,7 @@
 
   function findImageActionRow(container) {
     if (!container) return null;
+    if (isLikelyImageActionRow(container)) return container;
     const buttons = [...container.querySelectorAll('button')]
       .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(button));
     const scored = buttons.map((button) => {
@@ -2437,7 +2448,6 @@
     for (const { button } of scored) {
       let row = button.parentElement;
       for (let depth = 0; row && depth < 5; depth += 1, row = row.parentElement) {
-        if (row === container) continue;
         if (isLikelyImageActionRow(row)) return row;
       }
     }
@@ -2504,25 +2514,18 @@
 
   function nearbyImagesForActionRow(row) {
     if (!row) return null;
-    // 向上攀爬祖先节点，寻找包含图片的容器或其前置兄弟节点
-    let ancestor = row.parentElement;
-    for (let depth = 0; ancestor && depth < 8; depth += 1, ancestor = ancestor.parentElement) {
-      if (!ancestor || ancestor === document.body || ancestor.matches?.('main')) break;
+    const sameTurn = imageTurnContainer(row);
+    if (!sameTurn) return null;
+    const authorNode = sameTurn.matches?.('[data-message-author-role]')
+      ? sameTurn
+      : sameTurn.querySelector?.('[data-message-author-role]');
+    const authorRole = authorNode?.getAttribute?.('data-message-author-role') || '';
+    if (authorRole && authorRole !== 'assistant') return null;
 
-      const sameImages = broadImageElements(ancestor, 24);
-      if (sameImages.length) {
-        return { container: ancestor, images: sameImages };
-      }
-
-      // 检查当前祖先的前置兄弟节点（包含消息主体大图和画廊）
-      let prev = ancestor.previousElementSibling;
-      while (prev) {
-        const prevImages = broadImageElements(prev, 24);
-        if (prevImages.length) {
-          return { container: ancestor.parentElement || prev, images: prevImages };
-        }
-        prev = prev.previousElementSibling;
-      }
+    // 只要当前回复内存在图片或画廊，即关联到该操作栏
+    const turnImages = broadImageElements(sameTurn, 24);
+    if (turnImages.length) {
+      return { container: sameTurn, images: turnImages };
     }
     return null;
   }
@@ -3118,10 +3121,10 @@
     }
 
     // 画廊套图自愈：若存在多张缩略图按钮且未全部加载，自动遍历激活
-    const thumbButtons = [...(container?.querySelectorAll?.('button') || [])].filter((b) => {
+    const thumbButtons = [...(container?.querySelectorAll?.('button, [role="button"]') || [])].filter((b) => {
       const aria = b.getAttribute?.('aria-label') || '';
       const hasImg = Boolean(b.querySelector?.('img'));
-      return hasImg && (/显示生成的图像|已生成图像/i.test(aria) || Boolean(b.querySelector?.('img[src*="blob:"], img[src*="files.oaiusercontent"], img[src*="dalle"]')));
+      return hasImg && (/显示生成的图像|已生成图像|image/i.test(aria) || Boolean(b.querySelector?.('img[src*="blob:"], img[src*="files.oaiusercontent"], img[src*="dalle"]')));
     });
     if (thumbButtons.length > 1 && uniqueImageUrls(images).length < thumbButtons.length) {
       for (let i = 0; i < thumbButtons.length; i++) {
