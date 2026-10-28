@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.1
+// @version      1.22.2
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.1';
+  const SCRIPT_VERSION = '1.22.2';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2352,13 +2352,14 @@
     const declared = countFromText(bits.join(' '));
     if (declared) return declared;
 
-    // 优先统计画廊缩略图按钮数量（如 ChatGPT Planned the image set 多图套件）
-    const thumbButtons = [...(container?.querySelectorAll?.('button') || [])].filter((b) => {
-      const aria = b.getAttribute?.('aria-label') || '';
-      const hasImg = Boolean(b.querySelector?.('img'));
-      return hasImg || /显示生成的图像|已生成图像|image/i.test(aria);
+    // 优先统计画廊缩略图数量（包含 button、div[role=button] 或缩略图 img 集合）
+    const thumbItems = [...(container?.querySelectorAll?.('button, [role="button"], div') || [])].filter((el) => {
+      const img = el.querySelector?.('img');
+      if (!img) return false;
+      const rect = img.getBoundingClientRect?.();
+      return rect && rect.width >= 24 && rect.width <= 140 && rect.height >= 24 && rect.height <= 140;
     });
-    let maxIndex = thumbButtons.length > 1 ? thumbButtons.length : 0;
+    let maxIndex = thumbItems.length > 1 ? thumbItems.length : 0;
 
     const candidates = broadImageElements(container || document, 24);
     candidates.forEach((img) => {
@@ -2381,21 +2382,38 @@
       if (isElementVisible(el)) galleries.add(el);
     });
 
-    const thumbBtns = [...main.querySelectorAll('button')].filter((b) => {
-      if (b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return false;
-      const aria = b.getAttribute('aria-label') || '';
-      const hasGenImg = Boolean(b.querySelector('img[src*="blob:"], img[src*="files.oaiusercontent"], img[src*="dalle"]'));
-      return /显示生成的图像|已生成图像|image/i.test(aria) || hasGenImg;
-    });
-
-    thumbBtns.forEach((btn) => {
-      const parentGallery = btn.closest('[data-testid="generated-image-gallery"], div[class*="generated-image"], div[class*="Stage"]')
-        || btn.parentElement?.parentElement
-        || imageTurnContainer(btn);
-      if (parentGallery && isElementVisible(parentGallery)) galleries.add(parentGallery);
+    // 通过内容图片定位其画廊容器
+    const allImgs = broadImageElements(main, 40);
+    allImgs.forEach((img) => {
+      let container = img.closest?.('[data-testid="generated-image-gallery"], div[class*="generated-image"], div[class*="Stage"]')
+        || img.parentElement?.parentElement;
+      if (container && isElementVisible(container)) {
+        galleries.add(container);
+      }
     });
 
     return [...galleries];
+  }
+
+  function findActionRowForImage(imgOrGallery) {
+    if (!imgOrGallery) return null;
+    let node = imgOrGallery;
+    for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+      if (!node || node.matches?.('main') || node === document.body) break;
+
+      // 1. 在当前父节点内部直接查找操作行
+      const directRow = findImageActionRow(node);
+      if (directRow) return directRow;
+
+      // 2. 在祖先节点的后续兄弟节点（通常是紧接着的 actions 底部栏）中查找
+      let sibling = node.nextElementSibling;
+      while (sibling) {
+        const sibRow = findImageActionRow(sibling);
+        if (sibRow) return sibRow;
+        sibling = sibling.nextElementSibling;
+      }
+    }
+    return null;
   }
 
   function findImageActionRow(container) {
@@ -2407,9 +2425,12 @@
       const aria = button.getAttribute?.('aria-label') || '';
       const combined = `${text} ${aria}`;
       let score = 0;
-      if (/\u590d\u5236|copy/i.test(combined)) score = 25;
+      if (/\u590d\u5236|copy/i.test(combined)) score = 30;
       else if (/\u66f4\u591a|more|\u9009\u9879|options|\u5206\u4eab|share/i.test(combined)) score = 20;
-      else if (button.querySelector('svg')) score = 5;
+      else if (button.querySelector('svg')) {
+        const bRect = button.getBoundingClientRect?.();
+        if (bRect && bRect.width <= 48 && bRect.height <= 48) score = 10;
+      }
       return { button, score };
     }).sort((a, b) => b.score - a.score);
 
@@ -2482,29 +2503,26 @@
   }
 
   function nearbyImagesForActionRow(row) {
-    const rowRect = row.getBoundingClientRect();
-    const maxActionGap = Math.max(96, Math.min(260, innerHeight * 0.28));
-    const sameTurn = row.closest?.('[data-testid^="conversation-turn"], [data-message-author-role], [data-message-id], article, [class*="group/conversation-turn"], [class*="agent-turn"]')
-      || imageTurnContainer(row);
-    if (!sameTurn) return null;
-    const authorNode = sameTurn.matches?.('[data-message-author-role]')
-      ? sameTurn
-      : sameTurn.querySelector?.('[data-message-author-role]');
-    const authorRole = authorNode?.getAttribute?.('data-message-author-role') || '';
-    if (authorRole && authorRole !== 'assistant') return null;
+    if (!row) return null;
+    // 向上攀爬祖先节点，寻找包含图片的容器或其前置兄弟节点
+    let ancestor = row.parentElement;
+    for (let depth = 0; ancestor && depth < 8; depth += 1, ancestor = ancestor.parentElement) {
+      if (!ancestor || ancestor === document.body || ancestor.matches?.('main')) break;
 
-    const allImages = broadImageElements(sameTurn, 24);
-    if (!allImages.length) return null;
+      const sameImages = broadImageElements(ancestor, 24);
+      if (sameImages.length) {
+        return { container: ancestor, images: sameImages };
+      }
 
-    // 检查是否有图片在操作栏上方
-    const hasNearby = allImages.some((img) => {
-      const rect = img.getBoundingClientRect();
-      const gap = rowRect.top - rect.bottom;
-      return gap > -80 && gap < maxActionGap;
-    });
-
-    if (hasNearby) {
-      return { container: sameTurn, images: allImages };
+      // 检查当前祖先的前置兄弟节点（包含消息主体大图和画廊）
+      let prev = ancestor.previousElementSibling;
+      while (prev) {
+        const prevImages = broadImageElements(prev, 24);
+        if (prevImages.length) {
+          return { container: ancestor.parentElement || prev, images: prevImages };
+        }
+        prev = prev.previousElementSibling;
+      }
     }
     return null;
   }
@@ -3299,15 +3317,15 @@
 
   function ensureImageDownloadButton(container, images, preferredActionRow = null) {
     container.setAttribute('data-cgpt-image-download-container', 'true');
-    let slot = container.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
-    if (preferredActionRow && slot && slot.parentElement !== preferredActionRow) {
+    const actionRow = preferredActionRow || findActionRowForImage(container) || findImageActionRow(container);
+    let slot = (actionRow || container).querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
+    if (actionRow && slot && slot.parentElement !== actionRow) {
       slot.remove();
       slot = null;
     }
     if (!slot) {
       slot = document.createElement('span');
       slot.className = IMAGE_DOWNLOAD_SLOT_CLASS;
-      const actionRow = preferredActionRow || findImageActionRow(container);
       if (actionRow) {
         actionRow.append(slot);
       } else {
@@ -3398,7 +3416,7 @@
       if (!images.length) return;
 
       claimedContainers.add(turn);
-      const actionRow = findImageActionRow(turn) || findImageActionRow(gallery);
+      const actionRow = findActionRowForImage(gallery) || findActionRowForImage(turn) || findImageActionRow(turn) || findImageActionRow(gallery);
       ensureImageDownloadButton(turn, images, actionRow);
       const slot = (actionRow || turn).querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
       if (slot) validSlots.add(slot);
@@ -3413,7 +3431,8 @@
         return;
       }
       if (claimedContainers.has(group.container)) {
-        if (!validSlots.has(existingSlot)) existingSlot?.remove();
+        if (existingSlot && validSlots.has(existingSlot)) return;
+        if (existingSlot) existingSlot.remove();
         return;
       }
       claimedContainers.add(group.container);
