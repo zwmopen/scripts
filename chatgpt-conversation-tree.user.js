@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.4
+// @version      1.22.5
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.4';
+  const SCRIPT_VERSION = '1.22.5';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -1467,9 +1467,11 @@
       .${IMAGE_DOWNLOAD_SLOT_CLASS} {
         display: inline-flex;
         align-items: center;
-        gap: 4px;
-        margin-inline-start: 2px;
+        gap: 5px;
+        margin-inline-start: 6px;
         vertical-align: middle;
+        white-space: nowrap;
+        flex-shrink: 0;
       }
       .${IMAGE_DOWNLOAD_SLOT_CLASS}.cgpt-image-download-fallback {
         display: inline-flex;
@@ -1507,6 +1509,8 @@
         font-size: 12px;
         line-height: 1;
         cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
       }
       .${IMAGE_DOWNLOAD_CLASS}:hover,
       .${WORK_PACKAGE_CLASS}:hover,
@@ -2342,14 +2346,16 @@
     const bits = [];
     const scopes = [container, row].filter(Boolean);
     scopes.forEach((scope) => {
-      bits.push(elementText(scope));
       scope.querySelectorAll?.('[aria-label], [title], [alt], button, [role="button"]')
         .forEach((element) => {
+          if (element.closest?.(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return;
           bits.push(elementText(element));
           bits.push(element.getAttribute?.('alt') || '');
         });
     });
-    const declared = countFromText(bits.join(' '));
+    // 清除自身下载提示文本，防止自读 0/41 产生死循环
+    const cleanBits = bits.join(' ').replace(/0\/\d+/g, '').replace(/\u4e0b\u8f7d|\u6253\u5305/g, '');
+    const declared = countFromText(cleanBits);
     if (declared) return declared;
 
     // 优先统计画廊缩略图数量（包含 button、div[role=button] 或缩略图 img 集合）
@@ -2395,8 +2401,24 @@
     return [...galleries];
   }
 
+  function isInsideComposerOrForm(element) {
+    if (!element) return false;
+    return Boolean(
+      element.closest?.('form, [data-testid*="composer"], [class*="composer"], #prompt-textarea, textarea, [class*="bottom-0"]')
+    );
+  }
+
+  function isInsideImageStage(element) {
+    if (!element) return false;
+    if (element.closest?.('div[class*="Stage"], div[class*="stage"], div[class*="carousel"], div[class*="StageRoot"]')) {
+      return true;
+    }
+    return false;
+  }
+
   function isCopyButton(button) {
     if (!button || !button.isConnected) return false;
+    if (isInsideComposerOrForm(button) || isInsideImageStage(button)) return false;
     const text = elementText(button);
     const aria = (button.getAttribute?.('aria-label') || '');
     const title = (button.getAttribute?.('title') || '');
@@ -2418,6 +2440,7 @@
 
   function isEllipsisButton(button) {
     if (!button || !button.isConnected) return false;
+    if (isInsideComposerOrForm(button) || isInsideImageStage(button)) return false;
     const text = elementText(button);
     const aria = (button.getAttribute?.('aria-label') || '');
     const title = (button.getAttribute?.('title') || '');
@@ -2431,12 +2454,6 @@
     if (svg.querySelectorAll('circle').length >= 2) return true;
     const d = svg.querySelector('path')?.getAttribute('d') || '';
     if ((d.match(/[Mm]/g) || []).length >= 3) return true;
-
-    const parent = button.parentElement;
-    if (parent) {
-      const prev = button.previousElementSibling;
-      if (prev && isCopyButton(prev)) return true;
-    }
     return false;
   }
 
@@ -2446,54 +2463,66 @@
       .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b));
     if (!buttons.length) return null;
 
+    // 优先匹配显式省略号特征
     const explicit = buttons.find((b) => isEllipsisButton(b));
     if (explicit) return explicit;
 
-    const copyIdx = buttons.findIndex((b) => isCopyButton(b));
-    if (copyIdx !== -1 && copyIdx < buttons.length - 1) {
-      return buttons[buttons.length - 1];
-    }
+    // 其次匹配最后一个原生图标按钮（在 ChatGPT 动作栏中，省略号永远排在最后一个）
     return buttons[buttons.length - 1];
   }
 
   function findActionRowAndAnchorForTurn(turn) {
     if (!turn) return null;
+    if (isInsideComposerOrForm(turn)) return null;
     const canonicalTurn = turn.closest?.('article, [data-testid^="conversation-turn"]') || turn;
 
-    // 1. 在 canonicalTurn 内部查找
+    // 1. 在 canonicalTurn 内部查找标准工具栏（排除输入框与大图浮层）
     const buttons = [...canonicalTurn.querySelectorAll('button')]
-      .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b));
+      .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && !isInsideComposerOrForm(b) && !isInsideImageStage(b) && isElementVisible(b));
+
+    const copyBtn = buttons.find((b) => isCopyButton(b));
+    if (copyBtn) {
+      const row = copyBtn.closest?.('div[class*="flex"], div[class*="items-center"]') || copyBtn.parentElement;
+      if (row && !isInsideComposerOrForm(row) && !isInsideImageStage(row)) {
+        const anchor = findEllipsisInRow(row);
+        return { actionRow: row, anchor };
+      }
+    }
 
     const ellipsisBtn = buttons.find((b) => isEllipsisButton(b));
     if (ellipsisBtn) {
-      return { actionRow: ellipsisBtn.parentElement, anchor: ellipsisBtn };
-    }
-    const copyBtn = buttons.find((b) => isCopyButton(b));
-    if (copyBtn) {
-      const anchor = findEllipsisInRow(copyBtn.parentElement) || copyBtn;
-      return { actionRow: copyBtn.parentElement, anchor };
+      const row = ellipsisBtn.closest?.('div[class*="flex"], div[class*="items-center"]') || ellipsisBtn.parentElement;
+      if (row && !isInsideComposerOrForm(row) && !isInsideImageStage(row)) {
+        return { actionRow: row, anchor: ellipsisBtn };
+      }
     }
 
     // 2. 检查 canonicalTurn 的同级后续兄弟节点（针对消息内容与操作栏为兄弟节点的结构）
     let sib = canonicalTurn.nextElementSibling;
-    while (sib) {
+    while (sib && !isInsideComposerOrForm(sib)) {
       const sibButtons = [...sib.querySelectorAll('button')]
-        .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b));
-      const sibEllipsis = sibButtons.find((b) => isEllipsisButton(b));
-      if (sibEllipsis) {
-        return { actionRow: sibEllipsis.parentElement, anchor: sibEllipsis };
-      }
+        .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && !isInsideComposerOrForm(b) && !isInsideImageStage(b) && isElementVisible(b));
       const sibCopy = sibButtons.find((b) => isCopyButton(b));
       if (sibCopy) {
-        const anchor = findEllipsisInRow(sibCopy.parentElement) || sibCopy;
-        return { actionRow: sibCopy.parentElement, anchor };
+        const row = sibCopy.closest?.('div[class*="flex"], div[class*="items-center"]') || sibCopy.parentElement;
+        if (row && !isInsideComposerOrForm(row) && !isInsideImageStage(row)) {
+          const anchor = findEllipsisInRow(row);
+          return { actionRow: row, anchor };
+        }
+      }
+      const sibEllipsis = sibButtons.find((b) => isEllipsisButton(b));
+      if (sibEllipsis) {
+        const row = sibEllipsis.closest?.('div[class*="flex"], div[class*="items-center"]') || sibEllipsis.parentElement;
+        if (row && !isInsideComposerOrForm(row) && !isInsideImageStage(row)) {
+          return { actionRow: row, anchor: sibEllipsis };
+        }
       }
       sib = sib.nextElementSibling;
     }
 
-    // 3. 通用动作行降级
+    // 3. 通用动作行降级（严格排除 composer 和 stage）
     const fallbackRow = findImageActionRow(canonicalTurn);
-    if (fallbackRow) {
+    if (fallbackRow && !isInsideComposerOrForm(fallbackRow) && !isInsideImageStage(fallbackRow)) {
       const anchor = findEllipsisInRow(fallbackRow);
       return { actionRow: fallbackRow, anchor };
     }
@@ -2562,6 +2591,10 @@
   function isLikelyImageActionRow(row) {
     if (!row || !row.isConnected) return false;
     if (row.closest?.(`#${MENU_ID}, #history, nav, aside, [role="navigation"]`)) return false;
+    // 严格禁止注入到底部输入框、表单、Composer 区域！
+    if (isInsideComposerOrForm(row)) return false;
+    // 严格禁止注入到大图内部浮层、图片展示舞台本身！
+    if (isInsideImageStage(row)) return false;
     // 排除大图内容区本身被误当作操作栏
     const bigImg = [...row.querySelectorAll('img')].find((img) => {
       if (img.closest?.(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return false;
@@ -3424,33 +3457,37 @@
   }
 
   function ensureImageDownloadButton(container, images, preferredActionRow = null, preferredAnchor = null) {
+    // 绝不注入输入框或大图浮层
+    if (preferredActionRow && (isInsideComposerOrForm(preferredActionRow) || isInsideImageStage(preferredActionRow))) {
+      return null;
+    }
+    if (container && (isInsideComposerOrForm(container) || isInsideImageStage(container))) {
+      return null;
+    }
     container.setAttribute('data-cgpt-image-download-container', 'true');
     const actionRow = preferredActionRow || findActionRowForImage(container) || findImageActionRow(container);
-    let slot = (actionRow || container).querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
-    if (actionRow && slot && slot.parentElement !== actionRow) {
-      slot.remove();
-      slot = null;
+    if (!actionRow || isInsideComposerOrForm(actionRow) || isInsideImageStage(actionRow)) {
+      return null;
     }
+
+    // 确保同一操作栏内仅保留一个合法插槽
+    const existingSlots = [...actionRow.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)];
+    let slot = existingSlots[0] || null;
+    if (existingSlots.length > 1) {
+      existingSlots.slice(1).forEach((s) => s.remove());
+    }
+
+    const anchor = preferredAnchor || findEllipsisInRow(actionRow);
     if (!slot) {
       slot = document.createElement('span');
       slot.className = IMAGE_DOWNLOAD_SLOT_CLASS;
-      const anchor = preferredAnchor || (actionRow ? findEllipsisInRow(actionRow) : null);
       if (anchor && anchor.parentElement === actionRow) {
         anchor.after(slot);
-      } else if (actionRow) {
-        actionRow.append(slot);
       } else {
-        slot.classList.add('cgpt-image-download-fallback');
-        // 优先追加在画廊/多图区域后方或同级
-        const targetAnchor = container.querySelector?.('[data-testid="generated-image-gallery"], div[class*="generated-image"], div[class*="Stage"]') || container;
-        if (targetAnchor !== container && targetAnchor.parentElement) {
-          targetAnchor.parentElement.insertBefore(slot, targetAnchor.nextSibling);
-        } else {
-          container.append(slot);
-        }
+        actionRow.append(slot);
       }
-    } else if (preferredAnchor && preferredAnchor.parentElement === slot.parentElement && preferredAnchor.nextElementSibling !== slot) {
-      preferredAnchor.after(slot);
+    } else if (anchor && anchor.parentElement === actionRow && anchor.nextElementSibling !== slot) {
+      anchor.after(slot);
     }
     const groupElements = imageGroupElements(container, images);
     const count = imageGroupUniqueCount(container, images) || groupElements.length || images.length;
@@ -3515,59 +3552,78 @@
 
   function refreshImageDownloadButtons() {
     const validSlots = new Set();
-    const handledTurns = new Set();
+    const handledRows = new Set();
+
+    // 0. 瞬间清除任何误注入到输入框、表单、或者大图浮层内部的历史残留插槽
+    document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((slot) => {
+      if (isInsideComposerOrForm(slot) || isInsideImageStage(slot)) {
+        slot.remove();
+      }
+    });
+
     const main = document.querySelector('main') || document.body;
 
-    // 1. 全量收集页面上包含图片或画廊的回复（Turn）
-    const allTurns = new Set();
+    // 1. 扫描页面上所有的助手回复块（Turn）
+    const assistantTurns = [
+      ...main.querySelectorAll('[data-message-author-role="assistant"], article, [data-testid^="conversation-turn"]')
+    ].map((el) => el.closest?.('article, [data-testid^="conversation-turn"]') || el)
+     .filter((turn, idx, arr) => arr.indexOf(turn) === idx && !isInsideComposerOrForm(turn));
 
+    // 补充：通过画廊容器溯源所属 turn
     findGalleriesOnPage().forEach((gallery) => {
       const turn = imageTurnContainer(gallery);
-      if (turn) allTurns.add(turn.closest?.('article, [data-testid^="conversation-turn"]') || turn);
-    });
-
-    [...main.querySelectorAll('[data-testid^="conversation-turn"], [data-message-author-role="assistant"], article')].forEach((el) => {
-      const turn = el.closest?.('article, [data-testid^="conversation-turn"]') || el;
-      if (allTurns.has(turn)) return;
-      const role = turn.getAttribute?.('data-message-author-role') || turn.querySelector?.('[data-message-author-role]')?.getAttribute?.('data-message-author-role') || '';
-      if (role && role !== 'assistant') return;
-      if (broadImageElements(turn, 24).length) {
-        allTurns.add(turn);
+      if (turn && !assistantTurns.includes(turn) && !isInsideComposerOrForm(turn)) {
+        assistantTurns.push(turn);
       }
     });
 
-    allTurns.forEach((turn) => {
-      const images = broadImageElements(turn, 24);
+    assistantTurns.forEach((turn) => {
+      const role = turn.getAttribute?.('data-message-author-role')
+        || turn.querySelector?.('[data-message-author-role]')?.getAttribute?.('data-message-author-role') || '';
+      if (role && role !== 'assistant') return;
+
+      const content = turn.querySelector?.('[data-message-author-role="assistant"]') || turn;
+      const images = broadImageElements(content, 24).filter((img) => !isInsideComposerOrForm(img));
       if (!images.length) return;
-      handledTurns.add(turn);
 
       const rowInfo = findActionRowAndAnchorForTurn(turn);
-      if (rowInfo?.actionRow) {
-        ensureImageDownloadButton(turn, images, rowInfo.actionRow, rowInfo.anchor);
-        const activeSlot = (rowInfo.actionRow || turn).querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
-        if (activeSlot) validSlots.add(activeSlot);
+      if (rowInfo?.actionRow && !handledRows.has(rowInfo.actionRow)) {
+        handledRows.add(rowInfo.actionRow);
+        const slot = ensureImageDownloadButton(turn, images, rowInfo.actionRow, rowInfo.anchor);
+        if (slot) validSlots.add(slot);
       }
     });
 
-    // 2. 遍历页面上的独立操作栏兜底（确保省略号后绝对挂载）
+    // 2. 遍历其它标准动作栏兜底（严格排除输入框和大图浮层）
     actionRowsOnPage().forEach((row) => {
-      const existingSlot = row.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
+      if (handledRows.has(row) || isInsideComposerOrForm(row) || isInsideImageStage(row)) return;
       const group = nearbyImagesForActionRow(row);
       if (!group?.images?.length) {
-        if (!validSlots.has(existingSlot)) existingSlot?.remove();
+        row.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)?.remove();
         return;
       }
 
+      handledRows.add(row);
       const anchor = findEllipsisInRow(row);
-      ensureImageDownloadButton(group.container, group.images, row, anchor);
-      const activeSlot = row.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
-      if (activeSlot) validSlots.add(activeSlot);
+      const slot = ensureImageDownloadButton(group.container, group.images, row, anchor);
+      if (slot) validSlots.add(slot);
     });
 
-    // 3. 清理已无效插槽
+    // 3. 严格清理多余或失效插槽：每个动作行内仅保留唯一一个插槽
     document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((slot) => {
-      if (!validSlots.has(slot)) slot.remove();
+      if (!validSlots.has(slot) || isInsideComposerOrForm(slot) || isInsideImageStage(slot)) {
+        slot.remove();
+        return;
+      }
+      const parent = slot.parentElement;
+      if (parent) {
+        const slotsInParent = [...parent.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)];
+        if (slotsInParent.length > 1) {
+          slotsInParent.slice(1).forEach((s) => s.remove());
+        }
+      }
     });
+
     refreshTextDownloadButtons();
   }
 
