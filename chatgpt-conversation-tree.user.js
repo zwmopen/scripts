@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.6
+// @version      1.22.7
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.6';
+  const SCRIPT_VERSION = '1.22.7';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2404,40 +2404,38 @@
   function isInsideComposerOrForm(element) {
     if (!element) return false;
     return Boolean(
-      element.closest?.('form, [data-testid*="composer"], [class*="composer"], #prompt-textarea, textarea, [class*="bottom-0"]')
+      element.closest?.('form, [data-testid*="composer"], #prompt-textarea, [class*="composer"]')
     );
   }
 
-  function isOverlayInsideImage(element) {
+  function isImageOverlayRow(element) {
     if (!element) return false;
-    const overlay = element.closest?.('div[class*="absolute"], div[class*="overlay"]');
-    if (overlay) {
-      const hasImgNearby = overlay.parentElement?.querySelector?.('img') || overlay.querySelector?.('img');
-      if (hasImgNearby) return true;
+    const abs = element.closest?.('div.absolute, div[class*="absolute"], div[class*="overlay"]');
+    if (abs) {
+      if (abs.querySelector?.('button[aria-label*="编辑"], button[aria-label*="Edit"]') || /编辑|edit/i.test(elementText(abs))) {
+        return true;
+      }
+      const rel = abs.closest?.('div[class*="relative"]');
+      if (rel && rel.querySelector?.('img') && !rel.matches?.('article, [data-testid^="conversation-turn"]')) {
+        return true;
+      }
     }
     return false;
   }
 
   function isCopyButton(button) {
     if (!button || !button.isConnected) return false;
-    if (isInsideComposerOrForm(button) || isOverlayInsideImage(button)) return false;
-    const text = elementText(button);
-    const aria = (button.getAttribute?.('aria-label') || '');
-    const title = (button.getAttribute?.('title') || '');
-    const testId = (button.getAttribute?.('data-testid') || '');
-    const combined = `${text} ${aria} ${title} ${testId}`;
+    if (isInsideComposerOrForm(button) || isImageOverlayRow(button)) return false;
+    const combined = elementText(button);
     if (/\u590d\u5236|copy/i.test(combined)) return true;
 
-    // SVG 图标特征：ChatGPT 的复制按钮（或多按钮操作行中的第一个按钮）
     const svg = button.querySelector('svg');
     if (svg) {
       const parent = button.parentElement;
-      if (parent && !isInsideComposerOrForm(parent) && !isOverlayInsideImage(parent)) {
+      if (parent && !isInsideComposerOrForm(parent) && !isImageOverlayRow(parent)) {
         const siblings = [...parent.querySelectorAll('button')].filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`));
-        if (siblings.length >= 2 && siblings.length <= 6 && siblings[0] === button) {
-          if (!/\u8d5e|good|\u8e29|bad|\u6717\u8bfb|read|\u7f16\u8f91|edit|\u5206\u4eab|share/i.test(combined)) {
-            return true;
-          }
+        if (siblings[0] === button && !/\u8d5e|good|\u8e29|bad|\u6717\u8bfb|read|\u7f16\u8f91|edit|\u5206\u4eab|share/i.test(combined)) {
+          return true;
         }
       }
     }
@@ -2446,12 +2444,8 @@
 
   function isEllipsisButton(button) {
     if (!button || !button.isConnected) return false;
-    if (isInsideComposerOrForm(button) || isOverlayInsideImage(button)) return false;
-    const text = elementText(button);
-    const aria = (button.getAttribute?.('aria-label') || '');
-    const title = (button.getAttribute?.('title') || '');
-    const testId = (button.getAttribute?.('data-testid') || '');
-    const combined = `${text} ${aria} ${title} ${testId}`;
+    if (isInsideComposerOrForm(button) || isImageOverlayRow(button)) return false;
+    const combined = elementText(button);
     if (/\u66f4\u591a|more|\u9009\u9879|options|ellipsis/i.test(combined)) return true;
     if (/\u590d\u5236|copy|\u7f16\u8f91|edit|\u6717\u8bfb|read|listen|\u8d5e|good|\u8e29|bad|\u5206\u4eab|share/i.test(combined)) return false;
 
@@ -2463,18 +2457,138 @@
     return false;
   }
 
-  function findEllipsisInRow(row) {
-    if (!row) return null;
-    const buttons = [...row.querySelectorAll('button')]
-      .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b));
-    if (!buttons.length) return null;
+  function findEllipsisAnchorInToolbar(toolbar) {
+    if (!toolbar) return null;
+    const nativeButtons = [...toolbar.querySelectorAll('button')].filter((b) => {
+      return !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b);
+    });
+    if (!nativeButtons.length) return null;
 
-    // 优先匹配显式省略号特征
-    const explicit = buttons.find((b) => isEllipsisButton(b));
-    if (explicit) return explicit;
+    const explicitEllipsis = nativeButtons.find((b) => isEllipsisButton(b));
+    if (explicitEllipsis) return explicitEllipsis;
+    return nativeButtons[nativeButtons.length - 1];
+  }
 
-    // 其次匹配最后一个原生图标按钮（在 ChatGPT 动作栏中，省略号永远排在最后一个）
-    return buttons[buttons.length - 1];
+  function mountDownloadSlot(toolbar, anchor, slot) {
+    if (!toolbar || !slot) return;
+    if (anchor && toolbar.contains(anchor)) {
+      let mountNode = anchor;
+      if (anchor.parentElement !== toolbar && anchor.parentElement?.parentElement === toolbar) {
+        mountNode = anchor.parentElement;
+      }
+      if (mountNode.parentElement === toolbar) {
+        if (mountNode.nextElementSibling !== slot) {
+          mountNode.after(slot);
+        }
+        return;
+      }
+    }
+    if (slot.parentElement !== toolbar) {
+      toolbar.append(slot);
+    }
+  }
+
+  function findActionToolbars() {
+    const main = document.querySelector('main') || document.body;
+    const toolbars = new Set();
+
+    const buttons = [...main.querySelectorAll('button')].filter((b) => {
+      if (isInsideComposerOrForm(b) || isImageOverlayRow(b)) return false;
+      if (b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return false;
+      if (b.closest('#history, nav, aside, [role="navigation"]')) return false;
+      return isElementVisible(b);
+    });
+
+    buttons.forEach((btn) => {
+      let row = btn.parentElement;
+      for (let depth = 0; row && depth < 4; depth += 1, row = row.parentElement) {
+        if (isInsideComposerOrForm(row) || isImageOverlayRow(row)) break;
+        if (row.matches?.('main, body, form, article, [data-testid^="conversation-turn"]')) break;
+
+        const rowButtons = [...row.querySelectorAll('button')].filter((b) => {
+          return !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`);
+        });
+
+        if (rowButtons.length === 1 && row.parentElement) {
+          const parentButtons = [...row.parentElement.querySelectorAll('button')].filter((b) => {
+            return !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`);
+          });
+          if (parentButtons.length > 1 && !row.parentElement.matches('article, [data-testid^="conversation-turn"]')) {
+            continue;
+          }
+        }
+
+        if (rowButtons.length >= 1 && rowButtons.length <= 8) {
+          const hasBigImg = [...row.querySelectorAll('img')].some((img) => {
+            const r = img.getBoundingClientRect?.();
+            return r && (r.width > 55 || r.height > 55);
+          });
+          if (hasBigImg) continue;
+
+          const hasActionIcon = rowButtons.some((b) => {
+            const t = elementText(b);
+            if (/\u590d\u5236|copy|\u66f4\u591a|more|\u9009\u9879|options|\u8d5e|\u8e29|\u5206\u4eab|share|\u6717\u8bfb/i.test(t)) return true;
+            if (b.querySelector('svg')) return true;
+            return false;
+          });
+
+          if (hasActionIcon) {
+            toolbars.add(row);
+            break;
+          }
+        }
+      }
+    });
+
+    return [...toolbars];
+  }
+
+  function findImagesForToolbar(toolbar) {
+    if (!toolbar) return [];
+
+    const turn = toolbar.closest?.('article, [data-testid^="conversation-turn"], [data-message-author-role="assistant"]')
+      || toolbar.closest?.('main > div > div > div, main div[class*="react-scroll-to-bottom"] > div > div');
+
+    if (turn) {
+      const role = turn.getAttribute?.('data-message-author-role')
+        || turn.querySelector?.('[data-message-author-role]')?.getAttribute?.('data-message-author-role');
+      if (role && role === 'user') return [];
+
+      const imgs = broadImageElements(turn, 24);
+      if (imgs.length) return imgs;
+    }
+
+    let ancestor = toolbar.parentElement;
+    for (let depth = 0; ancestor && depth < 6; depth += 1, ancestor = ancestor.parentElement) {
+      if (ancestor.matches?.('main, body, form')) break;
+      const imgs = broadImageElements(ancestor, 24);
+      if (imgs.length) return imgs;
+    }
+
+    let prev = toolbar.previousElementSibling || toolbar.parentElement?.previousElementSibling;
+    while (prev) {
+      const imgs = broadImageElements(prev, 24);
+      if (imgs.length) return imgs;
+      prev = prev.previousElementSibling;
+    }
+
+    return [];
+  }
+
+  function getGalleryImageCount(container, images) {
+    if (!container && (!images || !images.length)) return 0;
+    const thumbs = [...(container?.querySelectorAll?.('img') || [])].filter((img) => {
+      if (isInsideComposerOrForm(img) || img.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return false;
+      const r = img.getBoundingClientRect?.();
+      return r && r.width >= 24 && r.width <= 140 && r.height >= 24 && r.height <= 140;
+    });
+    if (thumbs.length > 1) {
+      return thumbs.length;
+    }
+    if (images && images.length) {
+      return images.length;
+    }
+    return 1;
   }
 
   function findActionRowAndAnchorForTurn(turn) {
@@ -2679,7 +2793,7 @@
     const total = Math.max(0, Number(count || 0));
     if (!total) return '';
     const done = Math.max(0, Math.min(total, Number(downloaded || 0)));
-    return `${done}/${total}`;
+    return done > 0 ? `${done}/${total}` : `${total}`;
   }
 
   function imageButtonStatusText(state = 'idle') {
@@ -3464,11 +3578,11 @@
 
   function ensureImageDownloadButton(container, images, preferredActionRow = null, preferredAnchor = null) {
     const actionRow = preferredActionRow || findActionRowForImage(container) || findImageActionRow(container);
-    if (!actionRow || isInsideComposerOrForm(actionRow) || isOverlayInsideImage(actionRow)) {
+    if (!actionRow || isInsideComposerOrForm(actionRow) || isImageOverlayRow(actionRow)) {
       return null;
     }
 
-    container.setAttribute('data-cgpt-image-download-container', 'true');
+    container?.setAttribute?.('data-cgpt-image-download-container', 'true');
 
     // 确保同一操作栏内仅保留一个合法插槽
     const existingSlots = [...actionRow.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)];
@@ -3477,23 +3591,18 @@
       existingSlots.slice(1).forEach((s) => s.remove());
     }
 
-    const nativeButtons = [...actionRow.querySelectorAll('button')]
-      .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b));
-    const anchor = preferredAnchor || nativeButtons[nativeButtons.length - 1];
+    const anchor = preferredAnchor || findEllipsisAnchorInToolbar(actionRow);
 
     if (!slot) {
       slot = document.createElement('span');
       slot.className = IMAGE_DOWNLOAD_SLOT_CLASS;
-      if (anchor && anchor.parentElement === actionRow) {
-        anchor.after(slot);
-      } else {
-        actionRow.append(slot);
-      }
-    } else if (anchor && anchor.parentElement === actionRow && anchor.nextElementSibling !== slot) {
-      anchor.after(slot);
+      mountDownloadSlot(actionRow, anchor, slot);
+    } else {
+      mountDownloadSlot(actionRow, anchor, slot);
     }
+
     const groupElements = imageGroupElements(container, images);
-    const count = imageGroupUniqueCount(container, images) || groupElements.length || images.length;
+    const count = getGalleryImageCount(container, images) || groupElements.length || images.length;
     let button = slot.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
     if (!button) {
       button = document.createElement('button');
@@ -3518,107 +3627,63 @@
         }, true);
         slot.append(packageButton);
       }
-      packageButton.onclick = (event) => triggerWorkPackageButton(packageButton, event);
+      packageButton.hidden = false;
     } else if (packageButton) {
-      packageButton.remove();
+      packageButton.hidden = true;
     }
-    slot.hidden = !imageDownloadButtonVisible && !workPackageButtonVisible;
-    button.onclick = (event) => triggerImageDownloadButton(button, event);
+
     button.__cgptImageDownloadContainer = container;
-    button.__cgptImageDownloadImages = groupElements;
-    const declaredCount = Number(button.dataset.cgptExactCount || 0)
-      || count
-      || inferDeclaredImageCount(container, preferredActionRow || slot.parentElement);
-    const totalCount = declaredCount || count || 0;
-    const previousTotal = Number(button.dataset.cgptImageTotal || 0);
-    if (!button.disabled && previousTotal && totalCount && previousTotal !== totalCount) {
-      button.dataset.cgptImageDownloaded = '0';
-    }
-    button.dataset.cgptImageTotal = String(totalCount || '');
-    button.dataset.cgptImageCount = String(totalCount || '');
+    button.__cgptImageElements = images;
+    button.dataset.cgptImageCount = String(count);
     button.dataset.cgptImageElementCount = String(groupElements.length);
-    button.title = declaredCount > 1
-      ? `下载本组中的 ${declaredCount} 张图片`
-      : '下载本组图片';
-    if (!button.disabled) {
-      const downloaded = Number(button.dataset.cgptImageDownloaded || 0);
-      const countText = imageButtonLabel(totalCount, downloaded);
-      const done = totalCount > 0 && downloaded >= totalCount;
-      const statusText = imageButtonStatusText(done ? 'done' : 'idle');
-      const status = `<span class="cgpt-image-download-status" data-cgpt-image-download-status${statusText ? '' : ' hidden'}>${escapeHtml(statusText)}</span>`;
-      const badge = `<span class="cgpt-image-download-count" data-cgpt-image-download-label${countText ? '' : ' hidden'}>${escapeHtml(countText)}</span>`;
-      button.innerHTML = `${icons.download}${status}${badge}`;
-      button.classList.toggle('cgpt-image-download-done', done);
-      if (downloaded) setImageButtonProgress(button, downloaded, totalCount, false);
-    }
+    button.title = `下载本组图片（当前共 ${count} 张）`;
+
+    const downloaded = Number(button.dataset.cgptImageDownloaded || 0);
+    setImageButtonProgress(button, downloaded, count);
+    return slot;
   }
 
   function refreshImageDownloadButtons() {
     const validSlots = new Set();
     const handledRows = new Set();
 
-    // 0. 瞬间清除任何误注入到输入框、表单、或者大图浮层内部的历史残留插槽
+    // 0. 清除一切误注入到输入框、表单或大图内部浮层的历史插槽
     document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((slot) => {
-      if (isInsideComposerOrForm(slot) || isOverlayInsideImage(slot)) {
+      if (isInsideComposerOrForm(slot) || isImageOverlayRow(slot)) {
         slot.remove();
       }
     });
 
-    const main = document.querySelector('main') || document.body;
+    // 1. 发现页面上所有的动作工具栏
+    const toolbars = findActionToolbars();
 
-    // 1. 全局发现所有复制按钮（每个助手回复均以复制按钮作为标准动作栏的起始标志）
-    const allButtons = [...main.querySelectorAll('button')];
-    const copyButtons = allButtons.filter((btn) => isCopyButton(btn));
+    toolbars.forEach((toolbar) => {
+      if (handledRows.has(toolbar)) return;
 
-    copyButtons.forEach((copyBtn) => {
-      const actionRow = copyBtn.closest?.('div[class*="flex"], div[class*="items-center"]') || copyBtn.parentElement;
-      if (!actionRow || handledRows.has(actionRow) || isInsideComposerOrForm(actionRow) || isOverlayInsideImage(actionRow)) {
-        return;
-      }
-
-      // 寻找对应的回话容器
-      const turn = copyBtn.closest?.('article, [data-testid^="conversation-turn"]')
-        || copyBtn.closest?.('[data-message-author-role="assistant"]')?.parentElement
-        || actionRow.parentElement;
-
-      // 检查当前回话内是否存在图片
-      const images = broadImageElements(turn, 24).filter((img) => !isInsideComposerOrForm(img) && !isOverlayInsideImage(img));
+      // 关联当前工具栏对应的图片列表
+      const images = findImagesForToolbar(toolbar);
       if (!images.length) {
-        actionRow.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)?.remove();
+        toolbar.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)?.remove();
         return;
       }
 
-      handledRows.add(actionRow);
+      handledRows.add(toolbar);
 
-      // 定位最后一个原生图标按钮（即省略号按钮 [...]）
-      const nativeButtons = [...actionRow.querySelectorAll('button')]
-        .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b));
-      const anchor = nativeButtons[nativeButtons.length - 1];
+      // 寻找对应的消息回合容器（用于下载元数据与打包装载）
+      const container = toolbar.closest?.('article, [data-testid^="conversation-turn"], [data-message-author-role="assistant"]')
+        || toolbar.parentElement;
 
-      // 确保单例挂载在省略号正右侧
-      const slot = ensureImageDownloadButton(turn, images, actionRow, anchor);
+      // 寻找省略号锚点按钮
+      const anchor = findEllipsisAnchorInToolbar(toolbar);
+
+      // 挂载或更新插槽
+      const slot = ensureImageDownloadButton(container, images, toolbar, anchor);
       if (slot) validSlots.add(slot);
     });
 
-    // 2. 画廊溯源兜底（处理特殊的无 Copy 按钮或异步渲染结构）
-    findGalleriesOnPage().forEach((gallery) => {
-      const turn = imageTurnContainer(gallery) || gallery.parentElement;
-      if (!turn || isInsideComposerOrForm(turn)) return;
-
-      const images = broadImageElements(turn, 24).filter((img) => !isInsideComposerOrForm(img) && !isOverlayInsideImage(img));
-      if (!images.length) return;
-
-      const rowInfo = findActionRowAndAnchorForTurn(turn);
-      if (rowInfo?.actionRow && !handledRows.has(rowInfo.actionRow)) {
-        handledRows.add(rowInfo.actionRow);
-        const slot = ensureImageDownloadButton(turn, images, rowInfo.actionRow, rowInfo.anchor);
-        if (slot) validSlots.add(slot);
-      }
-    });
-
-    // 3. 严格清理多余或失效插槽：每个动作行内仅保留唯一一个插槽
+    // 2. 清理多余或失效的插槽
     document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((slot) => {
-      if (!validSlots.has(slot) || isInsideComposerOrForm(slot) || isOverlayInsideImage(slot)) {
+      if (!validSlots.has(slot) || isInsideComposerOrForm(slot) || isImageOverlayRow(slot)) {
         slot.remove();
         return;
       }
