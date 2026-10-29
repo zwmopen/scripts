@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.3
+// @version      1.22.4
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.3';
+  const SCRIPT_VERSION = '1.22.4';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2395,6 +2395,111 @@
     return [...galleries];
   }
 
+  function isCopyButton(button) {
+    if (!button || !button.isConnected) return false;
+    const text = elementText(button);
+    const aria = (button.getAttribute?.('aria-label') || '');
+    const title = (button.getAttribute?.('title') || '');
+    const testId = (button.getAttribute?.('data-testid') || '');
+    const combined = `${text} ${aria} ${title} ${testId}`;
+    if (/\u590d\u5236|copy/i.test(combined)) return true;
+
+    const svg = button.querySelector('svg');
+    if (!svg) return false;
+    const rects = svg.querySelectorAll('rect');
+    if (rects.length >= 2) return true;
+    const paths = svg.querySelectorAll('path');
+    for (const p of paths) {
+      const d = p.getAttribute('d') || '';
+      if (/M.*H.*V.*H.*z/i.test(d) && (d.match(/[Mm]/g) || []).length >= 2) return true;
+    }
+    return false;
+  }
+
+  function isEllipsisButton(button) {
+    if (!button || !button.isConnected) return false;
+    const text = elementText(button);
+    const aria = (button.getAttribute?.('aria-label') || '');
+    const title = (button.getAttribute?.('title') || '');
+    const testId = (button.getAttribute?.('data-testid') || '');
+    const combined = `${text} ${aria} ${title} ${testId}`;
+    if (/\u66f4\u591a|more|\u9009\u9879|options|ellipsis/i.test(combined)) return true;
+    if (/\u590d\u5236|copy|\u7f16\u8f91|edit|\u6717\u8bfb|read|listen|\u8d5e|good|\u8e29|bad|\u5206\u4eab|share/i.test(combined)) return false;
+
+    const svg = button.querySelector('svg');
+    if (!svg) return false;
+    if (svg.querySelectorAll('circle').length >= 2) return true;
+    const d = svg.querySelector('path')?.getAttribute('d') || '';
+    if ((d.match(/[Mm]/g) || []).length >= 3) return true;
+
+    const parent = button.parentElement;
+    if (parent) {
+      const prev = button.previousElementSibling;
+      if (prev && isCopyButton(prev)) return true;
+    }
+    return false;
+  }
+
+  function findEllipsisInRow(row) {
+    if (!row) return null;
+    const buttons = [...row.querySelectorAll('button')]
+      .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b));
+    if (!buttons.length) return null;
+
+    const explicit = buttons.find((b) => isEllipsisButton(b));
+    if (explicit) return explicit;
+
+    const copyIdx = buttons.findIndex((b) => isCopyButton(b));
+    if (copyIdx !== -1 && copyIdx < buttons.length - 1) {
+      return buttons[buttons.length - 1];
+    }
+    return buttons[buttons.length - 1];
+  }
+
+  function findActionRowAndAnchorForTurn(turn) {
+    if (!turn) return null;
+    const canonicalTurn = turn.closest?.('article, [data-testid^="conversation-turn"]') || turn;
+
+    // 1. 在 canonicalTurn 内部查找
+    const buttons = [...canonicalTurn.querySelectorAll('button')]
+      .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b));
+
+    const ellipsisBtn = buttons.find((b) => isEllipsisButton(b));
+    if (ellipsisBtn) {
+      return { actionRow: ellipsisBtn.parentElement, anchor: ellipsisBtn };
+    }
+    const copyBtn = buttons.find((b) => isCopyButton(b));
+    if (copyBtn) {
+      const anchor = findEllipsisInRow(copyBtn.parentElement) || copyBtn;
+      return { actionRow: copyBtn.parentElement, anchor };
+    }
+
+    // 2. 检查 canonicalTurn 的同级后续兄弟节点（针对消息内容与操作栏为兄弟节点的结构）
+    let sib = canonicalTurn.nextElementSibling;
+    while (sib) {
+      const sibButtons = [...sib.querySelectorAll('button')]
+        .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b));
+      const sibEllipsis = sibButtons.find((b) => isEllipsisButton(b));
+      if (sibEllipsis) {
+        return { actionRow: sibEllipsis.parentElement, anchor: sibEllipsis };
+      }
+      const sibCopy = sibButtons.find((b) => isCopyButton(b));
+      if (sibCopy) {
+        const anchor = findEllipsisInRow(sibCopy.parentElement) || sibCopy;
+        return { actionRow: sibCopy.parentElement, anchor };
+      }
+      sib = sib.nextElementSibling;
+    }
+
+    // 3. 通用动作行降级
+    const fallbackRow = findImageActionRow(canonicalTurn);
+    if (fallbackRow) {
+      const anchor = findEllipsisInRow(fallbackRow);
+      return { actionRow: fallbackRow, anchor };
+    }
+    return null;
+  }
+
   function findActionRowForImage(imgOrGallery) {
     if (!imgOrGallery) return null;
     const turn = imageTurnContainer(imgOrGallery);
@@ -3318,7 +3423,7 @@
     }, 3600);
   }
 
-  function ensureImageDownloadButton(container, images, preferredActionRow = null) {
+  function ensureImageDownloadButton(container, images, preferredActionRow = null, preferredAnchor = null) {
     container.setAttribute('data-cgpt-image-download-container', 'true');
     const actionRow = preferredActionRow || findActionRowForImage(container) || findImageActionRow(container);
     let slot = (actionRow || container).querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
@@ -3329,7 +3434,10 @@
     if (!slot) {
       slot = document.createElement('span');
       slot.className = IMAGE_DOWNLOAD_SLOT_CLASS;
-      if (actionRow) {
+      const anchor = preferredAnchor || (actionRow ? findEllipsisInRow(actionRow) : null);
+      if (anchor && anchor.parentElement === actionRow) {
+        anchor.after(slot);
+      } else if (actionRow) {
         actionRow.append(slot);
       } else {
         slot.classList.add('cgpt-image-download-fallback');
@@ -3341,6 +3449,8 @@
           container.append(slot);
         }
       }
+    } else if (preferredAnchor && preferredAnchor.parentElement === slot.parentElement && preferredAnchor.nextElementSibling !== slot) {
+      preferredAnchor.after(slot);
     }
     const groupElements = imageGroupElements(container, images);
     const count = imageGroupUniqueCount(container, images) || groupElements.length || images.length;
@@ -3405,27 +3515,41 @@
 
   function refreshImageDownloadButtons() {
     const validSlots = new Set();
-    const claimedContainers = new Set();
+    const handledTurns = new Set();
+    const main = document.querySelector('main') || document.body;
 
-    // 1. 优先画廊/多图套件探测（精准适配 Planned the image set / 新版 ChatGPT 画廊）
+    // 1. 全量收集页面上包含图片或画廊的回复（Turn）
+    const allTurns = new Set();
+
     findGalleriesOnPage().forEach((gallery) => {
-      const turn = imageTurnContainer(gallery) || gallery;
-      if (claimedContainers.has(turn)) return;
-
-      const images = [
-        ...broadImageElements(gallery, 24),
-        ...broadImageElements(turn, 24),
-      ];
-      if (!images.length) return;
-
-      claimedContainers.add(turn);
-      const actionRow = findActionRowForImage(gallery) || findActionRowForImage(turn) || findImageActionRow(turn) || findImageActionRow(gallery);
-      ensureImageDownloadButton(turn, images, actionRow);
-      const slot = (actionRow || turn).querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
-      if (slot) validSlots.add(slot);
+      const turn = imageTurnContainer(gallery);
+      if (turn) allTurns.add(turn.closest?.('article, [data-testid^="conversation-turn"]') || turn);
     });
 
-    // 2. 遍历页面上的操作栏（兼容常规单图、多图与文本回复）
+    [...main.querySelectorAll('[data-testid^="conversation-turn"], [data-message-author-role="assistant"], article')].forEach((el) => {
+      const turn = el.closest?.('article, [data-testid^="conversation-turn"]') || el;
+      if (allTurns.has(turn)) return;
+      const role = turn.getAttribute?.('data-message-author-role') || turn.querySelector?.('[data-message-author-role]')?.getAttribute?.('data-message-author-role') || '';
+      if (role && role !== 'assistant') return;
+      if (broadImageElements(turn, 24).length) {
+        allTurns.add(turn);
+      }
+    });
+
+    allTurns.forEach((turn) => {
+      const images = broadImageElements(turn, 24);
+      if (!images.length) return;
+      handledTurns.add(turn);
+
+      const rowInfo = findActionRowAndAnchorForTurn(turn);
+      if (rowInfo?.actionRow) {
+        ensureImageDownloadButton(turn, images, rowInfo.actionRow, rowInfo.anchor);
+        const activeSlot = (rowInfo.actionRow || turn).querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
+        if (activeSlot) validSlots.add(activeSlot);
+      }
+    });
+
+    // 2. 遍历页面上的独立操作栏兜底（确保省略号后绝对挂载）
     actionRowsOnPage().forEach((row) => {
       const existingSlot = row.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
       const group = nearbyImagesForActionRow(row);
@@ -3433,20 +3557,9 @@
         if (!validSlots.has(existingSlot)) existingSlot?.remove();
         return;
       }
-      if (claimedContainers.has(group.container)) {
-        if (existingSlot && validSlots.has(existingSlot)) return;
-        if (existingSlot) existingSlot.remove();
-        return;
-      }
-      claimedContainers.add(group.container);
-      const existingButton = existingSlot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
-      const currentElements = imageGroupElements(group.container, group.images);
-      const currentCount = imageGroupUniqueCount(group.container, group.images) || currentElements.length;
-      const previousElementCount = Number(existingButton?.dataset.cgptImageElementCount || 0);
-      const previousCount = Number(existingButton?.dataset.cgptImageCount || 0);
-      if (!existingButton || previousElementCount !== currentElements.length || previousCount !== currentCount) {
-        ensureImageDownloadButton(group.container, group.images, row);
-      }
+
+      const anchor = findEllipsisInRow(row);
+      ensureImageDownloadButton(group.container, group.images, row, anchor);
       const activeSlot = row.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
       if (activeSlot) validSlots.add(activeSlot);
     });
@@ -3487,7 +3600,14 @@
 
   function installImageDownloadDebugApi() {
     try {
+      unsafeWindow.CGPTForceMount = refreshImageDownloadButtons;
       unsafeWindow.CGPTImageDownloadDebug = {
+        version: SCRIPT_VERSION,
+        refresh: refreshImageDownloadButtons,
+        forceMount: () => {
+          refreshImageDownloadButtons();
+          return [...document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)];
+        },
         scan() {
           return [...document.querySelectorAll(`.${IMAGE_DOWNLOAD_CLASS}`)].map((button, index) => {
             const container = button.__cgptImageDownloadContainer
