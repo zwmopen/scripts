@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.5
+// @version      1.22.6
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.5';
+  const SCRIPT_VERSION = '1.22.6';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2408,17 +2408,19 @@
     );
   }
 
-  function isInsideImageStage(element) {
+  function isOverlayInsideImage(element) {
     if (!element) return false;
-    if (element.closest?.('div[class*="Stage"], div[class*="stage"], div[class*="carousel"], div[class*="StageRoot"]')) {
-      return true;
+    const overlay = element.closest?.('div[class*="absolute"], div[class*="overlay"]');
+    if (overlay) {
+      const hasImgNearby = overlay.parentElement?.querySelector?.('img') || overlay.querySelector?.('img');
+      if (hasImgNearby) return true;
     }
     return false;
   }
 
   function isCopyButton(button) {
     if (!button || !button.isConnected) return false;
-    if (isInsideComposerOrForm(button) || isInsideImageStage(button)) return false;
+    if (isInsideComposerOrForm(button) || isOverlayInsideImage(button)) return false;
     const text = elementText(button);
     const aria = (button.getAttribute?.('aria-label') || '');
     const title = (button.getAttribute?.('title') || '');
@@ -2426,21 +2428,25 @@
     const combined = `${text} ${aria} ${title} ${testId}`;
     if (/\u590d\u5236|copy/i.test(combined)) return true;
 
+    // SVG 图标特征：ChatGPT 的复制按钮（或多按钮操作行中的第一个按钮）
     const svg = button.querySelector('svg');
-    if (!svg) return false;
-    const rects = svg.querySelectorAll('rect');
-    if (rects.length >= 2) return true;
-    const paths = svg.querySelectorAll('path');
-    for (const p of paths) {
-      const d = p.getAttribute('d') || '';
-      if (/M.*H.*V.*H.*z/i.test(d) && (d.match(/[Mm]/g) || []).length >= 2) return true;
+    if (svg) {
+      const parent = button.parentElement;
+      if (parent && !isInsideComposerOrForm(parent) && !isOverlayInsideImage(parent)) {
+        const siblings = [...parent.querySelectorAll('button')].filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`));
+        if (siblings.length >= 2 && siblings.length <= 6 && siblings[0] === button) {
+          if (!/\u8d5e|good|\u8e29|bad|\u6717\u8bfb|read|\u7f16\u8f91|edit|\u5206\u4eab|share/i.test(combined)) {
+            return true;
+          }
+        }
+      }
     }
     return false;
   }
 
   function isEllipsisButton(button) {
     if (!button || !button.isConnected) return false;
-    if (isInsideComposerOrForm(button) || isInsideImageStage(button)) return false;
+    if (isInsideComposerOrForm(button) || isOverlayInsideImage(button)) return false;
     const text = elementText(button);
     const aria = (button.getAttribute?.('aria-label') || '');
     const title = (button.getAttribute?.('title') || '');
@@ -2478,12 +2484,12 @@
 
     // 1. 在 canonicalTurn 内部查找标准工具栏（排除输入框与大图浮层）
     const buttons = [...canonicalTurn.querySelectorAll('button')]
-      .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && !isInsideComposerOrForm(b) && !isInsideImageStage(b) && isElementVisible(b));
+      .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && !isInsideComposerOrForm(b) && !isOverlayInsideImage(b) && isElementVisible(b));
 
     const copyBtn = buttons.find((b) => isCopyButton(b));
     if (copyBtn) {
       const row = copyBtn.closest?.('div[class*="flex"], div[class*="items-center"]') || copyBtn.parentElement;
-      if (row && !isInsideComposerOrForm(row) && !isInsideImageStage(row)) {
+      if (row && !isInsideComposerOrForm(row) && !isOverlayInsideImage(row)) {
         const anchor = findEllipsisInRow(row);
         return { actionRow: row, anchor };
       }
@@ -2492,7 +2498,7 @@
     const ellipsisBtn = buttons.find((b) => isEllipsisButton(b));
     if (ellipsisBtn) {
       const row = ellipsisBtn.closest?.('div[class*="flex"], div[class*="items-center"]') || ellipsisBtn.parentElement;
-      if (row && !isInsideComposerOrForm(row) && !isInsideImageStage(row)) {
+      if (row && !isInsideComposerOrForm(row) && !isOverlayInsideImage(row)) {
         return { actionRow: row, anchor: ellipsisBtn };
       }
     }
@@ -2501,11 +2507,11 @@
     let sib = canonicalTurn.nextElementSibling;
     while (sib && !isInsideComposerOrForm(sib)) {
       const sibButtons = [...sib.querySelectorAll('button')]
-        .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && !isInsideComposerOrForm(b) && !isInsideImageStage(b) && isElementVisible(b));
+        .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && !isInsideComposerOrForm(b) && !isOverlayInsideImage(b) && isElementVisible(b));
       const sibCopy = sibButtons.find((b) => isCopyButton(b));
       if (sibCopy) {
         const row = sibCopy.closest?.('div[class*="flex"], div[class*="items-center"]') || sibCopy.parentElement;
-        if (row && !isInsideComposerOrForm(row) && !isInsideImageStage(row)) {
+        if (row && !isInsideComposerOrForm(row) && !isOverlayInsideImage(row)) {
           const anchor = findEllipsisInRow(row);
           return { actionRow: row, anchor };
         }
@@ -2513,7 +2519,7 @@
       const sibEllipsis = sibButtons.find((b) => isEllipsisButton(b));
       if (sibEllipsis) {
         const row = sibEllipsis.closest?.('div[class*="flex"], div[class*="items-center"]') || sibEllipsis.parentElement;
-        if (row && !isInsideComposerOrForm(row) && !isInsideImageStage(row)) {
+        if (row && !isInsideComposerOrForm(row) && !isOverlayInsideImage(row)) {
           return { actionRow: row, anchor: sibEllipsis };
         }
       }
@@ -2522,7 +2528,7 @@
 
     // 3. 通用动作行降级（严格排除 composer 和 stage）
     const fallbackRow = findImageActionRow(canonicalTurn);
-    if (fallbackRow && !isInsideComposerOrForm(fallbackRow) && !isInsideImageStage(fallbackRow)) {
+    if (fallbackRow && !isInsideComposerOrForm(fallbackRow) && !isOverlayInsideImage(fallbackRow)) {
       const anchor = findEllipsisInRow(fallbackRow);
       return { actionRow: fallbackRow, anchor };
     }
@@ -2594,7 +2600,7 @@
     // 严格禁止注入到底部输入框、表单、Composer 区域！
     if (isInsideComposerOrForm(row)) return false;
     // 严格禁止注入到大图内部浮层、图片展示舞台本身！
-    if (isInsideImageStage(row)) return false;
+    if (isOverlayInsideImage(row)) return false;
     // 排除大图内容区本身被误当作操作栏
     const bigImg = [...row.querySelectorAll('img')].find((img) => {
       if (img.closest?.(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return false;
@@ -3457,18 +3463,12 @@
   }
 
   function ensureImageDownloadButton(container, images, preferredActionRow = null, preferredAnchor = null) {
-    // 绝不注入输入框或大图浮层
-    if (preferredActionRow && (isInsideComposerOrForm(preferredActionRow) || isInsideImageStage(preferredActionRow))) {
-      return null;
-    }
-    if (container && (isInsideComposerOrForm(container) || isInsideImageStage(container))) {
-      return null;
-    }
-    container.setAttribute('data-cgpt-image-download-container', 'true');
     const actionRow = preferredActionRow || findActionRowForImage(container) || findImageActionRow(container);
-    if (!actionRow || isInsideComposerOrForm(actionRow) || isInsideImageStage(actionRow)) {
+    if (!actionRow || isInsideComposerOrForm(actionRow) || isOverlayInsideImage(actionRow)) {
       return null;
     }
+
+    container.setAttribute('data-cgpt-image-download-container', 'true');
 
     // 确保同一操作栏内仅保留一个合法插槽
     const existingSlots = [...actionRow.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)];
@@ -3477,7 +3477,10 @@
       existingSlots.slice(1).forEach((s) => s.remove());
     }
 
-    const anchor = preferredAnchor || findEllipsisInRow(actionRow);
+    const nativeButtons = [...actionRow.querySelectorAll('button')]
+      .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b));
+    const anchor = preferredAnchor || nativeButtons[nativeButtons.length - 1];
+
     if (!slot) {
       slot = document.createElement('span');
       slot.className = IMAGE_DOWNLOAD_SLOT_CLASS;
@@ -3556,34 +3559,53 @@
 
     // 0. 瞬间清除任何误注入到输入框、表单、或者大图浮层内部的历史残留插槽
     document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((slot) => {
-      if (isInsideComposerOrForm(slot) || isInsideImageStage(slot)) {
+      if (isInsideComposerOrForm(slot) || isOverlayInsideImage(slot)) {
         slot.remove();
       }
     });
 
     const main = document.querySelector('main') || document.body;
 
-    // 1. 扫描页面上所有的助手回复块（Turn）
-    const assistantTurns = [
-      ...main.querySelectorAll('[data-message-author-role="assistant"], article, [data-testid^="conversation-turn"]')
-    ].map((el) => el.closest?.('article, [data-testid^="conversation-turn"]') || el)
-     .filter((turn, idx, arr) => arr.indexOf(turn) === idx && !isInsideComposerOrForm(turn));
+    // 1. 全局发现所有复制按钮（每个助手回复均以复制按钮作为标准动作栏的起始标志）
+    const allButtons = [...main.querySelectorAll('button')];
+    const copyButtons = allButtons.filter((btn) => isCopyButton(btn));
 
-    // 补充：通过画廊容器溯源所属 turn
-    findGalleriesOnPage().forEach((gallery) => {
-      const turn = imageTurnContainer(gallery);
-      if (turn && !assistantTurns.includes(turn) && !isInsideComposerOrForm(turn)) {
-        assistantTurns.push(turn);
+    copyButtons.forEach((copyBtn) => {
+      const actionRow = copyBtn.closest?.('div[class*="flex"], div[class*="items-center"]') || copyBtn.parentElement;
+      if (!actionRow || handledRows.has(actionRow) || isInsideComposerOrForm(actionRow) || isOverlayInsideImage(actionRow)) {
+        return;
       }
+
+      // 寻找对应的回话容器
+      const turn = copyBtn.closest?.('article, [data-testid^="conversation-turn"]')
+        || copyBtn.closest?.('[data-message-author-role="assistant"]')?.parentElement
+        || actionRow.parentElement;
+
+      // 检查当前回话内是否存在图片
+      const images = broadImageElements(turn, 24).filter((img) => !isInsideComposerOrForm(img) && !isOverlayInsideImage(img));
+      if (!images.length) {
+        actionRow.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)?.remove();
+        return;
+      }
+
+      handledRows.add(actionRow);
+
+      // 定位最后一个原生图标按钮（即省略号按钮 [...]）
+      const nativeButtons = [...actionRow.querySelectorAll('button')]
+        .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b));
+      const anchor = nativeButtons[nativeButtons.length - 1];
+
+      // 确保单例挂载在省略号正右侧
+      const slot = ensureImageDownloadButton(turn, images, actionRow, anchor);
+      if (slot) validSlots.add(slot);
     });
 
-    assistantTurns.forEach((turn) => {
-      const role = turn.getAttribute?.('data-message-author-role')
-        || turn.querySelector?.('[data-message-author-role]')?.getAttribute?.('data-message-author-role') || '';
-      if (role && role !== 'assistant') return;
+    // 2. 画廊溯源兜底（处理特殊的无 Copy 按钮或异步渲染结构）
+    findGalleriesOnPage().forEach((gallery) => {
+      const turn = imageTurnContainer(gallery) || gallery.parentElement;
+      if (!turn || isInsideComposerOrForm(turn)) return;
 
-      const content = turn.querySelector?.('[data-message-author-role="assistant"]') || turn;
-      const images = broadImageElements(content, 24).filter((img) => !isInsideComposerOrForm(img));
+      const images = broadImageElements(turn, 24).filter((img) => !isInsideComposerOrForm(img) && !isOverlayInsideImage(img));
       if (!images.length) return;
 
       const rowInfo = findActionRowAndAnchorForTurn(turn);
@@ -3594,24 +3616,9 @@
       }
     });
 
-    // 2. 遍历其它标准动作栏兜底（严格排除输入框和大图浮层）
-    actionRowsOnPage().forEach((row) => {
-      if (handledRows.has(row) || isInsideComposerOrForm(row) || isInsideImageStage(row)) return;
-      const group = nearbyImagesForActionRow(row);
-      if (!group?.images?.length) {
-        row.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)?.remove();
-        return;
-      }
-
-      handledRows.add(row);
-      const anchor = findEllipsisInRow(row);
-      const slot = ensureImageDownloadButton(group.container, group.images, row, anchor);
-      if (slot) validSlots.add(slot);
-    });
-
     // 3. 严格清理多余或失效插槽：每个动作行内仅保留唯一一个插槽
     document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((slot) => {
-      if (!validSlots.has(slot) || isInsideComposerOrForm(slot) || isInsideImageStage(slot)) {
+      if (!validSlots.has(slot) || isInsideComposerOrForm(slot) || isOverlayInsideImage(slot)) {
         slot.remove();
         return;
       }
