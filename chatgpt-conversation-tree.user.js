@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.7
+// @version      1.22.8
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.7';
+  const SCRIPT_VERSION = '1.22.8';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -1051,7 +1051,7 @@
     const rect = element.getBoundingClientRect?.();
     if (!rect || rect.width < 1 || rect.height < 1) return false;
     const style = getComputedStyle(element);
-    return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity || 1) > 0;
+    return style.visibility !== 'hidden' && style.display !== 'none';
   }
 
   function elementText(element) {
@@ -2415,10 +2415,6 @@
       if (abs.querySelector?.('button[aria-label*="编辑"], button[aria-label*="Edit"]') || /编辑|edit/i.test(elementText(abs))) {
         return true;
       }
-      const rel = abs.closest?.('div[class*="relative"]');
-      if (rel && rel.querySelector?.('img') && !rel.matches?.('article, [data-testid^="conversation-turn"]')) {
-        return true;
-      }
     }
     return false;
   }
@@ -3728,7 +3724,8 @@
 
   function installImageDownloadDebugApi() {
     try {
-      unsafeWindow.CGPTForceMount = refreshImageDownloadButtons;
+      if (typeof unsafeWindow !== 'undefined') unsafeWindow.CGPTForceMount = refreshImageDownloadButtons;
+      window.CGPTForceMount = refreshImageDownloadButtons;
       unsafeWindow.CGPTImageDownloadDebug = {
         version: SCRIPT_VERSION,
         refresh: refreshImageDownloadButtons,
@@ -4172,8 +4169,9 @@
 
   window.setInterval(() => {
     if (document.hidden) return;
+    scheduleImageDownloadButtons();
     schedulePromptButton(400);
-  }, 6000);
+  }, 2500);
 
   // 启动引导
   removeLegacySidebarGroupingUi();
