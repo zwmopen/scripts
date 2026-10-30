@@ -3,6 +3,7 @@
     [string]$ConversationMetadataJsonOverride,
     [string]$BatchId,
     [int]$ExpectedImageCount = 0,
+    [string]$TargetDestination = "",
     [switch]$NoMessage,
     [switch]$Preview,
     [switch]$Diagnose,
@@ -435,7 +436,7 @@ function Get-WorkPackageConfig {
         library_path = ""
         portfolio_output_path = ""
         image_inbox_path = ""
-        portfolio_auto_group = $false
+        portfolio_auto_group = $true
         portfolio_auto_zip = $false
         portfolio_batch_size = 14
         portfolio_prefix = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6)
@@ -2580,8 +2581,12 @@ try {
     }
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "schemaVersion" -Value 2
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "recordType" -Value "gpt_work_package"
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "pipeline" -Value "GPT扩展+本地脚本产线"
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "packagerVersion" -Value $workPackageScriptVersion
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "status" -Value "completed"
-    Set-WorkPackageTaskProperty -Task $packageRecord -Name "completedAt" -Value ((Get-Date).ToString("o"))
+    $completedIso = (Get-Date).ToString("o")
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "completedAt" -Value $completedIso
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "producedAt" -Value $completedIso
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "actualImages" -Value $images.Count
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "textSha256" -Value $currentHash
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "imageSetSha256" -Value $imageHashInfo.SetHash
@@ -2589,8 +2594,41 @@ try {
     if ($null -ne $gptConversationMetadata) {
         Set-WorkPackageTaskProperty -Task $packageRecord -Name "accountName" -Value ([string]$gptConversationMetadata.accountName)
         Set-WorkPackageTaskProperty -Task $packageRecord -Name "conversationUrl" -Value ([string]$gptConversationMetadata.conversationUrl)
+        if ($gptConversationMetadata.PSObject.Properties["workflowVersion"] -and -not [string]::IsNullOrWhiteSpace([string]$gptConversationMetadata.workflowVersion)) {
+            Set-WorkPackageTaskProperty -Task $packageRecord -Name "workflowVersion" -Value ([string]$gptConversationMetadata.workflowVersion)
+        }
+        if ($gptConversationMetadata.PSObject.Properties["productionMode"] -and -not [string]::IsNullOrWhiteSpace([string]$gptConversationMetadata.productionMode)) {
+            Set-WorkPackageTaskProperty -Task $packageRecord -Name "productionMode" -Value ([string]$gptConversationMetadata.productionMode)
+        }
+        if ($gptConversationMetadata.PSObject.Properties["productionModeName"] -and -not [string]::IsNullOrWhiteSpace([string]$gptConversationMetadata.productionModeName)) {
+            Set-WorkPackageTaskProperty -Task $packageRecord -Name "productionModeName" -Value ([string]$gptConversationMetadata.productionModeName)
+        }
+        if ($gptConversationMetadata.PSObject.Properties["templateId"] -and -not [string]::IsNullOrWhiteSpace([string]$gptConversationMetadata.templateId)) {
+            Set-WorkPackageTaskProperty -Task $packageRecord -Name "templateId" -Value ([string]$gptConversationMetadata.templateId)
+        }
     }
     Save-WorkPackageTaskJson -Task $packageRecord -Path (Join-Path $stagingDir $packageRecordFileName)
+        $categoryName = if ($TargetDestination -eq "default") { "本地默认下载" } else { "A手动制作" }
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "category" -Value $categoryName
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "title" -Value $title
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "destination" -Value (Split-Path -Leaf $packageRootDir)
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "imageCount" -Value $images.Count
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "expectedImageCount" -Value $images.Count
+    Save-WorkPackageTaskJson -Task $packageRecord -Path (Join-Path $stagingDir "manifest.json")
+
+    # 规范化：生成作品标签.json 与 文案.txt
+    $tagData = [ordered]@{
+        distribution = [ordered]@{
+            useCount = 0
+            dispatchedVersions = @()
+            dispatchedTo = @()
+            lastDispatchedAt = $null
+            status = "待使用"
+        }
+    }
+    $tagJson = ConvertTo-Json $tagData -Depth 5
+    [System.IO.File]::WriteAllText((Join-Path $stagingDir "作品标签.json"), $tagJson, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText((Join-Path $stagingDir "文案.txt"), $text, (New-Object System.Text.UTF8Encoding($false)))
     Set-FileTimes -Path (Join-Path $stagingDir $packageRecordFileName) -Time $packageTime
 
     $numberFormat = "D$([Math]::Max(2, $images.Count.ToString().Length))"

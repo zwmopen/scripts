@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.10
+// @version      1.22.11
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -1263,9 +1263,12 @@
   }
 
   function injectStyles() {
-    if (document.getElementById(STYLE_ID)) return;
-    const style = document.createElement('style');
-    style.id = STYLE_ID;
+    let style = document.getElementById(STYLE_ID);
+    if (!style) {
+      style = document.createElement('style');
+      style.id = STYLE_ID;
+      document.head.append(style);
+    }
     style.textContent = `
       #${PROMPT_PANEL_ID} {
         position: fixed;
@@ -1467,8 +1470,8 @@
       .${IMAGE_DOWNLOAD_SLOT_CLASS} {
         display: inline-flex;
         align-items: center;
-        gap: 5px;
-        margin-inline-start: 6px;
+        gap: 6px;
+        margin-inline-start: 8px;
         vertical-align: middle;
         white-space: nowrap;
         flex-shrink: 0;
@@ -1491,58 +1494,98 @@
         vertical-align: middle;
       }
       .${IMAGE_DOWNLOAD_CLASS},
-      .${WORK_PACKAGE_CLASS},
-      .${TEXT_DOWNLOAD_CLASS} {
+      .${WORK_PACKAGE_CLASS} {
         position: relative;
-        min-width: 34px;
-        height: 34px;
+        height: 28px;
+        min-height: 28px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        gap: 6px;
-        padding: 0 7px;
-        border: 0;
-        border-radius: 10px;
+        gap: 5px;
+        padding: 0 10px;
+        border-radius: 9999px;
+        border: 1px solid rgba(128, 128, 128, 0.22);
+        background: rgba(128, 128, 128, 0.08);
         color: var(--text-primary, currentColor);
-        background: transparent;
         font: inherit;
         font-size: 12px;
+        font-weight: 500;
         line-height: 1;
         cursor: pointer;
         white-space: nowrap;
         flex-shrink: 0;
+        transition: all 0.15s ease;
       }
-      .${IMAGE_DOWNLOAD_CLASS}:hover,
-      .${WORK_PACKAGE_CLASS}:hover,
-      .${TEXT_DOWNLOAD_CLASS}:hover {
-        background: var(--sidebar-surface-tertiary, rgba(0,0,0,.08));
+      .${IMAGE_DOWNLOAD_CLASS}:hover {
+        background: rgba(128, 128, 128, 0.16);
+        border-color: rgba(128, 128, 128, 0.45);
+      }
+      .${WORK_PACKAGE_CLASS} {
+        background: color-mix(in srgb, #2563eb 12%, transparent);
+        border-color: color-mix(in srgb, #2563eb 38%, transparent);
+        color: #3b82f6;
+      }
+      .${WORK_PACKAGE_CLASS}:hover {
+        background: color-mix(in srgb, #2563eb 22%, transparent);
+        border-color: #2563eb;
       }
       .${IMAGE_DOWNLOAD_CLASS}.cgpt-image-download-done {
         color: #16a34a;
-        background: color-mix(in srgb, #16a34a 9%, transparent);
-      }
-      .${WORK_PACKAGE_CLASS}.cgpt-work-package-called {
-        color: #2563eb;
-        background: color-mix(in srgb, #2563eb 9%, transparent);
+        border-color: color-mix(in srgb, #16a34a 38%, transparent);
+        background: color-mix(in srgb, #16a34a 12%, transparent);
       }
       .${WORK_PACKAGE_CLASS}.cgpt-work-package-done {
         color: #16a34a;
-        background: color-mix(in srgb, #16a34a 9%, transparent);
+        border-color: color-mix(in srgb, #16a34a 38%, transparent);
+        background: color-mix(in srgb, #16a34a 12%, transparent);
       }
       .${WORK_PACKAGE_CLASS}.cgpt-work-package-warning {
         color: #b45309;
-        background: color-mix(in srgb, #f59e0b 12%, transparent);
+        border-color: color-mix(in srgb, #f59e0b 38%, transparent);
+        background: color-mix(in srgb, #f59e0b 14%, transparent);
       }
-      .${WORK_PACKAGE_CLASS}[disabled] {
-        opacity: .78;
-        cursor: progress;
-      }
+      .${WORK_PACKAGE_CLASS}[disabled],
       .${IMAGE_DOWNLOAD_CLASS}[disabled] {
-        opacity: .58;
+        opacity: .65;
         cursor: progress;
       }
       .${IMAGE_DOWNLOAD_CLASS} svg,
-      .${WORK_PACKAGE_CLASS} svg,
+      .${WORK_PACKAGE_CLASS} svg {
+        width: 14px;
+        height: 14px;
+        flex: 0 0 14px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.65;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .${IMAGE_DOWNLOAD_CLASS} .cgpt-image-download-count,
+      .${IMAGE_DOWNLOAD_CLASS} .cgpt-image-download-status,
+      .${WORK_PACKAGE_CLASS} .cgpt-work-package-label {
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 1;
+        white-space: nowrap;
+      }
+      .${TEXT_DOWNLOAD_CLASS} {
+        position: relative;
+        min-width: 32px;
+        height: 32px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        border-radius: 8px;
+        color: var(--text-primary, currentColor);
+        background: transparent;
+        font: inherit;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .${TEXT_DOWNLOAD_CLASS}:hover {
+        background: var(--sidebar-surface-tertiary, rgba(0,0,0,.08));
+      }
       .${TEXT_DOWNLOAD_CLASS} svg {
         width: 16px;
         height: 16px;
@@ -1552,26 +1595,6 @@
         stroke-width: 1.65;
         stroke-linecap: round;
         stroke-linejoin: round;
-      }
-      .${IMAGE_DOWNLOAD_CLASS} .cgpt-image-download-count {
-        min-width: 26px;
-        font-size: 12px;
-        font-weight: 600;
-        line-height: 1;
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-      }
-      .${IMAGE_DOWNLOAD_CLASS} .cgpt-image-download-status {
-        white-space: nowrap;
-        font-size: 12px;
-        font-weight: 600;
-        line-height: 1;
-      }
-      .${WORK_PACKAGE_CLASS} .cgpt-work-package-label {
-        white-space: nowrap;
-        font-size: 12px;
-        font-weight: 600;
-        line-height: 1;
       }
       #${IMAGE_DOWNLOAD_TOAST_ID} {
         position: fixed;
@@ -2404,19 +2427,16 @@
   function isInsideComposerOrForm(element) {
     if (!element) return false;
     return Boolean(
-      element.closest?.('form, [class*="ComposerLayout"], #prompt-textarea, [data-testid*="composer"]')
+      element.closest?.('form, [class*="ComposerLayout"], [class*="AdaptiveFooter"], [class*="composer-body"], .ProseMirror, #prompt-textarea, [data-testid*="composer"]')
     );
   }
 
   function isImageOverlayRow(element) {
     if (!element) return false;
-    const abs = element.closest?.('div.absolute, div[class*="absolute"], div[class*="overlay"]');
-    if (abs) {
-      if (abs.querySelector?.('button[aria-label*="编辑"], button[aria-label*="Edit"]') || /编辑|edit/i.test(elementText(abs))) {
-        return true;
-      }
-    }
-    return false;
+    return Boolean(
+      element.closest?.('[class*="generated-image-preview"], [class*="group/gallery-action"], [class*="gallery-action"], [class*="group-hover/generated-image-preview"], [class*="group-focus-within/generated-image-preview"]')
+      || element.closest?.('div.absolute, div[class*="absolute"]')?.querySelector?.('button[aria-label*="编辑"], button[aria-label*="Edit"]')
+    );
   }
 
   function isOverlayInsideImage(element) {
@@ -2425,12 +2445,12 @@
 
   function isReasoningRow(element) {
     if (!element) return false;
-    if (element.closest?.('div.text-size-chat, [class*="text-secondary"], [data-testid*="reasoning"], [class*="reasoning"]')) {
-      const text = elementText(element);
-      if (/worked for|thought for|thinking|已思考|思考过程/i.test(text)) return true;
+    if (element.closest?.('div.text-size-chat, [class*="text-secondary"], [data-testid*="reasoning"], [class*="thought"]')) {
+      const text = element.innerText || elementText(element);
+      if (/思考了|思考过程|已思考|worked for|thought for|thinking/i.test(text)) return true;
     }
-    const text = elementText(element);
-    if (/^worked for|^thought for|^思考过程|^已思考/i.test(text)) return true;
+    const text = element.innerText || elementText(element);
+    if (/^思考了|^思考过程|^已思考|^worked for|^thought for/i.test(text)) return true;
     return false;
   }
 
@@ -2503,7 +2523,7 @@
   function rowInUserMessage(el) {
     if (!el) return false;
     return Boolean(
-      el.closest?.('.group\\/user-message, [class*="user-message"]')
+      el.closest?.('[class*="user-message"]')
       || el.closest?.('[data-chatgpt-search-unit-key*="user"]')
     );
   }
@@ -2512,11 +2532,10 @@
     const main = document.querySelector('main') || document.body;
     const toolbars = new Set();
 
-    // 1. 现代 ChatGPT 操作栏标准特征类快速匹配
     main.querySelectorAll('.turn-action-controls, [class*="actionRow"], [class*="turn-action"]').forEach((row) => {
       if (isInsideComposerOrForm(row) || isImageOverlayRow(row) || isReasoningRow(row)) return;
       if (row.closest('#history, nav, aside, [role="navigation"]')) return;
-      if (row.closest('.group\\/user-message, [class*="user-message"]') || row.closest('[data-chatgpt-search-unit-key*="user"]')) return;
+      if (row.closest('[class*="user-message"]') || row.closest('[data-chatgpt-search-unit-key*="user"]')) return;
       const buttons = [...row.querySelectorAll('button')].filter((b) => {
         return !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b);
       });
@@ -2526,64 +2545,13 @@
       }
     });
 
-    // 2. 兼容兜底：通过按钮向上回溯识别工具栏容器
-    const buttons = [...main.querySelectorAll('button')].filter((b) => {
-      if (isInsideComposerOrForm(b) || isImageOverlayRow(b) || isReasoningRow(b)) return false;
-      if (b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return false;
-      if (b.closest('#history, nav, aside, [role="navigation"]')) return false;
-      if (rowInUserMessage(b)) return false;
-      return isElementVisible(b);
-    });
-
-    buttons.forEach((btn) => {
-      let row = btn.parentElement;
-      for (let depth = 0; row && depth < 4; depth += 1, row = row.parentElement) {
-        if (isInsideComposerOrForm(row) || isImageOverlayRow(row) || isReasoningRow(row)) break;
-        if (rowInUserMessage(row)) break;
-        if (row.matches?.('main, body, form, article, [data-testid^="conversation-turn"]')) break;
-
-        const rowButtons = [...row.querySelectorAll('button')].filter((b) => {
-          return !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`);
-        });
-
-        if (rowButtons.length === 1 && row.parentElement) {
-          const parentButtons = [...row.parentElement.querySelectorAll('button')].filter((b) => {
-            return !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`);
-          });
-          if (parentButtons.length > 1 && !row.parentElement.matches('article, [data-testid^="conversation-turn"]')) {
-            continue;
-          }
-        }
-
-        if (rowButtons.length >= 1 && rowButtons.length <= 10) {
-          const hasBigImg = [...row.querySelectorAll('img')].some((img) => {
-            const r = img.getBoundingClientRect?.();
-            return r && (r.width > 55 || r.height > 55);
-          });
-          if (hasBigImg) continue;
-
-          const hasActionIcon = rowButtons.some((b) => {
-            if (isCopyButton(b) || isEllipsisButton(b)) return true;
-            const t = elementText(b);
-            if (/\u590d\u5236|copy|\u66f4\u591a|more|\u9009\u9879|options|\u8d5e|\u8e29|\u5206\u4eab|share|\u6717\u8bfb|\u559c\u6b22|\u56fe\u50cf/i.test(t)) return true;
-            return false;
-          });
-
-          if (hasActionIcon) {
-            toolbars.add(row);
-            break;
-          }
-        }
-      }
-    });
-
     return [...toolbars];
   }
 
   function findImagesForToolbar(toolbar) {
     if (!toolbar) return [];
     if (isInsideComposerOrForm(toolbar) || isImageOverlayRow(toolbar)) return [];
-    if (toolbar.closest('.group\\/user-message, [class*="user-message"]') || toolbar.closest('[data-chatgpt-search-unit-key*="user"]')) return [];
+    if (toolbar.closest('[class*="user-message"]') || toolbar.closest('[data-chatgpt-search-unit-key*="user"]')) return [];
 
     // 1. 定位所属的消息/回合容器
     const turn = toolbar.closest?.(
@@ -2591,7 +2559,7 @@
     ) || toolbar.closest?.('main > div > div > div, main div[class*="react-scroll-to-bottom"] > div > div') || toolbar.parentElement;
 
     if (turn) {
-      const isUser = turn.matches?.('.group\\/user-message, [class*="user-message"]')
+      const isUser = turn.matches?.('[class*="user-message"]')
         || (turn.getAttribute?.('data-message-author-role') === 'user')
         || (turn.getAttribute?.('data-chatgpt-search-unit-key')?.endsWith(':user'));
       if (!isUser) {
@@ -2603,7 +2571,7 @@
     // 2. 如果 toolbar 与图片内容为兄弟节点结构，向前查找前驱兄弟节点
     let prev = toolbar.previousElementSibling;
     for (let count = 0; prev && count < 4; count += 1, prev = prev.previousElementSibling) {
-      if (prev.matches?.('.group\\/user-message, [class*="user-message"]') || prev.querySelector?.('.group\\/user-message')) break;
+      if (prev.matches?.('[class*="user-message"]') || prev.querySelector?.('[class*="user-message"]')) break;
       const imgs = broadImageElements(prev, 24);
       if (imgs.length) return imgs;
     }
@@ -2844,12 +2812,14 @@
     if (!button) return {};
     let status = button.querySelector('[data-cgpt-image-download-status]');
     let count = button.querySelector('[data-cgpt-image-download-label]');
-    if (!status || !count) {
-      button.innerHTML = `${icons.download}<span class="cgpt-image-download-status" data-cgpt-image-download-status hidden></span><span class="cgpt-image-download-count" data-cgpt-image-download-label hidden></span>`;
+    let label = button.querySelector('.cgpt-image-download-btn-text');
+    if (!status || !count || !label) {
+      button.innerHTML = `${icons.download}<span class="cgpt-image-download-btn-text">默认下载</span><span class="cgpt-image-download-count" data-cgpt-image-download-label hidden></span><span class="cgpt-image-download-status" data-cgpt-image-download-status hidden></span>`;
       status = button.querySelector('[data-cgpt-image-download-status]');
       count = button.querySelector('[data-cgpt-image-download-label]');
+      label = button.querySelector('.cgpt-image-download-btn-text');
     }
-    return { status, count };
+    return { status, count, label };
   }
 
   function imageUrlForDirectDownload(img) {
@@ -2906,7 +2876,7 @@
   }
 
   function setImageButtonProgress(button, downloaded, total, busy = false, forcedState = '') {
-    const { status, count } = ensureImageButtonLabels(button);
+    const { status, count, label } = ensureImageButtonLabels(button);
     if (!button || !status || !count) return;
     const safeTotal = Math.max(0, Number(total || 0));
     const safeDownloaded = Math.max(0, Math.min(safeTotal || Number(downloaded || 0), Number(downloaded || 0)));
@@ -2914,19 +2884,29 @@
     if (safeTotal) button.dataset.cgptImageTotal = String(safeTotal);
     const complete = safeTotal > 0 && safeDownloaded >= safeTotal;
     const state = forcedState || (busy ? 'running' : (complete ? 'done' : 'idle'));
-    const statusText = imageButtonStatusText(state);
-    const countText = imageButtonLabel(safeTotal, safeDownloaded);
-    button.dataset.cgptBusyText = busy ? statusText : '';
-    status.hidden = !statusText;
-    status.textContent = statusText;
-    count.hidden = !countText;
-    count.textContent = countText;
-    button.classList.toggle('cgpt-image-download-done', complete && !busy);
-    if (safeTotal) {
-      button.title = complete
-        ? `已下载 ${safeDownloaded}/${safeTotal} 张图片；再次点击可重新下载`
-        : `已下载 ${safeDownloaded}/${safeTotal} 张图片；点击可下载本组图片`;
+    
+    if (label) label.textContent = '默认下载';
+
+    if (state === 'running') {
+      status.hidden = false;
+      status.textContent = `${safeDownloaded}/${safeTotal}`;
+      count.hidden = true;
+    } else if (state === 'done') {
+      status.hidden = false;
+      status.textContent = '已保存';
+      count.hidden = true;
+    } else {
+      status.hidden = true;
+      if (safeTotal > 0) {
+        count.hidden = false;
+        count.textContent = `(${safeTotal})`;
+      } else {
+        count.hidden = true;
+      }
     }
+    button.classList.toggle('cgpt-image-download-done', complete && !busy);
+    button.title = '默认下载：下载图片并生成文案TXT与元数据到电脑默认下载目录（C:\\Users\\...\\Downloads）';
+    button.setAttribute('aria-label', `默认下载${safeTotal ? ' (' + safeTotal + ')' : ''}`);
   }
 
   function newDownloadBatchId() {
@@ -3490,16 +3470,47 @@
     };
   }
 
-  function triggerImageDownloadButton(button, event = null) {
+  async function triggerImageDownloadButton(button, event = null) {
     if (!button || button.disabled) return;
     event?.preventDefault?.();
     event?.stopPropagation?.();
     event?.stopImmediatePropagation?.();
-    logImageDownloadStep('外部按钮点击', {
+    logImageDownloadStep('外部按钮点击[默认下载]', {
       title: button.title,
       count: button.dataset.cgptImageCount,
     });
-    runImageDownloadShortcut(button);
+
+    // 1. 下载本组图片
+    const dlResult = await runImageDownloadShortcut(button);
+
+    // 2. 提取当前文案与生成元数据，直接导出到默认下载目录
+    try {
+      const container = button.__cgptImageDownloadContainer || button.closest('article, [data-turn-key], .group') || document;
+      const copyText = extractCopyTextForWorkPackage(button) || elementText(container);
+      const title = extractTitleFromCopyText(copyText) || '作品';
+      const count = Number(button.dataset.cgptImageTotal || button.dataset.cgptImageCount || 0);
+
+      if (copyText) {
+        downloadBlobFallback(new Blob([copyText], { type: 'text/plain;charset=utf-8' }), `${title}_文案.txt`);
+      }
+      
+      const manifest = {
+        version: 1,
+        title: title,
+        category: '本地默认下载',
+        imageCount: count,
+        createdAt: new Date().toISOString()
+      };
+      downloadBlobFallback(new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json;charset=utf-8' }), `${title}_manifest.json`);
+
+      // 3. 唤醒本地整理协议（若本地助手就绪，自动整理入 Downloads）
+      const batchId = button.dataset.cgptWorkPackageBatchId || newDownloadBatchId();
+      openWorkPackageProtocol(`${WORK_PACKAGE_PROTOCOL_URL}?target=default&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(count)}`);
+    } catch (err) {
+      console.warn('默认下载生成元数据失败:', err);
+    }
+
+    showImageDownloadToast('默认下载触发：图片、文案与元数据已保存到默认下载目录', true);
   }
 
   function setWorkPackageButtonState(button, state = 'idle', detail = {}) {
@@ -3525,15 +3536,15 @@
     }
     if (state === 'packaging') {
       button.classList.add('cgpt-work-package-called');
-      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">打包中</span>`;
-      button.title = '图片已下载，正在调用本地作品助手打包';
-      button.setAttribute('aria-label', '正在打包作品文件夹');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">打包入库中</span>`;
+      button.title = '图片已下载，正在归档到成品库（A手动制作）';
+      button.setAttribute('aria-label', '正在打包归档到成品库');
       return;
     }
     if (state === 'needs-text') {
       button.classList.add('cgpt-work-package-warning');
       button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">请先复制文案</span>`;
-      button.title = '请先复制当前窗口的小红书文案，再点击下载并打包';
+      button.title = '请先复制当前窗口的小红书文案，再点击下载到成品库';
       button.setAttribute('aria-label', '请先复制文案');
       return;
     }
@@ -3541,14 +3552,14 @@
       button.classList.add('cgpt-work-package-done');
       const total = Math.max(0, Number(detail.total || 0));
       const suffix = total ? ` ${total}/${total}` : '';
-      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">完成${suffix}</span>`;
-      button.title = total ? `下载并打包完成：${total}/${total} 张` : '下载并打包完成';
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">已入成品库${suffix}</span>`;
+      button.title = total ? `已保存至 成品库\\A手动制作：${total}/${total} 张` : '已保存至 成品库\\A手动制作';
       button.setAttribute('aria-label', button.title);
       return;
     }
-    button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">下载并打包</span>`;
-    button.title = '下载本组全部图片，并打包成作品文件夹';
-    button.setAttribute('aria-label', '下载本组图片并打包成文件夹');
+    button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">下载到成品库</span>`;
+    button.title = '下载本组全部图片，并打包归档到 成品库 \\ A手动制作';
+    button.setAttribute('aria-label', '下载到成品库');
   }
 
   async function triggerWorkPackageButton(button, event = null) {
@@ -3600,7 +3611,7 @@
     setWorkPackageButtonState(button, 'packaging');
     showImageDownloadToast('图片下载完成，正在打包成文件夹...', true);
     try {
-      const protocolUrl = `${WORK_PACKAGE_PROTOCOL_URL}?batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}`;
+      const protocolUrl = `${WORK_PACKAGE_PROTOCOL_URL}?target=library&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}`;
       openWorkPackageProtocol(protocolUrl);
     } catch (error) {
       console.warn('[ChatGPT 作品包按钮] 调用本地协议失败：', error);
@@ -3610,7 +3621,7 @@
     }
     window.setTimeout(() => {
       setWorkPackageButtonState(button, 'done', { total: expectedImages });
-      showImageDownloadToast('打包完成', true);
+      showImageDownloadToast('已保存至：成品库 \\ A手动制作', true);
     }, 3600);
   }
 
@@ -3659,12 +3670,12 @@
         packageButton = document.createElement('button');
         packageButton.type = 'button';
         packageButton.className = WORK_PACKAGE_CLASS;
-        setWorkPackageButtonState(packageButton, 'idle');
         packageButton.addEventListener('click', (event) => {
           triggerWorkPackageButton(packageButton, event);
         }, true);
         slot.append(packageButton);
       }
+      setWorkPackageButtonState(packageButton, packageButton.dataset.cgptWorkPackageState || 'idle');
       packageButton.hidden = false;
     } else if (packageButton) {
       packageButton.hidden = true;
