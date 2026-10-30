@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.8
+// @version      1.22.10
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.8';
+  const SCRIPT_VERSION = '1.22.9';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2404,7 +2404,7 @@
   function isInsideComposerOrForm(element) {
     if (!element) return false;
     return Boolean(
-      element.closest?.('form, [data-testid*="composer"], #prompt-textarea, [class*="composer"]')
+      element.closest?.('form, [class*="ComposerLayout"], #prompt-textarea, [data-testid*="composer"]')
     );
   }
 
@@ -2416,6 +2416,21 @@
         return true;
       }
     }
+    return false;
+  }
+
+  function isOverlayInsideImage(element) {
+    return isImageOverlayRow(element);
+  }
+
+  function isReasoningRow(element) {
+    if (!element) return false;
+    if (element.closest?.('div.text-size-chat, [class*="text-secondary"], [data-testid*="reasoning"], [class*="reasoning"]')) {
+      const text = elementText(element);
+      if (/worked for|thought for|thinking|已思考|思考过程/i.test(text)) return true;
+    }
+    const text = elementText(element);
+    if (/^worked for|^thought for|^思考过程|^已思考/i.test(text)) return true;
     return false;
   }
 
@@ -2450,6 +2465,8 @@
     if (svg.querySelectorAll('circle').length >= 2) return true;
     const d = svg.querySelector('path')?.getAttribute('d') || '';
     if ((d.match(/[Mm]/g) || []).length >= 3) return true;
+    const use = svg.querySelector('use')?.getAttribute('href') || svg.querySelector('use')?.getAttribute('xlink:href') || '';
+    if (/ellipsis|more|dots/i.test(use)) return true;
     return false;
   }
 
@@ -2465,40 +2482,64 @@
     return nativeButtons[nativeButtons.length - 1];
   }
 
+  function findEllipsisInRow(row) {
+    return findEllipsisAnchorInToolbar(row);
+  }
+
   function mountDownloadSlot(toolbar, anchor, slot) {
     if (!toolbar || !slot) return;
-    if (anchor && toolbar.contains(anchor)) {
-      let mountNode = anchor;
-      if (anchor.parentElement !== toolbar && anchor.parentElement?.parentElement === toolbar) {
-        mountNode = anchor.parentElement;
+    if (anchor && anchor.isConnected) {
+      if (anchor.nextElementSibling !== slot) {
+        anchor.after(slot);
       }
-      if (mountNode.parentElement === toolbar) {
-        if (mountNode.nextElementSibling !== slot) {
-          mountNode.after(slot);
-        }
-        return;
-      }
+      return;
     }
-    if (slot.parentElement !== toolbar) {
-      toolbar.append(slot);
+    const btnContainer = toolbar.querySelector('.flex.items-center, div') || toolbar;
+    if (slot.parentElement !== btnContainer) {
+      btnContainer.append(slot);
     }
+  }
+
+  function rowInUserMessage(el) {
+    if (!el) return false;
+    return Boolean(
+      el.closest?.('.group\\/user-message, [class*="user-message"]')
+      || el.closest?.('[data-chatgpt-search-unit-key*="user"]')
+    );
   }
 
   function findActionToolbars() {
     const main = document.querySelector('main') || document.body;
     const toolbars = new Set();
 
+    // 1. 现代 ChatGPT 操作栏标准特征类快速匹配
+    main.querySelectorAll('.turn-action-controls, [class*="actionRow"], [class*="turn-action"]').forEach((row) => {
+      if (isInsideComposerOrForm(row) || isImageOverlayRow(row) || isReasoningRow(row)) return;
+      if (row.closest('#history, nav, aside, [role="navigation"]')) return;
+      if (row.closest('.group\\/user-message, [class*="user-message"]') || row.closest('[data-chatgpt-search-unit-key*="user"]')) return;
+      const buttons = [...row.querySelectorAll('button')].filter((b) => {
+        return !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isElementVisible(b);
+      });
+      const hasAction = buttons.some((b) => isCopyButton(b) || isEllipsisButton(b) || /\u590d\u5236|copy|\u66f4\u591a|more|\u9009\u9879|options|\u8d5e|\u8e29|\u5206\u4eab|share|\u6717\u8bfb|\u559c\u6b22|\u56fe\u50cf/i.test(elementText(b)));
+      if (hasAction) {
+        toolbars.add(row);
+      }
+    });
+
+    // 2. 兼容兜底：通过按钮向上回溯识别工具栏容器
     const buttons = [...main.querySelectorAll('button')].filter((b) => {
-      if (isInsideComposerOrForm(b) || isImageOverlayRow(b)) return false;
+      if (isInsideComposerOrForm(b) || isImageOverlayRow(b) || isReasoningRow(b)) return false;
       if (b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return false;
       if (b.closest('#history, nav, aside, [role="navigation"]')) return false;
+      if (rowInUserMessage(b)) return false;
       return isElementVisible(b);
     });
 
     buttons.forEach((btn) => {
       let row = btn.parentElement;
       for (let depth = 0; row && depth < 4; depth += 1, row = row.parentElement) {
-        if (isInsideComposerOrForm(row) || isImageOverlayRow(row)) break;
+        if (isInsideComposerOrForm(row) || isImageOverlayRow(row) || isReasoningRow(row)) break;
+        if (rowInUserMessage(row)) break;
         if (row.matches?.('main, body, form, article, [data-testid^="conversation-turn"]')) break;
 
         const rowButtons = [...row.querySelectorAll('button')].filter((b) => {
@@ -2514,7 +2555,7 @@
           }
         }
 
-        if (rowButtons.length >= 1 && rowButtons.length <= 8) {
+        if (rowButtons.length >= 1 && rowButtons.length <= 10) {
           const hasBigImg = [...row.querySelectorAll('img')].some((img) => {
             const r = img.getBoundingClientRect?.();
             return r && (r.width > 55 || r.height > 55);
@@ -2522,9 +2563,9 @@
           if (hasBigImg) continue;
 
           const hasActionIcon = rowButtons.some((b) => {
+            if (isCopyButton(b) || isEllipsisButton(b)) return true;
             const t = elementText(b);
-            if (/\u590d\u5236|copy|\u66f4\u591a|more|\u9009\u9879|options|\u8d5e|\u8e29|\u5206\u4eab|share|\u6717\u8bfb/i.test(t)) return true;
-            if (b.querySelector('svg')) return true;
+            if (/\u590d\u5236|copy|\u66f4\u591a|more|\u9009\u9879|options|\u8d5e|\u8e29|\u5206\u4eab|share|\u6717\u8bfb|\u559c\u6b22|\u56fe\u50cf/i.test(t)) return true;
             return false;
           });
 
@@ -2541,31 +2582,30 @@
 
   function findImagesForToolbar(toolbar) {
     if (!toolbar) return [];
+    if (isInsideComposerOrForm(toolbar) || isImageOverlayRow(toolbar)) return [];
+    if (toolbar.closest('.group\\/user-message, [class*="user-message"]') || toolbar.closest('[data-chatgpt-search-unit-key*="user"]')) return [];
 
-    const turn = toolbar.closest?.('article, [data-testid^="conversation-turn"], [data-message-author-role="assistant"]')
-      || toolbar.closest?.('main > div > div > div, main div[class*="react-scroll-to-bottom"] > div > div');
+    // 1. 定位所属的消息/回合容器
+    const turn = toolbar.closest?.(
+      '.group, [data-turn-key], [data-chatgpt-search-unit-key], article, [data-testid^="conversation-turn"], [data-message-author-role="assistant"], [class*="agent-turn"]'
+    ) || toolbar.closest?.('main > div > div > div, main div[class*="react-scroll-to-bottom"] > div > div') || toolbar.parentElement;
 
     if (turn) {
-      const role = turn.getAttribute?.('data-message-author-role')
-        || turn.querySelector?.('[data-message-author-role]')?.getAttribute?.('data-message-author-role');
-      if (role && role === 'user') return [];
-
-      const imgs = broadImageElements(turn, 24);
-      if (imgs.length) return imgs;
+      const isUser = turn.matches?.('.group\\/user-message, [class*="user-message"]')
+        || (turn.getAttribute?.('data-message-author-role') === 'user')
+        || (turn.getAttribute?.('data-chatgpt-search-unit-key')?.endsWith(':user'));
+      if (!isUser) {
+        const imgs = broadImageElements(turn, 24);
+        if (imgs.length) return imgs;
+      }
     }
 
-    let ancestor = toolbar.parentElement;
-    for (let depth = 0; ancestor && depth < 6; depth += 1, ancestor = ancestor.parentElement) {
-      if (ancestor.matches?.('main, body, form')) break;
-      const imgs = broadImageElements(ancestor, 24);
-      if (imgs.length) return imgs;
-    }
-
-    let prev = toolbar.previousElementSibling || toolbar.parentElement?.previousElementSibling;
-    while (prev) {
+    // 2. 如果 toolbar 与图片内容为兄弟节点结构，向前查找前驱兄弟节点
+    let prev = toolbar.previousElementSibling;
+    for (let count = 0; prev && count < 4; count += 1, prev = prev.previousElementSibling) {
+      if (prev.matches?.('.group\\/user-message, [class*="user-message"]') || prev.querySelector?.('.group\\/user-message')) break;
       const imgs = broadImageElements(prev, 24);
       if (imgs.length) return imgs;
-      prev = prev.previousElementSibling;
     }
 
     return [];
@@ -2590,25 +2630,25 @@
   function findActionRowAndAnchorForTurn(turn) {
     if (!turn) return null;
     if (isInsideComposerOrForm(turn)) return null;
-    const canonicalTurn = turn.closest?.('article, [data-testid^="conversation-turn"]') || turn;
+    const canonicalTurn = turn.closest?.('article, [data-testid^="conversation-turn"], [data-turn-key], [data-chatgpt-search-unit-key], .group') || turn;
 
     // 1. 在 canonicalTurn 内部查找标准工具栏（排除输入框与大图浮层）
     const buttons = [...canonicalTurn.querySelectorAll('button')]
-      .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && !isInsideComposerOrForm(b) && !isOverlayInsideImage(b) && isElementVisible(b));
+      .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && !isInsideComposerOrForm(b) && !isImageOverlayRow(b) && isElementVisible(b));
 
     const copyBtn = buttons.find((b) => isCopyButton(b));
     if (copyBtn) {
-      const row = copyBtn.closest?.('div[class*="flex"], div[class*="items-center"]') || copyBtn.parentElement;
-      if (row && !isInsideComposerOrForm(row) && !isOverlayInsideImage(row)) {
-        const anchor = findEllipsisInRow(row);
+      const row = copyBtn.closest?.('div[class*="flex"], div[class*="items-center"], .turn-action-controls, [class*="actionRow"]') || copyBtn.parentElement;
+      if (row && !isInsideComposerOrForm(row) && !isImageOverlayRow(row)) {
+        const anchor = findEllipsisAnchorInToolbar(row);
         return { actionRow: row, anchor };
       }
     }
 
     const ellipsisBtn = buttons.find((b) => isEllipsisButton(b));
     if (ellipsisBtn) {
-      const row = ellipsisBtn.closest?.('div[class*="flex"], div[class*="items-center"]') || ellipsisBtn.parentElement;
-      if (row && !isInsideComposerOrForm(row) && !isOverlayInsideImage(row)) {
+      const row = ellipsisBtn.closest?.('div[class*="flex"], div[class*="items-center"], .turn-action-controls, [class*="actionRow"]') || ellipsisBtn.parentElement;
+      if (row && !isInsideComposerOrForm(row) && !isImageOverlayRow(row)) {
         return { actionRow: row, anchor: ellipsisBtn };
       }
     }
@@ -2617,19 +2657,19 @@
     let sib = canonicalTurn.nextElementSibling;
     while (sib && !isInsideComposerOrForm(sib)) {
       const sibButtons = [...sib.querySelectorAll('button')]
-        .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && !isInsideComposerOrForm(b) && !isOverlayInsideImage(b) && isElementVisible(b));
+        .filter((b) => !b.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && !isInsideComposerOrForm(b) && !isImageOverlayRow(b) && isElementVisible(b));
       const sibCopy = sibButtons.find((b) => isCopyButton(b));
       if (sibCopy) {
-        const row = sibCopy.closest?.('div[class*="flex"], div[class*="items-center"]') || sibCopy.parentElement;
-        if (row && !isInsideComposerOrForm(row) && !isOverlayInsideImage(row)) {
-          const anchor = findEllipsisInRow(row);
+        const row = sibCopy.closest?.('div[class*="flex"], div[class*="items-center"], .turn-action-controls, [class*="actionRow"]') || sibCopy.parentElement;
+        if (row && !isInsideComposerOrForm(row) && !isImageOverlayRow(row)) {
+          const anchor = findEllipsisAnchorInToolbar(row);
           return { actionRow: row, anchor };
         }
       }
       const sibEllipsis = sibButtons.find((b) => isEllipsisButton(b));
       if (sibEllipsis) {
-        const row = sibEllipsis.closest?.('div[class*="flex"], div[class*="items-center"]') || sibEllipsis.parentElement;
-        if (row && !isInsideComposerOrForm(row) && !isOverlayInsideImage(row)) {
+        const row = sibEllipsis.closest?.('div[class*="flex"], div[class*="items-center"], .turn-action-controls, [class*="actionRow"]') || sibEllipsis.parentElement;
+        if (row && !isInsideComposerOrForm(row) && !isImageOverlayRow(row)) {
           return { actionRow: row, anchor: sibEllipsis };
         }
       }
@@ -2638,8 +2678,8 @@
 
     // 3. 通用动作行降级（严格排除 composer 和 stage）
     const fallbackRow = findImageActionRow(canonicalTurn);
-    if (fallbackRow && !isInsideComposerOrForm(fallbackRow) && !isOverlayInsideImage(fallbackRow)) {
-      const anchor = findEllipsisInRow(fallbackRow);
+    if (fallbackRow && !isInsideComposerOrForm(fallbackRow) && !isImageOverlayRow(fallbackRow)) {
+      const anchor = findEllipsisAnchorInToolbar(fallbackRow);
       return { actionRow: fallbackRow, anchor };
     }
     return null;
@@ -2710,7 +2750,9 @@
     // 严格禁止注入到底部输入框、表单、Composer 区域！
     if (isInsideComposerOrForm(row)) return false;
     // 严格禁止注入到大图内部浮层、图片展示舞台本身！
-    if (isOverlayInsideImage(row)) return false;
+    if (isImageOverlayRow(row)) return false;
+    // 严格禁止注入到思考折叠条！
+    if (isReasoningRow(row)) return false;
     // 排除大图内容区本身被误当作操作栏
     const bigImg = [...row.querySelectorAll('img')].find((img) => {
       if (img.closest?.(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)) return false;
@@ -3574,7 +3616,7 @@
 
   function ensureImageDownloadButton(container, images, preferredActionRow = null, preferredAnchor = null) {
     const actionRow = preferredActionRow || findActionRowForImage(container) || findImageActionRow(container);
-    if (!actionRow || isInsideComposerOrForm(actionRow) || isImageOverlayRow(actionRow)) {
+    if (!actionRow || isInsideComposerOrForm(actionRow) || isImageOverlayRow(actionRow) || isReasoningRow(actionRow)) {
       return null;
     }
 
@@ -3643,9 +3685,9 @@
     const validSlots = new Set();
     const handledRows = new Set();
 
-    // 0. 清除一切误注入到输入框、表单或大图内部浮层的历史插槽
+    // 0. 清除一切误注入到输入框、表单、大图内部浮层或思考折叠栏的历史插槽
     document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((slot) => {
-      if (isInsideComposerOrForm(slot) || isImageOverlayRow(slot)) {
+      if (isInsideComposerOrForm(slot) || isImageOverlayRow(slot) || isReasoningRow(slot.parentElement)) {
         slot.remove();
       }
     });
@@ -3679,7 +3721,7 @@
 
     // 2. 清理多余或失效的插槽
     document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((slot) => {
-      if (!validSlots.has(slot) || isInsideComposerOrForm(slot) || isImageOverlayRow(slot)) {
+      if (!validSlots.has(slot) || isInsideComposerOrForm(slot) || isImageOverlayRow(slot) || isReasoningRow(slot.parentElement)) {
         slot.remove();
         return;
       }
