@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.13
+// @version      1.22.14
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -116,9 +116,11 @@
   const FS_SINK_MAX_BYTES = 40 * 1024 * 1024;
 
   // 图标
+  // 图标（标准高清矢量设计：带 viewBox、width/height、stroke-width 与 cgpt-btn-icon 类，杜绝变形与字图重叠）
   const icons = {
-    download: '<svg viewBox="0 0 18 18"><path d="M9 3v8"/><path d="m5.5 8 3.5 3.5L12.5 8"/><path d="M4 14.5h10"/></svg>',
-    package: '<svg viewBox="0 0 18 18"><path d="M3 6.2 9 3l6 3.2v6.4L9 16l-6-3.4z"/><path d="M3 6.2 9 9.4l6-3.2M9 9.4V16"/><path d="M7.2 5.1 13 8.2"/><path d="M5.2 11.1h3.1M6.8 9.5l1.6 1.6-1.6 1.6"/></svg>',
+    download: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cgpt-btn-icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+    package: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="cgpt-btn-icon"><path d="m16.5 9.4 4.5-2.8L12 2 3 6.6l4.5 2.8"/><path d="M3 7.6v8.8l9 5.2 9-5.2V7.6"/><path d="M12 12v9.6"/><path d="m7.5 4.5 9 5.2"/></svg>',
+    check: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="cgpt-btn-icon"><polyline points="20 6 9 17 4 12"/></svg>',
   };
 
   // 运行期状态
@@ -1468,105 +1470,128 @@
       }
 
       .${IMAGE_DOWNLOAD_SLOT_CLASS} {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        margin-inline-start: 8px;
-        vertical-align: middle;
-        white-space: nowrap;
-        flex-shrink: 0;
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 8px !important;
+        margin-inline-start: 8px !important;
+        vertical-align: middle !important;
+        white-space: nowrap !important;
+        flex-shrink: 0 !important;
+        width: auto !important;
+        max-width: none !important;
       }
       .${IMAGE_DOWNLOAD_SLOT_CLASS}.cgpt-image-download-fallback {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        margin: 8px 0 4px;
-        padding: 3px 6px;
-        background: var(--sidebar-surface-secondary, rgba(128, 128, 128, 0.08));
-        border: 1px solid var(--border-light, rgba(128, 128, 128, 0.16));
-        border-radius: 12px;
-        width: fit-content;
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 8px !important;
+        margin: 8px 0 4px !important;
+        padding: 4px 8px !important;
+        background: var(--sidebar-surface-secondary, rgba(128, 128, 128, 0.08)) !important;
+        border: 1px solid var(--border-light, rgba(128, 128, 128, 0.16)) !important;
+        border-radius: 12px !important;
+        width: fit-content !important;
       }
       .${TEXT_DOWNLOAD_SLOT_CLASS} {
-        display: inline-flex;
-        align-items: center;
-        margin-inline-start: 4px;
-        vertical-align: middle;
+        display: inline-flex !important;
+        align-items: center !important;
+        margin-inline-start: 4px !important;
+        vertical-align: middle !important;
       }
       .${IMAGE_DOWNLOAD_CLASS},
       .${WORK_PACKAGE_CLASS} {
-        position: relative;
-        height: 28px;
-        min-height: 28px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 5px;
-        padding: 0 10px;
-        border-radius: 9999px;
-        border: 1px solid rgba(128, 128, 128, 0.22);
-        background: rgba(128, 128, 128, 0.08);
-        color: var(--text-primary, currentColor);
-        font: inherit;
-        font-size: 12px;
-        font-weight: 500;
-        line-height: 1;
-        cursor: pointer;
-        white-space: nowrap;
-        flex-shrink: 0;
-        transition: all 0.15s ease;
+        all: unset !important;
+        box-sizing: border-box !important;
+        position: relative !important;
+        height: 28px !important;
+        min-height: 28px !important;
+        max-height: 28px !important;
+        width: auto !important;
+        min-width: max-content !important;
+        max-width: none !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 5px !important;
+        padding: 0 12px !important;
+        border-radius: 9999px !important;
+        border: 1px solid rgba(128, 128, 128, 0.28) !important;
+        background: rgba(128, 128, 128, 0.08) !important;
+        color: var(--text-primary, currentColor) !important;
+        font-family: inherit !important;
+        font-size: 12px !important;
+        font-weight: 500 !important;
+        line-height: 1 !important;
+        cursor: pointer !important;
+        white-space: nowrap !important;
+        flex-shrink: 0 !important;
+        overflow: visible !important;
+        user-select: none !important;
+        transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease !important;
       }
       .${IMAGE_DOWNLOAD_CLASS}:hover {
-        background: rgba(128, 128, 128, 0.16);
-        border-color: rgba(128, 128, 128, 0.45);
+        background: rgba(128, 128, 128, 0.16) !important;
+        border-color: rgba(128, 128, 128, 0.45) !important;
       }
       .${WORK_PACKAGE_CLASS} {
-        background: color-mix(in srgb, #2563eb 12%, transparent);
-        border-color: color-mix(in srgb, #2563eb 38%, transparent);
-        color: #3b82f6;
+        background: color-mix(in srgb, #2563eb 12%, transparent) !important;
+        border-color: color-mix(in srgb, #2563eb 42%, transparent) !important;
+        color: #3b82f6 !important;
       }
       .${WORK_PACKAGE_CLASS}:hover {
-        background: color-mix(in srgb, #2563eb 22%, transparent);
-        border-color: #2563eb;
+        background: color-mix(in srgb, #2563eb 22%, transparent) !important;
+        border-color: #2563eb !important;
       }
       .${IMAGE_DOWNLOAD_CLASS}.cgpt-image-download-done {
-        color: #16a34a;
-        border-color: color-mix(in srgb, #16a34a 38%, transparent);
-        background: color-mix(in srgb, #16a34a 12%, transparent);
+        color: #16a34a !important;
+        border-color: color-mix(in srgb, #16a34a 38%, transparent) !important;
+        background: color-mix(in srgb, #16a34a 12%, transparent) !important;
       }
       .${WORK_PACKAGE_CLASS}.cgpt-work-package-done {
-        color: #16a34a;
-        border-color: color-mix(in srgb, #16a34a 38%, transparent);
-        background: color-mix(in srgb, #16a34a 12%, transparent);
+        color: #16a34a !important;
+        border-color: color-mix(in srgb, #16a34a 38%, transparent) !important;
+        background: color-mix(in srgb, #16a34a 12%, transparent) !important;
       }
       .${WORK_PACKAGE_CLASS}.cgpt-work-package-warning {
-        color: #b45309;
-        border-color: color-mix(in srgb, #f59e0b 38%, transparent);
-        background: color-mix(in srgb, #f59e0b 14%, transparent);
+        color: #b45309 !important;
+        border-color: color-mix(in srgb, #f59e0b 38%, transparent) !important;
+        background: color-mix(in srgb, #f59e0b 14%, transparent) !important;
       }
       .${WORK_PACKAGE_CLASS}[disabled],
       .${IMAGE_DOWNLOAD_CLASS}[disabled] {
-        opacity: .65;
-        cursor: progress;
+        opacity: .65 !important;
+        cursor: progress !important;
       }
       .${IMAGE_DOWNLOAD_CLASS} svg,
-      .${WORK_PACKAGE_CLASS} svg {
-        width: 14px;
-        height: 14px;
-        flex: 0 0 14px;
-        fill: none;
-        stroke: currentColor;
-        stroke-width: 1.65;
-        stroke-linecap: round;
-        stroke-linejoin: round;
+      .${WORK_PACKAGE_CLASS} svg,
+      .${IMAGE_DOWNLOAD_CLASS} .cgpt-btn-icon,
+      .${WORK_PACKAGE_CLASS} .cgpt-btn-icon {
+        width: 14px !important;
+        height: 14px !important;
+        min-width: 14px !important;
+        min-height: 14px !important;
+        max-width: 14px !important;
+        max-height: 14px !important;
+        flex: 0 0 14px !important;
+        display: inline-block !important;
+        vertical-align: middle !important;
+        stroke: currentColor !important;
+        stroke-width: 2 !important;
+        fill: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
       }
+      .${IMAGE_DOWNLOAD_CLASS} span,
+      .${WORK_PACKAGE_CLASS} span,
+      .${IMAGE_DOWNLOAD_CLASS} .cgpt-image-download-btn-text,
       .${IMAGE_DOWNLOAD_CLASS} .cgpt-image-download-count,
       .${IMAGE_DOWNLOAD_CLASS} .cgpt-image-download-status,
       .${WORK_PACKAGE_CLASS} .cgpt-work-package-label {
-        font-size: 12px;
-        font-weight: 500;
-        line-height: 1;
-        white-space: nowrap;
+        font-size: 12px !important;
+        font-weight: 500 !important;
+        line-height: 1 !important;
+        white-space: nowrap !important;
+        display: inline-block !important;
+        vertical-align: middle !important;
       }
       .${TEXT_DOWNLOAD_CLASS} {
         position: relative;
@@ -2525,8 +2550,11 @@
   function mountDownloadSlot(toolbar, anchor, slot) {
     if (!toolbar || !slot) return;
     if (anchor && anchor.isConnected) {
-      if (anchor.nextElementSibling !== slot) {
-        anchor.after(slot);
+      const anchorMountPoint = anchor.parentElement !== toolbar && anchor.parentElement?.children?.length === 1
+        ? anchor.parentElement
+        : anchor;
+      if (anchorMountPoint.nextElementSibling !== slot) {
+        anchorMountPoint.after(slot);
       }
       return;
     }
@@ -2553,7 +2581,11 @@
       if (isInsideComposerOrForm(btn) || isImageOverlayRow(btn) || isReasoningRow(btn)) return;
       if (btn.closest?.('[class*="user-message"]') || btn.closest?.('[data-chatgpt-search-unit-key*="user"]')) return;
       if (isCopyButton(btn) || isEllipsisButton(btn)) {
-        const row = btn.closest?.('div[class*="flex"], div[class*="items-center"], .turn-action-controls, [class*="actionRow"]') || btn.parentElement;
+        // 关键：优先匹配包含完整动作按钮群的真正操作栏（避开单个按钮的微型包裹 div）
+        const row = btn.closest?.('.turn-action-controls, [class*="actionRow"], [class*="turn-action"], [data-testid*="action"]')
+          || (btn.parentElement?.parentElement && btn.parentElement.parentElement.querySelectorAll('button').length > 1 ? btn.parentElement.parentElement : null)
+          || btn.closest?.('div[class*="flex"]:not(main):not(article)')
+          || btn.parentElement;
         if (row && !isInsideComposerOrForm(row) && !isImageOverlayRow(row) && !isReasoningRow(row)) {
           toolbars.add(row);
         }
@@ -2837,7 +2869,8 @@
     let status = button.querySelector('[data-cgpt-image-download-status]');
     let count = button.querySelector('[data-cgpt-image-download-label]');
     let label = button.querySelector('.cgpt-image-download-btn-text');
-    if (!status || !count || !label) {
+    let icon = button.querySelector('.cgpt-btn-icon, svg');
+    if (!status || !count || !label || !icon) {
       button.innerHTML = `${icons.download}<span class="cgpt-image-download-btn-text">默认下载</span><span class="cgpt-image-download-count" data-cgpt-image-download-label hidden></span><span class="cgpt-image-download-status" data-cgpt-image-download-status hidden></span>`;
       status = button.querySelector('[data-cgpt-image-download-status]');
       count = button.querySelector('[data-cgpt-image-download-label]');
@@ -3681,7 +3714,21 @@
       button = document.createElement('button');
       button.type = 'button';
       button.className = IMAGE_DOWNLOAD_CLASS;
-      button.setAttribute('aria-label', '下载本组图片');
+      button.setAttribute('aria-label', '默认下载');
+      // 关键防挤压行内保底：确保在任何 ChatGPT 全局样式下均无法被强制为 32px 圆形
+      button.style.setProperty('all', 'unset', 'important');
+      button.style.setProperty('box-sizing', 'border-box', 'important');
+      button.style.setProperty('height', '28px', 'important');
+      button.style.setProperty('width', 'auto', 'important');
+      button.style.setProperty('min-width', 'max-content', 'important');
+      button.style.setProperty('display', 'inline-flex', 'important');
+      button.style.setProperty('align-items', 'center', 'important');
+      button.style.setProperty('padding', '0 12px', 'important');
+      button.style.setProperty('gap', '5px', 'important');
+      button.style.setProperty('border-radius', '9999px', 'important');
+      button.style.setProperty('cursor', 'pointer', 'important');
+      button.style.setProperty('white-space', 'nowrap', 'important');
+      button.style.setProperty('flex-shrink', '0', 'important');
       button.addEventListener('click', (event) => {
         triggerImageDownloadButton(button, event);
       }, true);
@@ -3694,6 +3741,20 @@
         packageButton = document.createElement('button');
         packageButton.type = 'button';
         packageButton.className = WORK_PACKAGE_CLASS;
+        // 关键防挤压行内保底
+        packageButton.style.setProperty('all', 'unset', 'important');
+        packageButton.style.setProperty('box-sizing', 'border-box', 'important');
+        packageButton.style.setProperty('height', '28px', 'important');
+        packageButton.style.setProperty('width', 'auto', 'important');
+        packageButton.style.setProperty('min-width', 'max-content', 'important');
+        packageButton.style.setProperty('display', 'inline-flex', 'important');
+        packageButton.style.setProperty('align-items', 'center', 'important');
+        packageButton.style.setProperty('padding', '0 12px', 'important');
+        packageButton.style.setProperty('gap', '5px', 'important');
+        packageButton.style.setProperty('border-radius', '9999px', 'important');
+        packageButton.style.setProperty('cursor', 'pointer', 'important');
+        packageButton.style.setProperty('white-space', 'nowrap', 'important');
+        packageButton.style.setProperty('flex-shrink', '0', 'important');
         packageButton.addEventListener('click', (event) => {
           triggerWorkPackageButton(packageButton, event);
         }, true);
