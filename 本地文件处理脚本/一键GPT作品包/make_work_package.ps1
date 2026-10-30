@@ -2517,8 +2517,26 @@ try {
         default { $packageTime.ToString("yyyyMMdd_HHmmss") }
     }
 
-    # 2026-10-23: package folder now lands inside the matching city folder.
-    $packageRootDir = Resolve-CityFolder -LibraryDir $libraryDir -Title $folderTitle -FullText $text -Fallback $libraryDir
+    # 2026-10-30: 支持按目标路由（默认下载 -> 下载文件夹；下载到成品库 -> A手动制作）
+    if ($TargetDestination -eq "default") {
+        $downloadsDir = if (@($imageInboxDirs).Count -gt 0) { $imageInboxDirs[0] } else { [System.IO.Path]::Combine($env:USERPROFILE, "Downloads") }
+        foreach ($inbox in $imageInboxDirs) {
+            if ($inbox -match 'Downloads' -or $inbox -match '下载') {
+                $downloadsDir = $inbox
+                break
+            }
+        }
+        if (-not (Test-Path -LiteralPath $downloadsDir)) {
+            $downloadsDir = [System.IO.Path]::Combine($env:USERPROFILE, "Downloads")
+        }
+        $packageRootDir = $downloadsDir
+    } else {
+        $manualDir = Join-Path $libraryDir "A手动制作"
+        if (-not (Test-Path -LiteralPath $manualDir -PathType Container)) {
+            try { New-Item -ItemType Directory -Path $manualDir -Force | Out-Null } catch {}
+        }
+        $packageRootDir = if (Test-Path -LiteralPath $manualDir -PathType Container) { $manualDir } else { $libraryDir }
+    }
     $targetDir = if ([string]::IsNullOrWhiteSpace($folderStamp)) {
         Join-Path $packageRootDir $folderTitle
     } else {
@@ -2546,10 +2564,11 @@ try {
         return
     }
 
-    $stagingDir = Join-Path $libraryDir ".workpkg_staging_$packageId"
+    $stagingBaseDir = if ($TargetDestination -eq "default") { $packageRootDir } else { $libraryDir }
+    $stagingDir = Join-Path $stagingBaseDir ".workpkg_staging_$packageId"
     $stagingIndex = 2
     while (Test-Path -LiteralPath $stagingDir) {
-        $stagingDir = Join-Path $libraryDir ".workpkg_staging_$packageId`_$stagingIndex"
+        $stagingDir = Join-Path $stagingBaseDir ".workpkg_staging_$packageId`_$stagingIndex"
         $stagingIndex++
     }
     New-Item -ItemType Directory -Path $stagingDir | Out-Null
@@ -2666,7 +2685,7 @@ try {
     Save-LastTextHash -Path $lastHashPath -Hash $currentHash
 
     $portfolioResult = $null
-    if ($portfolioAutoGroup) {
+    if ($portfolioAutoGroup -and $TargetDestination -ne "default") {
         $portfolioResult = Invoke-PortfolioAutoGroup `
             -LibraryDir $libraryDir `
             -PortfolioOutputDir $portfolioOutputDir `
@@ -2731,7 +2750,12 @@ try {
         }
     }
     $stageMessages = New-Object System.Collections.Generic.List[string]
-    $stageMessages.Add($successMessage)
+    $effectiveSuccessMessage = if ($TargetDestination -eq "default") {
+        "已在下载文件夹创建作品包：$(Split-Path -Leaf $finalTargetDir)"
+    } else {
+        $successMessage
+    }
+    $stageMessages.Add($effectiveSuccessMessage)
     if ($similarTextExists) {
         $stageMessages.Add($similarTextMessage)
     }
