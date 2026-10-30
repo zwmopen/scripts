@@ -2580,11 +2580,11 @@ try {
 
     $mediaPrefix = "$title`_$packageId"
 
-    $txtPath = Join-Path $stagingDir "$textPrefix`_$stamp.txt"
+    $txtPath = Join-Path $stagingDir "$textPrefix.txt"
     [System.IO.File]::WriteAllText($txtPath, $text, (New-Object System.Text.UTF8Encoding($false)))
     Set-FileTimes -Path $txtPath -Time $packageTime
 
-    $packageRecordFileName = "GPT作品记录.json"
+    $packageRecordFileName = "manifest.json"
     $packageRecord = if ($null -ne $taskData) {
         $taskData
     } else {
@@ -2654,8 +2654,9 @@ try {
 
     for ($i = 0; $i -lt $images.Count; $i++) {
         $image = $images[$i]
-        $sequence = ($i + 1).ToString($numberFormat)
-        $newName = "$mediaPrefix`_$sequence$($image.Extension.ToLowerInvariant())"
+        $ext = $image.Extension.ToLowerInvariant()
+        # 遵循全库标准流水线命名规范：平铺重命名为 P1.png ~ Pn.png
+        $newName = "P$($i + 1)$ext"
         $newPath = Join-Path $stagingDir $newName
         $originalPath = $image.FullName
         Move-Item -LiteralPath $originalPath -Destination $newPath -ErrorAction Stop
@@ -2680,7 +2681,7 @@ try {
     }
     $packageCommitted = $true
     $stagingDir = $null
-    $txtPath = Join-Path $targetDir "$textPrefix`_$stamp.txt"
+    $txtPath = Join-Path $targetDir "$textPrefix.txt"
 
     Save-LastTextHash -Path $lastHashPath -Hash $currentHash
 
