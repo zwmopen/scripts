@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.11
+// @version      1.22.12
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.9';
+  const SCRIPT_VERSION = '1.22.12';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2433,9 +2433,25 @@
 
   function isImageOverlayRow(element) {
     if (!element) return false;
+    // 动作栏带有“复制”、“更多操作”等标志性功能按钮，绝对属于正常消息动作栏，严禁误判为图片浮层！
+    if (element.querySelector?.('button[aria-label*="复制"], button[aria-label*="Copy"]')
+      || element.querySelector?.('button[aria-label*="更多操作"], button[aria-label*="More options"]')
+      || element.matches?.('button[aria-label*="复制"], button[aria-label*="Copy"]')
+      || element.matches?.('button[aria-label*="更多操作"], button[aria-label*="More options"]')) {
+      return false;
+    }
+    // 排除大图内部的“编辑/Edit”悬浮胶囊栏
+    if (element.querySelector?.('button[aria-label*="编辑"], button[aria-label*="Edit"]')
+      || element.matches?.('button[aria-label*="编辑"], button[aria-label*="Edit"]')
+      || /^\s*(?:编辑|Edit)\s*$/i.test(elementText(element))) {
+      return true;
+    }
+    const abs = element.closest?.('div.absolute, div[class*="absolute"]');
+    if (abs && (abs.querySelector?.('button[aria-label*="编辑"], button[aria-label*="Edit"]') || /^\s*(?:编辑|Edit)\s*$/i.test(elementText(abs)))) {
+      return true;
+    }
     return Boolean(
-      element.closest?.('[class*="generated-image-preview"], [class*="group/gallery-action"], [class*="gallery-action"], [class*="group-hover/generated-image-preview"], [class*="group-focus-within/generated-image-preview"]')
-      || element.closest?.('div.absolute, div[class*="absolute"]')?.querySelector?.('button[aria-label*="编辑"], button[aria-label*="Edit"]')
+      element.closest?.('[class*="group-hover/generated-image-preview"], [class*="group-focus-within/generated-image-preview"], [class*="group/gallery-action"]')
     );
   }
 
@@ -2555,7 +2571,7 @@
 
     // 1. 定位所属的消息/回合容器
     const turn = toolbar.closest?.(
-      '.group, [data-turn-key], [data-chatgpt-search-unit-key], article, [data-testid^="conversation-turn"], [data-message-author-role="assistant"], [class*="agent-turn"]'
+      'article, [data-testid^="conversation-turn"], [data-message-author-role="assistant"], [data-turn-key], [data-chatgpt-search-unit-key], [class*="agent-turn"]'
     ) || toolbar.closest?.('main > div > div > div, main div[class*="react-scroll-to-bottom"] > div > div') || toolbar.parentElement;
 
     if (turn) {
@@ -2598,7 +2614,7 @@
   function findActionRowAndAnchorForTurn(turn) {
     if (!turn) return null;
     if (isInsideComposerOrForm(turn)) return null;
-    const canonicalTurn = turn.closest?.('article, [data-testid^="conversation-turn"], [data-turn-key], [data-chatgpt-search-unit-key], .group') || turn;
+    const canonicalTurn = turn.closest?.('article, [data-testid^="conversation-turn"], [data-message-author-role="assistant"], [data-turn-key], [data-chatgpt-search-unit-key]') || turn;
 
     // 1. 在 canonicalTurn 内部查找标准工具栏（排除输入框与大图浮层）
     const buttons = [...canonicalTurn.querySelectorAll('button')]
@@ -3694,7 +3710,7 @@
 
   function refreshImageDownloadButtons() {
     const validSlots = new Set();
-    const handledRows = new Set();
+    const main = document.querySelector('main') || document.body;
 
     // 0. 清除一切误注入到输入框、表单、大图内部浮层或思考折叠栏的历史插槽
     document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((slot) => {
@@ -3703,45 +3719,76 @@
       }
     });
 
-    // 1. 发现页面上所有的动作工具栏
-    const toolbars = findActionToolbars();
+    // 1. 回合驱动扫描：遍历所有助手消息回合，确保每回合最多且精确挂载一个下载插槽
+    const turnCandidates = [
+      ...main.querySelectorAll('article, [data-testid^="conversation-turn"], [data-message-author-role="assistant"], [class*="agent-turn"]')
+    ];
 
-    toolbars.forEach((toolbar) => {
-      if (handledRows.has(toolbar)) return;
+    const handledTurns = new Set();
+    turnCandidates.forEach((turn) => {
+      const canonicalTurn = turn.closest?.('article, [data-testid^="conversation-turn"]') || turn;
+      if (handledTurns.has(canonicalTurn)) return;
+      handledTurns.add(canonicalTurn);
 
-      // 关联当前工具栏对应的图片列表
-      const images = findImagesForToolbar(toolbar);
+      // 严格排除用户消息
+      if (canonicalTurn.matches?.('[class*="user-message"]')
+        || (canonicalTurn.getAttribute?.('data-message-author-role') === 'user')
+        || (canonicalTurn.getAttribute?.('data-chatgpt-search-unit-key')?.endsWith(':user'))) {
+        return;
+      }
+      if (isInsideComposerOrForm(canonicalTurn)) return;
+
+      // 检查当前回合内是否存在图片内容
+      const images = broadImageElements(canonicalTurn, 24).filter((img) => {
+        return !isInsideComposerOrForm(img) && !isImageOverlayRow(img);
+      });
       if (!images.length) {
-        toolbar.querySelector(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)?.remove();
+        canonicalTurn.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((s) => s.remove());
         return;
       }
 
-      handledRows.add(toolbar);
+      // 寻找当前回合专属的标准动作栏与锚点按钮（优先省略号/复制）
+      const rowInfo = findActionRowAndAnchorForTurn(canonicalTurn);
+      if (!rowInfo?.actionRow || !rowInfo?.anchor) return;
 
-      // 寻找对应的消息回合容器（用于下载元数据与打包装载）
-      const container = toolbar.closest?.('article, [data-testid^="conversation-turn"], [data-message-author-role="assistant"]')
-        || toolbar.parentElement;
-
-      // 寻找省略号锚点按钮
-      const anchor = findEllipsisAnchorInToolbar(toolbar);
-
-      // 挂载或更新插槽
-      const slot = ensureImageDownloadButton(container, images, toolbar, anchor);
-      if (slot) validSlots.add(slot);
+      const { actionRow, anchor } = rowInfo;
+      const slot = ensureImageDownloadButton(canonicalTurn, images, actionRow, anchor);
+      if (slot) {
+        validSlots.add(slot);
+        // 单例铁律：当前回合内仅允许保留唯一合法插槽，彻底清除同回合其他位置的残留
+        canonicalTurn.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((s) => {
+          if (s !== slot) s.remove();
+        });
+      }
     });
 
-    // 2. 清理多余或失效的插槽
+    // 2. 兜底画廊溯源：针对部分异步渲染或未包裹标准 article 的画廊
+    findGalleriesOnPage().forEach((gallery) => {
+      const turn = imageTurnContainer(gallery) || gallery.parentElement;
+      if (!turn || isInsideComposerOrForm(turn)) return;
+      const canonicalTurn = turn.closest?.('article, [data-testid^="conversation-turn"]') || turn;
+      if (handledTurns.has(canonicalTurn)) return;
+
+      const images = broadImageElements(canonicalTurn, 24).filter((img) => !isInsideComposerOrForm(img) && !isImageOverlayRow(img));
+      if (!images.length) return;
+
+      const rowInfo = findActionRowAndAnchorForTurn(canonicalTurn);
+      if (rowInfo?.actionRow && rowInfo?.anchor) {
+        handledTurns.add(canonicalTurn);
+        const slot = ensureImageDownloadButton(canonicalTurn, images, rowInfo.actionRow, rowInfo.anchor);
+        if (slot) {
+          validSlots.add(slot);
+          canonicalTurn.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((s) => {
+            if (s !== slot) s.remove();
+          });
+        }
+      }
+    });
+
+    // 3. 全局清理多余或失效插槽
     document.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`).forEach((slot) => {
       if (!validSlots.has(slot) || isInsideComposerOrForm(slot) || isImageOverlayRow(slot) || isReasoningRow(slot.parentElement)) {
         slot.remove();
-        return;
-      }
-      const parent = slot.parentElement;
-      if (parent) {
-        const slotsInParent = [...parent.querySelectorAll(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`)];
-        if (slotsInParent.length > 1) {
-          slotsInParent.slice(1).forEach((s) => s.remove());
-        }
       }
     });
 
