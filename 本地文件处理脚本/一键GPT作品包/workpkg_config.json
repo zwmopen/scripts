@@ -20,7 +20,7 @@
     "portfolio_prefix": "作品集",
     "portfolio_log_folder": "_portfolio_move_logs",
     "package_naming_mode": "title_only",
-    "completion_open_folder": false,
+    "completion_open_folder": true,
     "completion_copy_path": false,
     "notification_duration_ms": 1200,
     "visual_similarity_enabled": true,
