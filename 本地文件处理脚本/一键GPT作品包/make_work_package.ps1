@@ -2009,6 +2009,11 @@ if ([string]::IsNullOrWhiteSpace($configuredPortfolioOutputPath)) {
     }
     $portfolioOutputDir = [System.IO.Path]::GetFullPath($configuredPortfolioOutputPath)
 }
+$targetSubfolder = if ($config.PSObject.Properties["target_subfolder"] -and -not [string]::IsNullOrWhiteSpace([string]$config.target_subfolder)) {
+    ([string]$config.target_subfolder).Trim()
+} else {
+    "A手动制作"
+}
 $historyDirectory = Join-Path $libraryDir "_作品历史数据"
 $historyPath = Join-Path $historyDirectory "作品历史数据库.json"
 $historyBackupPath = Join-Path $historyDirectory "作品历史数据库.backup.json"
@@ -2531,7 +2536,7 @@ try {
         }
         $packageRootDir = $downloadsDir
     } else {
-        $manualDir = Join-Path $libraryDir "A手动制作"
+        $manualDir = Join-Path $libraryDir $targetSubfolder
         if (-not (Test-Path -LiteralPath $manualDir -PathType Container)) {
             try { New-Item -ItemType Directory -Path $manualDir -Force | Out-Null } catch {}
         }
@@ -2627,7 +2632,7 @@ try {
         }
     }
     Save-WorkPackageTaskJson -Task $packageRecord -Path (Join-Path $stagingDir $packageRecordFileName)
-        $categoryName = if ($TargetDestination -eq "default") { "本地默认下载" } else { "A手动制作" }
+        $categoryName = if ($TargetDestination -eq "default") { "本地默认下载" } else { $targetSubfolder }
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "category" -Value $categoryName
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "title" -Value $title
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "destination" -Value (Split-Path -Leaf $packageRootDir)

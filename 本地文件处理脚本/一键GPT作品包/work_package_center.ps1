@@ -344,9 +344,18 @@ $toolTip.SetToolTip($inboxBox, "填写 Edge 或 Chrome 的实际下载位置，�
 Add-Label -Parent $settingsTab -Text "成品库目录（整理完成后的作品长期放在哪里）" -Left 24 -Top 128 -Width 430 | Out-Null
 $libraryBox = New-Object System.Windows.Forms.TextBox
 $libraryBox.Location = New-Object System.Drawing.Point(24, 156)
-$libraryBox.Size = New-Object System.Drawing.Size(760, 30)
+$libraryBox.Size = New-Object System.Drawing.Size(540, 30)
 $libraryBox.Text = [string]$config.library_path
 $settingsTab.Controls.Add($libraryBox)
+
+Add-Label -Parent $settingsTab -Text "子分类目录（可自定义）" -Left 578 -Top 128 -Width 210 | Out-Null
+$subfolderBox = New-Object System.Windows.Forms.TextBox
+$subfolderBox.Location = New-Object System.Drawing.Point(578, 156)
+$subfolderBox.Size = New-Object System.Drawing.Size(206, 30)
+$subfolderBox.Text = if ($config.PSObject.Properties["target_subfolder"] -and -not [string]::IsNullOrWhiteSpace($config.target_subfolder)) { [string]$config.target_subfolder } else { "A手动制作" }
+$toolTip.SetToolTip($subfolderBox, "作品包将保存在：[成品库根目录]\\[子分类目录]\\作品包。支持随时自定义修改，例如 A手动制作、常规作品 等。")
+$settingsTab.Controls.Add($subfolderBox)
+
 $libraryBrowse = New-Object System.Windows.Forms.Button
 $libraryBrowse.Text = "浏览"
 $libraryBrowse.Location = New-Object System.Drawing.Point(800, 154)
@@ -618,6 +627,11 @@ $saveButton.Add_Click({
         }
         Set-ObjectProperty -Object $config -Name "image_inbox_path" -Value $resolvedInbox
         Set-ObjectProperty -Object $config -Name "library_path" -Value $resolvedLibrary
+        $resolvedSubfolder = ([string]$subfolderBox.Text).Trim()
+        if ([string]::IsNullOrWhiteSpace($resolvedSubfolder)) {
+            $resolvedSubfolder = "A手动制作"
+        }
+        Set-ObjectProperty -Object $config -Name "target_subfolder" -Value $resolvedSubfolder
         Set-ObjectProperty -Object $config -Name "portfolio_output_path" -Value $resolvedPortfolio
         Set-ObjectProperty -Object $config -Name "portfolio_auto_group" -Value ([bool]$autoGroup.Checked)
         Set-ObjectProperty -Object $config -Name "portfolio_auto_zip" -Value ([bool]$autoZip.Checked)
