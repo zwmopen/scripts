@@ -2638,20 +2638,23 @@ try {
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "destination" -Value (Split-Path -Leaf $packageRootDir)
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "imageCount" -Value $images.Count
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "expectedImageCount" -Value $images.Count
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "distribution" -Value ([ordered]@{
+        useCount = 0
+        dispatchedVersions = @()
+        dispatchedTo = @()
+        lastDispatchedAt = $null
+        status = "待使用"
+    })
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "tags" -Value @(
+        "✅图文齐全",
+        "待使用",
+        "小红书可发",
+        "抖音可发",
+        $categoryName
+    )
     Save-WorkPackageTaskJson -Task $packageRecord -Path (Join-Path $stagingDir "manifest.json")
 
-    # 规范化：生成作品标签.json 与 文案.txt
-    $tagData = [ordered]@{
-        distribution = [ordered]@{
-            useCount = 0
-            dispatchedVersions = @()
-            dispatchedTo = @()
-            lastDispatchedAt = $null
-            status = "待使用"
-        }
-    }
-    $tagJson = ConvertTo-Json $tagData -Depth 5
-    [System.IO.File]::WriteAllText((Join-Path $stagingDir "作品标签.json"), $tagJson, [System.Text.Encoding]::UTF8)
+    # 规范化：写入单一 文案.txt（原数据全部收拢在单一 manifest.json，不生成多余文件）
     [System.IO.File]::WriteAllText((Join-Path $stagingDir "文案.txt"), $text, (New-Object System.Text.UTF8Encoding($false)))
     Set-FileTimes -Path (Join-Path $stagingDir $packageRecordFileName) -Time $packageTime
 
@@ -2660,8 +2663,12 @@ try {
     for ($i = 0; $i -lt $images.Count; $i++) {
         $image = $images[$i]
         $ext = $image.Extension.ToLowerInvariant()
-        # 遵循全库标准流水线命名规范：平铺重命名为 P1.png ~ Pn.png
-        $newName = "P$($i + 1)$ext"
+        # 遵循内容流水线标准命名规范：封面为 P1-封面，内页依次为 P2-内页1, P2-内页2...
+        $newName = if ($i -eq 0) {
+            "P1-封面$ext"
+        } else {
+            "P2-内页$($i)$ext"
+        }
         $newPath = Join-Path $stagingDir $newName
         $originalPath = $image.FullName
         Move-Item -LiteralPath $originalPath -Destination $newPath -ErrorAction Stop
