@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.15
+// @version      1.22.16
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.15';
+  const SCRIPT_VERSION = '1.22.16';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -3495,20 +3495,23 @@
       images = groupImageElements(container);
     }
 
-    // 画廊套图自愈：若存在多张缩略图按钮且未全部加载，自动遍历激活
+    // 缩略图模式/多图按钮直接提取图片元素，绝不触发 click 避免弹出全屏大图预览弹窗
     const thumbButtons = [...(container?.querySelectorAll?.('button, [role="button"]') || [])].filter((b) => {
       const aria = b.getAttribute?.('aria-label') || '';
       const hasImg = Boolean(b.querySelector?.('img'));
-      return hasImg && (/显示生成的图像|已生成图像|image/i.test(aria) || Boolean(b.querySelector?.('img[src*="blob:"], img[src*="files.oaiusercontent"], img[src*="dalle"]')));
+      return hasImg && (/显示生成的图像|缩略图|image/i.test(aria) || Boolean(b.querySelector?.('img[src*="blob:"], img[src*="files.oaiusercontent"], img[src*="dalle"]')));
     });
-    if (thumbButtons.length > 1 && uniqueImageUrls(images).length < thumbButtons.length) {
-      for (let i = 0; i < thumbButtons.length; i++) {
-        try {
-          thumbButtons[i].click();
-          await sleep(220);
-        } catch {}
+    thumbButtons.forEach((b) => {
+      const img = b.querySelector('img');
+      if (img && !images.includes(img)) {
+        images.push(img);
       }
-      images = groupImageElements(container);
+    });
+
+    // 确保若有残留的预览弹窗则静默关闭
+    const previewClose = document.querySelector('[role="dialog"] button[aria-label*="Close"], [role="dialog"] button[aria-label*="关闭"], button[aria-label*="Close modal"], button[aria-label*="Close preview"]');
+    if (previewClose) {
+      try { previewClose.click(); } catch (_) {}
     }
 
     if (!images.length) {
