@@ -2756,11 +2756,10 @@ try {
         } catch {
         }
     }
-    if ($completionOpenFolder) {
-        try {
-            Start-Process -FilePath "explorer.exe" -ArgumentList @("/select,`"$finalTargetDir`"") -WindowStyle Normal
-        } catch {
-        }
+    # 固化流程：打包完成后无条件直接打开刚生成的成品文件夹，方便立即验货
+    try {
+        Start-Process -FilePath "explorer.exe" -ArgumentList "`"$finalTargetDir`"" -WindowStyle Normal
+    } catch {
     }
     $stageMessages = New-Object System.Collections.Generic.List[string]
     $effectiveSuccessMessage = if ($TargetDestination -eq "default") {
