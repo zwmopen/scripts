@@ -5,7 +5,7 @@
   "entries": [
     {
       "id": "prompt:carousel-migrator-v4-8-8",
-      "title": "轮播母版迁移器 V4.8.8｜完整修复终版",
+      "title": "【1】轮播母版迁移器 V4.8.8｜完整修复终版",
       "sources": [
         {
           "file": "../teambuilding-template-migrator/references/migrator-v4.8.8.md"
@@ -14,7 +14,7 @@
     },
     {
       "id": "prompt:migrator-step2-plan",
-      "title": "沿用母版输出计划｜最多10页｜重点执行同场景真实去重",
+      "title": "【2】沿用母版输出计划｜最多10页｜重点执行同场景真实去重",
       "sources": [
         {
           "file": "../teambuilding-template-migrator/references/step2-plan.md"
@@ -23,7 +23,7 @@
     },
     {
       "id": "prompt:migrator-step3-generate",
-      "title": "1，确认出图｜按已确认计划批量出图，全出",
+      "title": "【3】1，确认出图｜按已确认计划批量出图，全出",
       "sources": [
         {
           "file": "../teambuilding-template-migrator/references/step3-generate.md"
@@ -32,7 +32,7 @@
     },
     {
       "id": "prompt:teambuilding-copy-5versions",
-      "title": "团建文案 Skill｜公开版｜提取事实输出五版文案及文案.txt",
+      "title": "【4】团建文案 Skill｜公开版｜提取事实输出五版文案及文案.txt",
       "sources": [
         {
           "file": "../teambuilding-template-migrator/references/step4-copywriter-skill.md"
