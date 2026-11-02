@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.14
+// @version      1.22.15
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.13';
+  const SCRIPT_VERSION = '1.22.15';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -1472,13 +1472,14 @@
       .${IMAGE_DOWNLOAD_SLOT_CLASS} {
         display: inline-flex !important;
         align-items: center !important;
-        gap: 8px !important;
-        margin-inline-start: 8px !important;
+        gap: 6px !important;
+        margin-inline-start: 6px !important;
         vertical-align: middle !important;
         white-space: nowrap !important;
         flex-shrink: 0 !important;
         width: auto !important;
-        max-width: none !important;
+        max-width: 100% !important;
+        overflow: visible !important;
       }
       .${IMAGE_DOWNLOAD_SLOT_CLASS}.cgpt-image-download-fallback {
         display: inline-flex !important;
@@ -2345,11 +2346,23 @@
       if (img.closest?.(`#${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return false;
       if (img.closest?.('#history, nav, aside, [role="navigation"]')) return false;
       if (img.closest?.('[data-radix-menu-content], [data-radix-popper-content-wrapper]')) return false;
+      if (img.closest?.('[class*="avatar"], [data-testid*="avatar"], [class*="user-message"], [data-message-author-role="user"]')) return false;
       const src = img.currentSrc || img.src || '';
       if (!src || /^data:image\/svg/i.test(src)) return false;
+      // 1. 已加载且拥有有效天然尺寸（避免过渡排版期间零尺寸误杀）
+      if (img.naturalWidth >= minSize && img.naturalHeight >= minSize) return true;
+      // 2. 属于已知生成图片画廊或特定内容图片容器
+      const isKnownContentImg = Boolean(
+        img.closest?.('[data-testid="generated-image-gallery"], div[class*="generated-image"], div[class*="Stage"], div[class*="stage"], div[class*="aspect-"]')
+        || /(?:oaidalleapiprodscus|files\.oaiusercontent\.com|backend-api\/files|blob:)/i.test(src)
+      );
+      if (isKnownContentImg) return true;
+      // 3. 测量包围盒尺寸
       const rect = img.getBoundingClientRect?.();
-      if (!rect || rect.width < minSize || rect.height < minSize) return false;
-      return isElementVisible(img);
+      if (rect && rect.width >= minSize && rect.height >= minSize) {
+        return isElementVisible(img);
+      }
+      return false;
     });
   }
 
@@ -2359,11 +2372,20 @@
       if (img.closest?.(`#${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return false;
       if (img.closest?.('#history, nav, aside, [role="navigation"]')) return false;
       if (img.closest?.('[data-radix-menu-content], [data-radix-popper-content-wrapper]')) return false;
+      if (img.closest?.('[class*="avatar"], [data-testid*="avatar"], [class*="user-message"], [data-message-author-role="user"]')) return false;
       const src = img.currentSrc || img.src || '';
       if (!src || /^data:image\/svg/i.test(src)) return false;
+      if (img.naturalWidth >= 105 && img.naturalHeight >= 105) return true;
+      const isKnownContentImg = Boolean(
+        img.closest?.('[data-testid="generated-image-gallery"], div[class*="generated-image"], div[class*="Stage"], div[class*="stage"], div[class*="aspect-"]')
+        || /(?:oaidalleapiprodscus|files\.oaiusercontent\.com|backend-api\/files|blob:)/i.test(src)
+      );
+      if (isKnownContentImg) return true;
       const rect = img.getBoundingClientRect?.();
-      if (!rect || rect.width < 105 || rect.height < 105) return false;
-      return isElementVisible(img);
+      if (rect && rect.width >= 105 && rect.height >= 105) {
+        return isElementVisible(img);
+      }
+      return false;
     });
   }
 
@@ -2549,6 +2571,13 @@
 
   function mountDownloadSlot(toolbar, anchor, slot) {
     if (!toolbar || !slot) return;
+    try {
+      toolbar.style.setProperty('overflow', 'visible', 'important');
+      toolbar.style.setProperty('flex-wrap', 'wrap', 'important');
+      if (toolbar.parentElement) {
+        toolbar.parentElement.style.setProperty('overflow', 'visible', 'important');
+      }
+    } catch (_) {}
     if (anchor && anchor.isConnected) {
       const anchorMountPoint = anchor.parentElement !== toolbar && anchor.parentElement?.children?.length === 1
         ? anchor.parentElement
@@ -2580,7 +2609,9 @@
     main.querySelectorAll('button').forEach((btn) => {
       if (isInsideComposerOrForm(btn) || isImageOverlayRow(btn) || isReasoningRow(btn)) return;
       if (btn.closest?.('[class*="user-message"]') || btn.closest?.('[data-chatgpt-search-unit-key*="user"]')) return;
-      if (isCopyButton(btn) || isEllipsisButton(btn)) {
+      const label = elementText(btn);
+      const isAssistantAction = isCopyButton(btn) || isEllipsisButton(btn) || /复制|copy|更多|more|赞|good|踩|bad|朗读|read|重新生成|retry|regenerate/i.test(label);
+      if (isAssistantAction) {
         // 关键：优先匹配包含完整动作按钮群的真正操作栏（避开单个按钮的微型包裹 div）
         const row = btn.closest?.('.turn-action-controls, [class*="actionRow"], [class*="turn-action"], [data-testid*="action"]')
           || (btn.parentElement?.parentElement && btn.parentElement.parentElement.querySelectorAll('button').length > 1 ? btn.parentElement.parentElement : null)
@@ -2606,11 +2637,22 @@
   function findImagesForToolbar(toolbar) {
     if (!toolbar) return { container: null, images: [] };
     if (isInsideComposerOrForm(toolbar) || isImageOverlayRow(toolbar)) return { container: null, images: [] };
-    if (toolbar.closest?.('[class*="user-message"]') || toolbar.closest?.('[data-chatgpt-search-unit-key*="user"]')) return { container: null, images: [] };
+    if (toolbar.closest?.('[class*="user-message"]') || toolbar.closest?.('[data-chatgpt-search-unit-key*="user"]') || toolbar.closest?.('[data-message-author-role="user"]')) return { container: null, images: [] };
 
-    // 1. 向上攀爬寻找包含生图内容的最近会话容器（1~7层）
+    // 1. 优先通过精准 turn container 定位（直接锁定本轮助手的生成内容）
+    const turn = imageTurnContainer(toolbar);
+    if (turn && !turn.matches('main, body')) {
+      const imgs = broadImageElements(turn, 24).filter((img) => {
+        return !isInsideComposerOrForm(img) && !isImageOverlayRow(img);
+      });
+      if (imgs.length) {
+        return { container: turn, images: imgs };
+      }
+    }
+
+    // 2. 向上逐层查找（扩大到 12 层，突破现代 ChatGPT 深度嵌套工具栏）
     let node = toolbar.parentElement;
-    for (let depth = 0; node && depth < 7; depth += 1, node = node.parentElement) {
+    for (let depth = 0; node && depth < 12; depth += 1, node = node.parentElement) {
       if (node.matches?.('main, body') || node === document.body) break;
       const imgs = broadImageElements(node, 24).filter((img) => {
         return !isInsideComposerOrForm(img) && !isImageOverlayRow(img);
@@ -2620,9 +2662,9 @@
       }
     }
 
-    // 2. 检查前驱兄弟节点（消息体与底栏作为兄弟节点的排版）
-    let prev = toolbar.previousElementSibling;
-    for (let count = 0; prev && count < 5; count += 1, prev = prev.previousElementSibling) {
+    // 3. 检查前置兄弟节点（有的消息体作为兄弟节点排版）
+    let prev = toolbar.parentElement?.previousElementSibling || toolbar.previousElementSibling;
+    for (let count = 0; prev && count < 6; count += 1, prev = prev.previousElementSibling) {
       if (prev.matches?.('[class*="user-message"]') || prev.querySelector?.('[class*="user-message"]')) break;
       const imgs = broadImageElements(prev, 24).filter((img) => {
         return !isInsideComposerOrForm(img) && !isImageOverlayRow(img);
@@ -3849,11 +3891,11 @@
     refreshTextDownloadButtons();
   }
 
-  function scheduleImageDownloadButtons() {
+  function scheduleImageDownloadButtons(delay = 80) {
     window.clearTimeout(imageToolsTimer);
     imageToolsTimer = window.setTimeout(() => {
-      runWhenIdle(refreshImageDownloadButtons, 1200);
-    }, 420);
+      refreshImageDownloadButtons();
+    }, delay);
   }
 
   function bindImageDownloadEvents() {
@@ -4311,23 +4353,61 @@
     schedulePromptButton(80);
   });
 
+  function hookHistoryEvents() {
+    const notifyUrlChange = () => {
+      if (location.href !== previousUrl) {
+        previousUrl = location.href;
+        scheduleImageDownloadButtons(30);
+        schedulePromptButton(50);
+        // 侧边栏快速切换时进行阶梯式多次重试，确保动态渲染完成即刻挂载
+        setTimeout(() => scheduleImageDownloadButtons(0), 120);
+        setTimeout(() => scheduleImageDownloadButtons(0), 350);
+        setTimeout(() => scheduleImageDownloadButtons(0), 800);
+        setTimeout(() => scheduleImageDownloadButtons(0), 1600);
+        setTimeout(() => scheduleImageDownloadButtons(0), 2800);
+      }
+    };
+
+    const originalPushState = history.pushState;
+    if (typeof originalPushState === 'function') {
+      history.pushState = function (...args) {
+        const res = originalPushState.apply(this, args);
+        notifyUrlChange();
+        return res;
+      };
+    }
+
+    const originalReplaceState = history.replaceState;
+    if (typeof originalReplaceState === 'function') {
+      history.replaceState = function (...args) {
+        const res = originalReplaceState.apply(this, args);
+        notifyUrlChange();
+        return res;
+      };
+    }
+
+    window.addEventListener('popstate', notifyUrlChange);
+    window.addEventListener('hashchange', notifyUrlChange);
+  }
+
   let previousUrl = location.href;
   window.setInterval(() => {
     if (document.hidden) return;
     if (location.href !== previousUrl) {
       previousUrl = location.href;
-      scheduleImageDownloadButtons();
+      scheduleImageDownloadButtons(50);
       schedulePromptButton(80);
     }
-  }, 850);
+  }, 600);
 
   window.setInterval(() => {
     if (document.hidden) return;
-    scheduleImageDownloadButtons();
+    scheduleImageDownloadButtons(100);
     schedulePromptButton(400);
-  }, 2500);
+  }, 2200);
 
-  // 启动引导
+  // 初始化
+  hookHistoryEvents();
   removeLegacySidebarGroupingUi();
   injectStyles();
   registerUserscriptMenuCommands();
@@ -4341,5 +4421,5 @@
   void fsSinkInit();
   ensurePromptButton();
   scheduleCloudPromptSync();
-  scheduleImageDownloadButtons();
+  scheduleImageDownloadButtons(50);
 })();
