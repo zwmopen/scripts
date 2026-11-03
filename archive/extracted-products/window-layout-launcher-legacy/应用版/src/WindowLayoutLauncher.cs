@@ -211,6 +211,9 @@ namespace WindowLayoutLauncher
         [DataMember(Name = "title_keyword", EmitDefaultValue = false)]
         public string TitleKeyword { get; set; }
 
+        [DataMember(Name = "user_data_dir", EmitDefaultValue = false)]
+        public string UserDataDir { get; set; }
+
         [DataMember(Name = "x")]
         public int X { get; set; }
 
@@ -743,7 +746,10 @@ namespace WindowLayoutLauncher
             var url = string.IsNullOrWhiteSpace(item.Url) ? "https://chatgpt.com/" : item.Url;
             try
             {
-                Process.Start(exe, "--new-window " + Quote(url));
+                var args = "--new-window ";
+                if (!string.IsNullOrWhiteSpace(item.UserDataDir))
+                    args += "--user-data-dir=" + Quote(item.UserDataDir) + " --profile-directory=Default ";
+                Process.Start(exe, args + Quote(url));
             }
             catch (Exception ex)
             {

@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.18
+// @version      1.22.19
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.18';
+  const SCRIPT_VERSION = '1.22.19';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2404,6 +2404,18 @@
     if (turn && !turn.matches('main, body, [class*="react-scroll-to-bottom"], [class*="react-scroll-to-bottom--css"]')) {
       return turn;
     }
+    // v1.22.19 兜底：ChatGPT 虚拟化 Turn 结构 / 工具栏被 React Portal 挂到 Turn 外时，
+    // closest 会失效 → 改用 [data-turn-key] 几何位置匹配（取纵向区间覆盖节点的最内层 Turn）。
+    try {
+      const rect = node.getBoundingClientRect?.();
+      if (rect && (rect.width || rect.height)) {
+        const candidates = [...document.querySelectorAll('[data-turn-key]')]
+          .map((el) => ({ el, r: el.getBoundingClientRect() }))
+          .filter((t) => t.r.height > 0 && rect.top >= t.r.top - 8 && rect.top <= t.r.bottom + 260)
+          .sort((a, b) => a.r.top - b.r.top);
+        if (candidates.length) return candidates[candidates.length - 1].el;
+      }
+    } catch (_) {}
     return null;
   }
 
@@ -2898,7 +2910,14 @@
     if (authorRole && authorRole !== 'assistant') return null;
 
     // 只要当前回复内存在图片或画廊，即关联到该操作栏
-    const turnImages = broadImageElements(sameTurn, 24);
+    let turnImages = broadImageElements(sameTurn, 24);
+    if (!turnImages.length) {
+      // v1.22.19 兜底：懒加载未完成 / naturalWidth 尚为 0 时，直接按生成画廊标记抓取
+      turnImages = [...sameTurn.querySelectorAll('[data-testid="generated-image-gallery"] img, div[class*="generated-image"] img, button[data-testid="generated-image-preview"] img')].filter((img) => {
+        const src = img.currentSrc || img.src || '';
+        return Boolean(src) && !/^data:image\/svg/i.test(src);
+      });
+    }
     if (turnImages.length) {
       return { container: sameTurn, images: turnImages };
     }
@@ -3692,8 +3711,31 @@
     setWorkPackageButtonState(button, 'preparing');
     const slot = button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
     const imageButton = slot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
-    const expectedImages = Number(imageButton?.dataset.cgptImageTotal || 0);
+    let expectedImages = Number(imageButton?.dataset.cgptImageTotal || 0);
     const downloadedImages = Number(imageButton?.dataset.cgptImageDownloaded || 0);
+    // v1.22.19 防空跑：按钮计件为 0 时先现场重扫一轮 Turn；仍为 0 则直接中止，绝不生成空任务/调用本地协议
+    if (!expectedImages) {
+      const container = imageButton?.__cgptImageDownloadContainer
+        || imageButton?.closest('[data-cgpt-image-download-container]')
+        || imageTurnContainer(button);
+      const recount = [
+        ...contentImageElements(container),
+        ...broadImageElements(container, 24),
+        ...(container ? [...container.querySelectorAll('[data-testid="generated-image-gallery"] img, div[class*="generated-image"] img, button[data-testid="generated-image-preview"] img')] : []),
+      ].filter((img) => {
+        const src = img?.currentSrc || img?.src || '';
+        return img?.isConnected && Boolean(src) && !/^data:image\/svg/i.test(src);
+      });
+      expectedImages = uniqueImageUrls(recount).length || recount.length || 0;
+      if (expectedImages && imageButton) {
+        imageButton.dataset.cgptImageTotal = String(expectedImages);
+      }
+    }
+    if (!expectedImages) {
+      setWorkPackageButtonState(button, 'idle');
+      showImageDownloadToast('本轮未识别到图片（可能尚未生成完或未加载），已取消打包', false);
+      return;
+    }
     const batchId = imageButton?.dataset.cgptWorkPackageBatchId || newDownloadBatchId();
     const frozenTask = await freezeWorkPackageTask(batchId, expectedImages);
     if (!frozenTask) {
