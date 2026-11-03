@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.17
+// @version      1.22.18
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.17';
+  const SCRIPT_VERSION = '1.22.18';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -1871,6 +1871,7 @@
         <span>
           <button data-cgpt-prompt-action="new">＋ 新增</button>
           <button data-cgpt-prompt-action="sync-cloud" ${cloudPromptSyncing ? 'disabled' : ''}>${cloudPromptSyncing ? '同步中…' : '☁ 同步'}</button>
+          <button class="cgpt-prompt-update-btn" data-cgpt-prompt-action="check-update" title="检查油猴脚本更新 (当前 v${SCRIPT_VERSION})">🔄 检查更新 (v${SCRIPT_VERSION})</button>
           <button class="cgpt-prompt-help-button" data-cgpt-prompt-action="toggle-help" aria-label="提示词库说明" title="提示词库说明">?</button>
           ${cloudPromptBackupCount() ? '<button data-cgpt-prompt-action="restore-cloud">↶ 回退</button>' : ''}
           <button data-cgpt-prompt-action="export-cloud">导出云端文件</button>
@@ -3017,7 +3018,7 @@
       }
     }
     button.classList.toggle('cgpt-image-download-done', complete && !busy);
-    button.title = '默认下载：下载图片并生成文案TXT与元数据到电脑默认下载目录（C:\\Users\\...\\Downloads）';
+    button.title = '默认下载：下载全部图片及文案TXT到浏览器默认下载目录';
     button.setAttribute('aria-label', `默认下载${safeTotal ? ' (' + safeTotal + ')' : ''}`);
   }
 
@@ -3828,7 +3829,7 @@
     button.__cgptImageDownloadContainer = container;
     button.__cgptImageElements = images;
     button.dataset.cgptImageCount = String(count);
-    button.dataset.cgptImageElementCount = String(groupElements.length);
+    button.dataset.cgptImageElementCount = String(images.length);
     button.title = `下载本组图片（当前共 ${count} 张）`;
 
     const downloaded = Number(button.dataset.cgptImageDownloaded || 0);
@@ -4134,6 +4135,27 @@
     return 0;
   }
 
+  
+  const SCRIPT_AUTO_UPDATE_KEY = 'cgpt-last-script-update-check-ts';
+
+  async function scheduleDailyUserscriptUpdateCheck() {
+    const checkDaily = async () => {
+      try {
+        let lastCheck = 0;
+        try { lastCheck = Number(GM_getValue(SCRIPT_AUTO_UPDATE_KEY, 0)) || 0; } catch {}
+        const now = Date.now();
+        const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+        if (now - lastCheck >= ONE_DAY_MS) {
+          try { GM_setValue(SCRIPT_AUTO_UPDATE_KEY, now); } catch {}
+          await checkUserscriptUpdate(false);
+        }
+      } catch (_) {}
+    };
+
+    window.setTimeout(checkDaily, 3500);
+    window.setInterval(checkDaily, 4 * 60 * 60 * 1000);
+  }
+
   async function checkUserscriptUpdate(manual = true) {
     if (manual) showImageDownloadToast('正在连接 GitHub 检查脚本更新…', true);
     addDiagnosticLog('update:check-start', { currentVersion: SCRIPT_VERSION, manual });
@@ -4168,7 +4190,7 @@
 
       const cmp = compareVersions(remoteVersion, SCRIPT_VERSION);
       if (cmp > 0) {
-        showImageDownloadToast(`发现新版本 v${remoteVersion}（当前 v${SCRIPT_VERSION}），正在跳转更新…`, true);
+        showImageDownloadToast(`🚀 发现油猴脚本新版本 v${remoteVersion}（当前 v${SCRIPT_VERSION}），${manual ? '正在跳转更新…' : '点击前去更新'}`, true);
         addDiagnosticLog('update:found-new-version', { currentVersion: SCRIPT_VERSION, remoteVersion });
         window.setTimeout(() => {
           window.open(USERSCRIPT_RAW_URL, '_blank', 'noopener');
@@ -4438,5 +4460,6 @@
   void fsSinkInit();
   ensurePromptButton();
   scheduleCloudPromptSync();
+  scheduleDailyUserscriptUpdateCheck();
   scheduleImageDownloadButtons(50);
 })();
