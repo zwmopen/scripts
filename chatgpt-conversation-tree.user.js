@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.19
+// @version      1.22.20
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.19';
+  const SCRIPT_VERSION = '1.22.20';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -1480,6 +1480,19 @@
         width: auto !important;
         max-width: 100% !important;
         overflow: visible !important;
+        flex-wrap: wrap !important;
+        row-gap: 4px !important;
+      }
+      /* v1.22.20 紧凑模式：工具栏宽度不足时收起打包按钮文字，避免压住原生图标 */
+      .${IMAGE_DOWNLOAD_SLOT_CLASS}.cgpt-slot-compact {
+        gap: 4px !important;
+        margin-inline-start: 4px !important;
+      }
+      .${IMAGE_DOWNLOAD_SLOT_CLASS}.cgpt-slot-compact .${WORK_PACKAGE_CLASS} {
+        padding: 0 8px !important;
+      }
+      .${IMAGE_DOWNLOAD_SLOT_CLASS}.cgpt-slot-compact .${WORK_PACKAGE_CLASS} .cgpt-work-package-label {
+        display: none !important;
       }
       .${IMAGE_DOWNLOAD_SLOT_CLASS}.cgpt-image-download-fallback {
         display: inline-flex !important;
@@ -3876,7 +3889,25 @@
 
     const downloaded = Number(button.dataset.cgptImageDownloaded || 0);
     setImageButtonProgress(button, downloaded, count);
+    fitSlotToToolbar(actionRow, slot);
     return slot;
+  }
+
+  // v1.22.20 防重叠自适应：插槽放不下时转为紧凑模式（打包按钮只留图标），绝不压住原生图标或彼此压字
+  function fitSlotToToolbar(toolbar, slot) {
+    if (!toolbar || !slot) return;
+    const apply = () => {
+      try {
+        if (!slot.isConnected) return;
+        const tRect = toolbar.getBoundingClientRect();
+        const sRect = slot.getBoundingClientRect();
+        if (!tRect.width || !sRect.width) return;
+        const overflows = sRect.right > tRect.right + 4 || sRect.width > tRect.width - 8;
+        slot.classList.toggle('cgpt-slot-compact', Boolean(overflows));
+      } catch (_) {}
+    };
+    if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(apply);
+    else apply();
   }
 
   function refreshImageDownloadButtons() {
