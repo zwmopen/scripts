@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.16
+// @version      1.22.17
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.16';
+  const SCRIPT_VERSION = '1.22.17';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2389,11 +2389,21 @@
     });
   }
 
+  function isTurnBoundary(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.matches?.('main, body, [class*="react-scroll-to-bottom"], [class*="react-scroll-to-bottom--css"]') || el === document.body) return true;
+    return Boolean(
+      el.matches?.('article, [data-testid^="conversation-turn"], [data-message-author-role], [data-turn-key], [class*="agent-turn"], [class*="group/conversation-turn"]')
+    );
+  }
+
   function imageTurnContainer(node) {
     if (!node) return null;
-    return node.closest?.('[data-testid^="conversation-turn"], [data-message-author-role], [data-message-id], article, [class*="group/conversation-turn"], [class*="agent-turn"]')
-      || node.closest?.('main > div > div > div, main div[class*="react-scroll-to-bottom"] > div > div')
-      || node.parentElement;
+    const turn = node.closest?.('article, [data-testid^="conversation-turn"], [data-message-author-role="assistant"], [data-turn-key], [class*="agent-turn"], [class*="group/conversation-turn"]');
+    if (turn && !turn.matches('main, body, [class*="react-scroll-to-bottom"], [class*="react-scroll-to-bottom--css"]')) {
+      return turn;
+    }
+    return null;
   }
 
   function countFromText(text) {
@@ -2639,33 +2649,35 @@
     if (isInsideComposerOrForm(toolbar) || isImageOverlayRow(toolbar)) return { container: null, images: [] };
     if (toolbar.closest?.('[class*="user-message"]') || toolbar.closest?.('[data-chatgpt-search-unit-key*="user"]') || toolbar.closest?.('[data-message-author-role="user"]')) return { container: null, images: [] };
 
-    // 1. 优先通过精准 turn container 定位（直接锁定本轮助手的生成内容）
+    // 1. 优先通过精准当前轮次 Turn 容器定位（严禁超出当前轮次）
     const turn = imageTurnContainer(toolbar);
-    if (turn && !turn.matches('main, body')) {
+    if (turn) {
       const imgs = broadImageElements(turn, 24).filter((img) => {
-        return !isInsideComposerOrForm(img) && !isImageOverlayRow(img);
+        return !isInsideComposerOrForm(img) && !isImageOverlayRow(img) && !img.closest?.('[class*="user-message"], [data-message-author-role="user"]');
       });
       if (imgs.length) {
         return { container: turn, images: imgs };
       }
     }
 
-    // 2. 向上逐层查找（扩大到 12 层，突破现代 ChatGPT 深度嵌套工具栏）
+    // 2. 向上逐层查找，但【严格阻断于 Turn 边界或滚动根节点】，绝不向外溢出！
     let node = toolbar.parentElement;
-    for (let depth = 0; node && depth < 12; depth += 1, node = node.parentElement) {
-      if (node.matches?.('main, body') || node === document.body) break;
+    for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+      if (!node || node.matches?.('main, body, [class*="react-scroll-to-bottom"]') || node === document.body) break;
+      const isBoundary = isTurnBoundary(node);
       const imgs = broadImageElements(node, 24).filter((img) => {
-        return !isInsideComposerOrForm(img) && !isImageOverlayRow(img);
+        return !isInsideComposerOrForm(img) && !isImageOverlayRow(img) && !img.closest?.('[class*="user-message"], [data-message-author-role="user"]');
       });
       if (imgs.length) {
         return { container: node, images: imgs };
       }
+      if (isBoundary) break;
     }
 
-    // 3. 检查前置兄弟节点（有的消息体作为兄弟节点排版）
+    // 3. 检查前置兄弟节点（有的消息体作为兄弟节点排版，但同属当前轮次内部）
     let prev = toolbar.parentElement?.previousElementSibling || toolbar.previousElementSibling;
-    for (let count = 0; prev && count < 6; count += 1, prev = prev.previousElementSibling) {
-      if (prev.matches?.('[class*="user-message"]') || prev.querySelector?.('[class*="user-message"]')) break;
+    for (let count = 0; prev && count < 4; count += 1, prev = prev.previousElementSibling) {
+      if (!prev || isTurnBoundary(prev) || prev.matches?.('[class*="user-message"]') || prev.querySelector?.('[class*="user-message"]')) break;
       const imgs = broadImageElements(prev, 24).filter((img) => {
         return !isInsideComposerOrForm(img) && !isImageOverlayRow(img);
       });
@@ -2950,9 +2962,10 @@
   }
 
   function imageGroupElements(container, images = []) {
+    if (!container) return [...new Set(images.filter((img) => img?.isConnected))];
     return [...new Set([
       ...images,
-      ...groupImageElements(container || document),
+      ...groupImageElements(container),
     ].filter((img) => img?.isConnected))];
   }
 
@@ -3752,8 +3765,9 @@
       mountDownloadSlot(actionRow, anchor, slot);
     }
 
-    const groupElements = imageGroupElements(container, images);
-    const count = getGalleryImageCount(container, images) || groupElements.length || images.length;
+    // 关键：以当前轮次内提取的独立有效图片 URL 为唯一真源，彻底杜绝跨轮次历史污染与缩略图DOM重复计数
+    const uniqueUrls = uniqueImageUrls(images);
+    const count = uniqueUrls.length || (images ? images.length : 0);
     let button = slot.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
     if (!button) {
       button = document.createElement('button');
