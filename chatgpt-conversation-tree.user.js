@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.24
+// @version      1.22.25
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -3750,13 +3750,16 @@
 
       // 3. 唤醒本地整理协议（若本地助手就绪，自动整理入 Downloads）
       const batchId = button.dataset.cgptWorkPackageBatchId || newDownloadBatchId();
-      showImageDownloadToast('正在打开本地文件夹整理…', true);
       openWorkPackageProtocol(`${WORK_PACKAGE_PROTOCOL_URL}?target=default&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(count)}`);
     } catch (err) {
       console.warn('默认下载生成元数据失败:', err);
     }
 
     showImageDownloadToast('默认下载完成：图片、文案与元数据已保存到默认下载目录', true);
+    // v1.22.24 收尾补齐：本地整理完成后会自动打开下载文件夹验货，网页侧同步提示
+    window.setTimeout(() => {
+      showImageDownloadToast('正在打开本地文件夹…', true);
+    }, 1200);
   }
 
   function setWorkPackageButtonState(button, state = 'idle', detail = {}) {
@@ -3906,6 +3909,10 @@
       setWorkPackageButtonState(button, 'done', { total: expectedImages });
       showImageDownloadToast('已保存至：成品库 \\ A手动制作', true);
     }, 3600);
+    // v1.22.24 收尾补齐：打包完成后本地脚本会自动打开成品文件夹验货，网页侧同步提示
+    window.setTimeout(() => {
+      showImageDownloadToast('正在打开本地文件夹…', true);
+    }, 4600);
   }
 
   function ensureImageDownloadButton(container, images, preferredActionRow = null, preferredAnchor = null) {
