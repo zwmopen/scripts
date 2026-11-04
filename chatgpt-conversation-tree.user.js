@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.22
+// @version      1.22.23
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -2996,26 +2996,45 @@
   }
 
   function readDownloadedGroups() {
+    // 双源读取：GM（Tampermonkey）优先，localStorage 兜底（Electron 扩展环境无 GM_*），
+    // 取两者中记录更多/更新的，保证 APP 与普通浏览器效果一致。
+    const sources = [];
     try {
       const raw = GM_getValue(DOWNLOADED_GROUPS_KEY, null);
-      if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
-      if (typeof raw === 'string' && raw) return JSON.parse(raw);
-      return {};
-    } catch { return {}; }
+      let gm = null;
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) gm = raw;
+      else if (typeof raw === 'string' && raw) gm = JSON.parse(raw);
+      if (gm && typeof gm === 'object') sources.push(gm);
+    } catch {}
+    try {
+      const ls = JSON.parse(localStorage.getItem(DOWNLOADED_GROUPS_KEY) || 'null');
+      if (ls && typeof ls === 'object' && !Array.isArray(ls)) sources.push(ls);
+    } catch {}
+    if (!sources.length) return {};
+    // 按记录数取最全的一份（合并两源，localStorage 后写入以覆盖 GM 缺失的情况）
+    const merged = {};
+    sources.forEach((src) => {
+      Object.entries(src || {}).forEach(([k, v]) => {
+        if (!merged[k] || (v?.time || 0) > (merged[k]?.time || 0)) merged[k] = v;
+      });
+    });
+    return merged;
   }
 
   function writeDownloadedGroups(groups) {
     try {
       // 裁剪到最近 MAX_DOWNLOADED_GROUPS 条，防止无限膨胀
       const entries = Object.entries(groups || {});
+      let finalGroups = groups || {};
       if (entries.length > MAX_DOWNLOADED_GROUPS) {
         const sorted = entries.sort((a, b) => (b[1]?.time || 0) - (a[1]?.time || 0));
-        const trimmed = {};
-        sorted.slice(0, MAX_DOWNLOADED_GROUPS).forEach(([k, v]) => { trimmed[k] = v; });
-        GM_setValue(DOWNLOADED_GROUPS_KEY, JSON.stringify(trimmed));
-        return;
+        finalGroups = {};
+        sorted.slice(0, MAX_DOWNLOADED_GROUPS).forEach(([k, v]) => { finalGroups[k] = v; });
       }
-      GM_setValue(DOWNLOADED_GROUPS_KEY, JSON.stringify(groups || {}));
+      const payload = JSON.stringify(finalGroups);
+      // 双写：GM + localStorage，兼容 Tampermonkey 与 Electron 扩展两种环境
+      try { GM_setValue(DOWNLOADED_GROUPS_KEY, payload); } catch {}
+      try { localStorage.setItem(DOWNLOADED_GROUPS_KEY, payload); } catch {}
     } catch {}
   }
 
