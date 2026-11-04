@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.23
+// @version      1.22.24
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -2989,10 +2989,19 @@
 
   // v1.22.22 已下载图片组指纹：以「排序后的独立图片 URL 列表」为唯一真源，
   // 同一批图（URL 相同）无论跨会话、跨刷新都算出同一个指纹，用于识别「已下载」。
+  // v1.22.24 加固：剔除 blob:（会话内临时地址，刷新即变）与 data:，仅保留稳定的
+  // oaiusercontent / dalle 等永久 URL，确保指纹是真正的「内容指纹」，跨刷新稳定。
   function computeImageGroupFingerprint(images = []) {
-    const urls = uniqueImageUrls(images).filter((u) => u && !/^data:/i.test(u));
+    const urls = uniqueImageUrls(images).filter((u) => (
+      u
+      && !/^data:/i.test(u)
+      && !/^blob:/i.test(u)
+    ));
     if (!urls.length) return '';
-    return [...urls].sort().join('\u001f');
+    // 归一化：去掉 URL 里可能随会话变化的查询串（如 ?seed=... 或时效签名），
+    // 只保留路径主体，最大化跨刷新稳定性。保留 oaiusercontent 的完整路径（含图片 ID）。
+    const normalized = urls.map((u) => u.replace(/[?#].*$/, '')).sort();
+    return normalized.join('\u001f');
   }
 
   function readDownloadedGroups() {
