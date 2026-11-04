@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.20
+// @version      1.22.21
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -4464,6 +4464,40 @@
     scheduleImageDownloadButtons();
     schedulePromptButton(80);
   });
+
+  // v1.22.21 SPA 切换对话后「下载并打包」按钮消失修复：
+  // 根因——broadImageElements 以 naturalWidth>=24 为主条件判定生成图，但切换对话（无整页刷新）
+  // 时图片懒加载，动作栏先渲染、图片后解码；轮询扫描时 naturalWidth 仍为 0，命中「无图→删插槽」分支。
+  // 修复——在捕获阶段监听 img 的 load 事件（解码完成即刻回调），触发定向重扫，从而在图片真正可用时立即重挂按钮。
+  document.addEventListener('load', (event) => {
+    if (document.hidden) return;
+    const img = event.target;
+    if (!img || img.nodeType !== 1 || img.tagName !== 'IMG') return;
+    const src = img.currentSrc || img.src || '';
+    if (!src) return;
+    // 仅对主区域的内容图（生成图 / 上传图）触发，忽略头像、图标、侧边栏等噪声
+    if (img.closest?.('#history, nav, aside, [role="navigation"], [class*="avatar"], [data-testid*="avatar"], [class*="user-message"], [data-message-author-role="user"]')) return;
+    if (img.closest?.(`#${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return;
+    const isContentImg = /(?:oaidalleapiprodscus|files\.oaiusercontent\.com|backend-api\/files|blob:)/i.test(src)
+      || Boolean(img.closest?.('[data-testid="generated-image-gallery"], div[class*="generated-image"], div[class*="Stage"], div[class*="stage"]'));
+    if (!isContentImg) return;
+    scheduleImageDownloadButtons(40);
+  }, true);
+
+  // 观察图片节点插入：懒加载图片可能先以占位 src 挂载，随后换真实 src 或由 React 二次提交才挂载，
+  // 补一个针对 img 的独立监听，确保图片 DOM 一出现就触发重扫（与 load 监听互补）。
+  const imgObserver = new MutationObserver((mutations) => {
+    if (document.hidden) return;
+    let hasImg = false;
+    for (const mutation of mutations) {
+      const added = [...mutation.addedNodes].some((n) => (
+        n.nodeType === 1 && (n.matches?.('img') || n.querySelector?.('img'))
+      ));
+      if (added) { hasImg = true; break; }
+    }
+    if (hasImg) scheduleImageDownloadButtons(80);
+  });
+  imgObserver.observe(document.documentElement, { childList: true, subtree: true });
 
   function hookHistoryEvents() {
     const notifyUrlChange = () => {
