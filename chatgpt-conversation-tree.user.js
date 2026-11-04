@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.20';
+  const SCRIPT_VERSION = '1.22.26';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -3806,9 +3806,11 @@
       button.setAttribute('aria-label', button.title);
       return;
     }
-    button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">下载到成品库</span>`;
-    button.title = '下载本组全部图片，并打包归档到 成品库 \\ A手动制作';
-    button.setAttribute('aria-label', '下载到成品库');
+    const total = Math.max(0, Number(detail.total || 0));
+    const suffix = total ? ` (${total})` : '';
+    button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">下载到成品库${suffix}</span>`;
+    button.title = total ? `下载本组 ${total} 张图片，并打包归档到 成品库 \\ A手动制作` : '下载本组全部图片，并打包归档到 成品库 \\ A手动制作';
+    button.setAttribute('aria-label', total ? `下载到成品库（${total} 张）` : '下载到成品库');
   }
 
   async function triggerWorkPackageButton(button, event = null) {
@@ -3994,7 +3996,7 @@
         }, true);
         slot.append(packageButton);
       }
-      setWorkPackageButtonState(packageButton, packageButton.dataset.cgptWorkPackageState || 'idle');
+      setWorkPackageButtonState(packageButton, packageButton.dataset.cgptWorkPackageState || 'idle', { total: count });
       packageButton.hidden = false;
     } else if (packageButton) {
       packageButton.hidden = true;
