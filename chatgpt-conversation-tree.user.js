@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.21
+// @version      1.22.22
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -86,6 +86,9 @@
   const MAX_DIAGNOSTIC_LOGS = 220;
   const WORK_PACKAGE_VISIBLE_KEY = 'work-package-visible';
   const WORK_PACKAGE_HELPER_READY_KEY = 'work-package-helper-ready-v1';
+  // v1.22.22 已下载图片组指纹记忆：按图片 URL 指纹跨会话识别「已下载」，刷新后仍提示避免重复下载
+  const DOWNLOADED_GROUPS_KEY = 'downloaded-image-groups-v1';
+  const MAX_DOWNLOADED_GROUPS = 120;
   const WORK_PACKAGE_INSTALLER_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/master/%E5%AE%89%E8%A3%85GPT%E4%BD%9C%E5%93%81%E5%8A%A9%E6%89%8B.vbs';
   const IMAGE_DOWNLOAD_VISIBLE_KEY = 'image-download-visible';
 
@@ -2984,6 +2987,57 @@
     return urls;
   }
 
+  // v1.22.22 已下载图片组指纹：以「排序后的独立图片 URL 列表」为唯一真源，
+  // 同一批图（URL 相同）无论跨会话、跨刷新都算出同一个指纹，用于识别「已下载」。
+  function computeImageGroupFingerprint(images = []) {
+    const urls = uniqueImageUrls(images).filter((u) => u && !/^data:/i.test(u));
+    if (!urls.length) return '';
+    return [...urls].sort().join('\u001f');
+  }
+
+  function readDownloadedGroups() {
+    try {
+      const raw = GM_getValue(DOWNLOADED_GROUPS_KEY, null);
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+      if (typeof raw === 'string' && raw) return JSON.parse(raw);
+      return {};
+    } catch { return {}; }
+  }
+
+  function writeDownloadedGroups(groups) {
+    try {
+      // 裁剪到最近 MAX_DOWNLOADED_GROUPS 条，防止无限膨胀
+      const entries = Object.entries(groups || {});
+      if (entries.length > MAX_DOWNLOADED_GROUPS) {
+        const sorted = entries.sort((a, b) => (b[1]?.time || 0) - (a[1]?.time || 0));
+        const trimmed = {};
+        sorted.slice(0, MAX_DOWNLOADED_GROUPS).forEach(([k, v]) => { trimmed[k] = v; });
+        GM_setValue(DOWNLOADED_GROUPS_KEY, JSON.stringify(trimmed));
+        return;
+      }
+      GM_setValue(DOWNLOADED_GROUPS_KEY, JSON.stringify(groups || {}));
+    } catch {}
+  }
+
+  function markImageGroupDownloaded(images = [], meta = {}) {
+    const fp = computeImageGroupFingerprint(images);
+    if (!fp) return;
+    const groups = readDownloadedGroups();
+    groups[fp] = {
+      title: String(meta.title || '').slice(0, 80),
+      count: Number(meta.count || uniqueImageUrls(images).length || 0),
+      time: Date.now(),
+    };
+    writeDownloadedGroups(groups);
+  }
+
+  function findDownloadedGroup(images = []) {
+    const fp = computeImageGroupFingerprint(images);
+    if (!fp) return null;
+    const rec = readDownloadedGroups()[fp];
+    return rec || null;
+  }
+
   function groupImageElements(scope = document) {
     const root = scope === document ? (document.querySelector('main') || document.body) : scope;
     return [...root.querySelectorAll('img')].filter((img) => {
@@ -3628,6 +3682,16 @@
       count: button.dataset.cgptImageCount,
     });
 
+    // v1.22.22 已下载确认：本组图指纹命中历史时，弹确认避免重复下载
+    if (button.dataset.cgptImageWasDownloaded === '1') {
+      const ok = window.confirm('这组图片之前已下载过，是否继续下载？');
+      if (!ok) {
+        showImageDownloadToast('已取消，未重复下载', false);
+        return;
+      }
+      delete button.dataset.cgptImageWasDownloaded;
+    }
+
     // 1. 下载本组图片
     const dlResult = await runImageDownloadShortcut(button);
 
@@ -3640,6 +3704,7 @@
 
       if (copyText) {
         downloadBlobFallback(new Blob([copyText], { type: 'text/plain;charset=utf-8' }), `${title}_文案.txt`);
+        showImageDownloadToast(`已创建本地文案：${title}_文案.txt`, true);
       }
       
       const manifest = {
@@ -3650,15 +3715,20 @@
         createdAt: new Date().toISOString()
       };
       downloadBlobFallback(new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json;charset=utf-8' }), `${title}_manifest.json`);
+      showImageDownloadToast(`已创建元数据：${title}_manifest.json`, true);
+
+      // v1.22.22 下载成功后记录指纹，供后续刷新/跨会话识别「已下载」
+      markImageGroupDownloaded(button.__cgptImageElements, { title, count });
 
       // 3. 唤醒本地整理协议（若本地助手就绪，自动整理入 Downloads）
       const batchId = button.dataset.cgptWorkPackageBatchId || newDownloadBatchId();
+      showImageDownloadToast('正在打开本地文件夹整理…', true);
       openWorkPackageProtocol(`${WORK_PACKAGE_PROTOCOL_URL}?target=default&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(count)}`);
     } catch (err) {
       console.warn('默认下载生成元数据失败:', err);
     }
 
-    showImageDownloadToast('默认下载触发：图片、文案与元数据已保存到默认下载目录', true);
+    showImageDownloadToast('默认下载完成：图片、文案与元数据已保存到默认下载目录', true);
   }
 
   function setWorkPackageButtonState(button, state = 'idle', detail = {}) {
@@ -3724,6 +3794,18 @@
     setWorkPackageButtonState(button, 'preparing');
     const slot = button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
     const imageButton = slot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
+
+    // v1.22.22 已下载确认：本组图指纹命中历史时，弹确认避免重复打包入库
+    if (imageButton?.dataset.cgptImageWasDownloaded === '1') {
+      const ok = window.confirm('这组图片之前已下载/打包过，是否继续下载并入库？');
+      if (!ok) {
+        showImageDownloadToast('已取消，未重复下载', false);
+        setWorkPackageButtonState(button, 'idle');
+        return;
+      }
+      delete imageButton.dataset.cgptImageWasDownloaded;
+    }
+
     let expectedImages = Number(imageButton?.dataset.cgptImageTotal || 0);
     const downloadedImages = Number(imageButton?.dataset.cgptImageDownloaded || 0);
     // v1.22.19 防空跑：按钮计件为 0 时先现场重扫一轮 Turn；仍为 0 则直接中止，绝不生成空任务/调用本地协议
@@ -3790,6 +3872,8 @@
       setWorkPackageButtonState(button, 'idle');
       return;
     }
+    // v1.22.22 打包入库成功后记录指纹，供后续刷新/跨会话识别「已下载」
+    markImageGroupDownloaded(imageButton?.__cgptImageElements, { title: frozenTask?.copyTitle || '', count: expectedImages });
     window.setTimeout(() => {
       setWorkPackageButtonState(button, 'done', { total: expectedImages });
       showImageDownloadToast('已保存至：成品库 \\ A手动制作', true);
@@ -3886,6 +3970,14 @@
     button.dataset.cgptImageCount = String(count);
     button.dataset.cgptImageElementCount = String(images.length);
     button.title = `下载本组图片（当前共 ${count} 张）`;
+
+    // v1.22.22 已下载指纹识别：刷新/跨会话后，若本组图 URL 指纹命中历史，标记为「已下载」，
+    // 按钮显示已下载状态，点击时弹确认「已下载过，是否继续下载？」
+    const downloadedRecord = findDownloadedGroup(images);
+    if (downloadedRecord && !button.dataset.cgptImageDownloaded) {
+      button.dataset.cgptImageDownloaded = String(downloadedRecord.count || count);
+      button.dataset.cgptImageWasDownloaded = '1';
+    }
 
     const downloaded = Number(button.dataset.cgptImageDownloaded || 0);
     setImageButtonProgress(button, downloaded, count);
