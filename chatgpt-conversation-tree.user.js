@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.26
+// @version      1.22.19
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.26';
+  const SCRIPT_VERSION = '1.22.19';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -3301,8 +3301,8 @@
    */
   function fsSinkCapturePickerNow() {
     if (fsSinkPendingPick) return;
-    if (!fsSinkEnabled || fsSinkReady || fsSinkHandle || !fsSinkSupported()) return;
-    fsSinkPendingPick = fsSinkPickDirectorySync();
+    // 关键优化：绝不擅自弹系统文件夹选择窗打断普通下载。未配置直存句柄时一律走默认下载目录（C:\Users\...\Downloads）
+    if (!fsSinkEnabled || !fsSinkSupported() || !fsSinkHandle) return;
   }
 
   /**
@@ -3610,8 +3610,6 @@
 
   async function runImageDownloadShortcut(button, requestedBatchId = '', onProgress = null) {
     if (button.disabled) return null;
-    // 直存：趁点击事件的同步栈把目录选择器拉起来（此刻才有 user activation）
-    fsSinkCapturePickerNow();
     const container = button.__cgptImageDownloadContainer
       || button.closest('[data-cgpt-image-download-container]')
       || document;
@@ -3651,7 +3649,7 @@
       || uniqueImageUrls(images).length
       || images.length;
     // 先落实直存授权（用户刚在弹窗里选完目录），失败则本次走浏览器下载
-    if (fsSinkEnabled) {
+    if (fsSinkEnabled && fsSinkHandle) {
       try { await fsSinkEnsureReady(); } catch {}
     }
     button.disabled = true;
