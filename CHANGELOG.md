@@ -1,5 +1,15 @@
 # 变更记录
 
+## [1.22.27] - 2026-11-05
+
+### 作品库按钮状态机细化 + 真回执
+- **修复「假成功」**：原「下载到成品库」点完 `setTimeout 3.6s` 盲判直接显示「已入成品库」，现改为**轮询本地脚本写回收件区的 result ack**，按真实 `status` 驱动按钮。
+- **子阶段文案**：`packaging` 拆为 `正在查重` → `正在归档` → `正在整理作品集`，不再四个字干等。
+- **新增失败态**：`failed`（红字 + error 摘要），失败不再静默退回 idle。
+- **终态细分**：`completed`→显示真实 `packageFolder` 名；`duplicate`→「本次重复，已清理」；`visual_similar`→「近似《xxx》，已跳过」。
+- **本地脚本配合**：`make_work_package.ps1` 新增 `Write-WorkPackageResultAck`，在 completed/duplicate/visual_similar/failed 四个终态把结果额外写一份 `chatgpt-workpkg-result-<batchId>.json` 到收件区（原 task 文件成功时会删除，网页读不到，故需独立 ack）。
+- **前置依赖**：真回执需「图片直存」句柄已指向收件区；未开启时回退为温和提示，不假装成功。
+
 ## [1.22.26] - 2026-11-04
 
 ### 「下载到成品库」按钮初始显示图片数量
