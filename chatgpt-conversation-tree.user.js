@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.25
+// @version      1.22.27
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.25';
+  const SCRIPT_VERSION = '1.22.27';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -3384,6 +3384,18 @@
     }
   }
 
+  // v1.22.25 回执轮询：读本地脚本写回收件区的 chatgpt-workpkg-result-<batchId>.json
+  async function fsSinkReadFileText(name) {
+    if (!fsSinkHandle || !fsSinkReady) return null;
+    try {
+      const fileHandle = await fsSinkHandle.getFileHandle(name, { create: false });
+      const file = await fileHandle.getFile();
+      return await file.text();
+    } catch (error) {
+      return null; // 文件尚未生成或句柄失效
+    }
+  }
+
   async function fetchBlobForSink(url) {
     // 1) 先走页面内 fetch：同源或 CDN 允许跨域时最快，也不会触发 GM 跨域授权弹窗
     try {
@@ -3764,7 +3776,7 @@
     if (!button) return;
     button.dataset.cgptWorkPackageState = state;
     button.classList.remove('cgpt-work-package-called', 'cgpt-work-package-done', 'cgpt-work-package-warning');
-    button.disabled = ['preparing', 'downloading', 'packaging'].includes(state);
+    button.disabled = ['preparing', 'downloading', 'checking-dedup', 'archiving', 'organizing'].includes(state);
     if (state === 'preparing') {
       button.classList.add('cgpt-work-package-called');
       button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">检查文案</span>`;
@@ -3781,11 +3793,25 @@
       button.setAttribute('aria-label', button.title);
       return;
     }
-    if (state === 'packaging') {
+    if (state === 'checking-dedup') {
       button.classList.add('cgpt-work-package-called');
-      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">打包入库中</span>`;
-      button.title = '图片已下载，正在归档到成品库（A手动制作）';
-      button.setAttribute('aria-label', '正在打包归档到成品库');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">正在查重</span>`;
+      button.title = '正在与历史作品比对去重';
+      button.setAttribute('aria-label', '正在查重');
+      return;
+    }
+    if (state === 'archiving') {
+      button.classList.add('cgpt-work-package-called');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">正在归档</span>`;
+      button.title = '图片已入库，正在归档到成品库';
+      button.setAttribute('aria-label', '正在归档');
+      return;
+    }
+    if (state === 'organizing') {
+      button.classList.add('cgpt-work-package-called');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">正在整理作品集</span>`;
+      button.title = '正在整理作品集';
+      button.setAttribute('aria-label', '正在整理作品集');
       return;
     }
     if (state === 'needs-text') {
@@ -3798,9 +3824,34 @@
     if (state === 'done') {
       button.classList.add('cgpt-work-package-done');
       const total = Math.max(0, Number(detail.total || 0));
+      const folder = String(detail.folder || '').trim();
       const suffix = total ? ` ${total}/${total}` : '';
-      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">已入成品库${suffix}</span>`;
-      button.title = total ? `已保存至 成品库\\A手动制作：${total}/${total} 张` : '已保存至 成品库\\A手动制作';
+      const label = folder ? `已入《${folder}》` : `已入成品库${suffix}`;
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">${label}</span>`;
+      button.title = folder ? `已保存至 成品库 \\ ${folder}` : `已保存至 成品库\\A手动制作：${total}/${total} 张`;
+      button.setAttribute('aria-label', button.title);
+      return;
+    }
+    if (state === 'duplicate') {
+      button.classList.add('cgpt-work-package-warning');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">本次重复，已清理</span>`;
+      button.title = '本组图片与历史作品重复，已清理本地图片';
+      button.setAttribute('aria-label', button.title);
+      return;
+    }
+    if (state === 'similar') {
+      button.classList.add('cgpt-work-package-warning');
+      const similar = String(detail.similar || '').trim();
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">${similar ? `近似《${similar}》` : '高度相似，已跳过'}</span>`;
+      button.title = '与历史作品视觉高度相似，已跳过打包';
+      button.setAttribute('aria-label', button.title);
+      return;
+    }
+    if (state === 'failed') {
+      button.classList.add('cgpt-work-package-warning');
+      const err = String(detail.error || '').trim();
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">打包失败</span>`;
+      button.title = err ? `打包失败：${err}` : '打包失败';
       button.setAttribute('aria-label', button.title);
       return;
     }
@@ -3892,8 +3943,8 @@
       }
       await sleep(450);
     }
-    setWorkPackageButtonState(button, 'packaging');
-    showImageDownloadToast('图片下载完成，正在打包成文件夹...', true);
+    setWorkPackageButtonState(button, 'checking-dedup');
+    showImageDownloadToast('图片下载完成，正在查重并打包…', true);
     try {
       const protocolUrl = `${WORK_PACKAGE_PROTOCOL_URL}?target=library&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}`;
       openWorkPackageProtocol(protocolUrl);
@@ -3903,16 +3954,68 @@
       setWorkPackageButtonState(button, 'idle');
       return;
     }
-    // v1.22.22 打包入库成功后记录指纹，供后续刷新/跨会话识别「已下载」
-    markImageGroupDownloaded(imageButton?.__cgptImageElements, { title: frozenTask?.copyTitle || '', count: expectedImages });
-    window.setTimeout(() => {
-      setWorkPackageButtonState(button, 'done', { total: expectedImages });
-      showImageDownloadToast('已保存至：成品库 \\ A手动制作', true);
-    }, 3600);
-    // v1.22.24 收尾补齐：打包完成后本地脚本会自动打开成品文件夹验货，网页侧同步提示
-    window.setTimeout(() => {
-      showImageDownloadToast('正在打开本地文件夹…', true);
-    }, 4600);
+    // v1.22.25 真回执：轮询本地脚本写回收件区的 result ack，按真实状态驱动按钮文案
+    const imageElements = imageButton?.__cgptImageElements || [];
+    await pollWorkPackageResult(button, batchId, expectedImages, imageElements);
+  }
+
+  // v1.22.25 轮询本地打包回执，把「查重→归档→完成/重复/近似/失败」真实反映到按钮
+  async function pollWorkPackageResult(button, batchId, expectedImages, imageElements = []) {
+    const ackName = `chatgpt-workpkg-result-${batchId}.json`;
+    const t0 = Date.now();
+    const TTL = 45000; // 本地脚本含文件搬移，最长等 45s
+    let lastStage = '';
+    while (Date.now() - t0 < TTL) {
+      const text = await fsSinkReadFileText(ackName);
+      if (text) {
+        try {
+          const ack = JSON.parse(text);
+          const status = String(ack.status || '');
+          if (status === 'completed') {
+            setWorkPackageButtonState(button, 'done', { total: expectedImages, folder: ack.packageFolder || '' });
+            showImageDownloadToast(`已保存至：成品库 \\ ${ack.packageFolder || 'A手动制作'}`, true);
+            markImageGroupDownloaded(imageElements, { title: '', count: expectedImages });
+            return;
+          }
+          if (status === 'duplicate') {
+            setWorkPackageButtonState(button, 'duplicate');
+            showImageDownloadToast('本次为重复下载，已清理本地图片', false);
+            return;
+          }
+          if (status === 'visual_similar') {
+            setWorkPackageButtonState(button, 'similar', { similar: String(ack.similarPackagePath || '').split('\\').pop() || '' });
+            showImageDownloadToast('检测到视觉近似历史作品，已跳过打包', false);
+            return;
+          }
+          if (status === 'failed') {
+            setWorkPackageButtonState(button, 'failed', { error: ack.error || '本地脚本报错' });
+            showImageDownloadToast(`打包失败：${ack.error || '本地脚本报错'}`, false);
+            return;
+          }
+          // 中间态：processing / waiting_images / incomplete_images → 更新子阶段文案
+          if (status === 'processing' && lastStage !== 'checking-dedup') {
+            lastStage = 'checking-dedup';
+            setWorkPackageButtonState(button, 'checking-dedup');
+          } else if ((status === 'waiting_images' || status === 'incomplete_images') && lastStage !== 'archiving') {
+            lastStage = 'archiving';
+            setWorkPackageButtonState(button, 'archiving');
+          }
+        } catch (_) {}
+      }
+      // 未拿到 ack：按流逝时间推进提示，避免干等无反馈
+      const elapsed = Date.now() - t0;
+      if (!lastStage && elapsed > 3000) {
+        lastStage = 'archiving';
+        setWorkPackageButtonState(button, 'archiving');
+      } else if (lastStage === 'archiving' && elapsed > 12000) {
+        lastStage = 'organizing';
+        setWorkPackageButtonState(button, 'organizing');
+      }
+      await sleep(600);
+    }
+    // 超时兜底：仍无终态回执，退为温和提示，不假装成功
+    setWorkPackageButtonState(button, 'idle');
+    showImageDownloadToast('打包结果未确认（本地脚本可能未开直存回执），图片已下载，可查收件区', false);
   }
 
   function ensureImageDownloadButton(container, images, preferredActionRow = null, preferredAnchor = null) {
