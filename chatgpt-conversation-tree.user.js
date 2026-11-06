@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.32
+// @version      1.22.33
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -3862,6 +3862,13 @@
       button.setAttribute('aria-label', button.title);
       return;
     }
+    if (state === 'unconfirmed') {
+      button.classList.add('cgpt-work-package-warning');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">已下载到成品库</span>`;
+      button.title = '图片已下载，但本地打包结果未确认，可查收件区';
+      button.setAttribute('aria-label', '已下载到成品库');
+      return;
+    }
     const total = Math.max(0, Number(detail.total || 0));
     const suffix = total ? ` (${total})` : '';
     button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">下载到成品库${suffix}</span>`;
@@ -4022,8 +4029,8 @@
       }
       await sleep(600);
     }
-    // 超时兜底：仍无终态回执，退为温和提示，不假装成功
-    setWorkPackageButtonState(button, 'idle');
+    // 超时兜底：仍无终态回执，退为明确收尾态，不假装成功、也不回到最初待命
+    setWorkPackageButtonState(button, 'unconfirmed');
     showImageDownloadToast('打包结果未确认（本地脚本可能未开直存回执），图片已下载，可查收件区', false);
   }
 
