@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.27
+// @version      1.22.32
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -3776,7 +3776,7 @@
     if (!button) return;
     button.dataset.cgptWorkPackageState = state;
     button.classList.remove('cgpt-work-package-called', 'cgpt-work-package-done', 'cgpt-work-package-warning');
-    button.disabled = ['preparing', 'downloading', 'checking-dedup', 'archiving', 'organizing'].includes(state);
+    button.disabled = ['preparing', 'downloading', 'checking-dedup', 'archiving', 'organizing', 'opening-folder'].includes(state);
     if (state === 'preparing') {
       button.classList.add('cgpt-work-package-called');
       button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">检查文案</span>`;
@@ -3802,9 +3802,16 @@
     }
     if (state === 'archiving') {
       button.classList.add('cgpt-work-package-called');
-      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">正在归档</span>`;
-      button.title = '图片已入库，正在归档到成品库';
-      button.setAttribute('aria-label', '正在归档');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">正在移动到文件夹</span>`;
+      button.title = '图片已入库，正在移动到成品库文件夹';
+      button.setAttribute('aria-label', '正在移动到文件夹');
+      return;
+    }
+    if (state === 'opening-folder') {
+      button.classList.add('cgpt-work-package-called');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">正在打开文件夹</span>`;
+      button.title = '正在打开本地文件夹验货';
+      button.setAttribute('aria-label', '正在打开文件夹');
       return;
     }
     if (state === 'organizing') {
@@ -3972,6 +3979,8 @@
           const ack = JSON.parse(text);
           const status = String(ack.status || '');
           if (status === 'completed') {
+            setWorkPackageButtonState(button, 'opening-folder');
+            await sleep(900);
             setWorkPackageButtonState(button, 'done', { total: expectedImages, folder: ack.packageFolder || '' });
             showImageDownloadToast(`已保存至：成品库 \\ ${ack.packageFolder || 'A手动制作'}`, true);
             markImageGroupDownloaded(imageElements, { title: '', count: expectedImages });
