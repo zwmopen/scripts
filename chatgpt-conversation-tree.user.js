@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.33
+// @version      1.22.35
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -23,6 +23,7 @@
 // @connect      chatgpt.com
 // @connect      *.oaiusercontent.com
 // @connect      *.openai.com
+// @connect      file:///*
 // ==/UserScript==
 
 (() => {
@@ -117,6 +118,14 @@
   const FS_SINK_ENABLED_KEY = 'fs-sink-enabled-v1';
   const FS_SINK_LABEL_KEY = 'fs-sink-label-v1';
   const FS_SINK_MAX_BYTES = 40 * 1024 * 1024;
+
+  // ===== 2026-11-06 回执 file:// 兜底通道 =====
+  // 独立 Chrome 分身可能从未点过「开启图片直存」，直存句柄为空，导致网页读不到本地
+  // 作品助手写回 _收件区 的 chatgpt-workpkg-result-<batchId>.json，只能干等 45s 超时。
+  // 这里提供一条不依赖直存句柄的兜底：用 GM_xmlhttpRequest 读固定收件区路径下的回执。
+  // 前提：Tampermonkey 扩展需开启「允许访问文件网址」。
+  const ACK_INBOX_DEFAULT_PATH = 'D:/AICode/项目推进/projects/江湖有旅人/主项目/03-成品库/_收件区';
+  const ACK_INBOX_PATH_KEY = 'ack-inbox-path-v1';
 
   // 图标
   // 图标（标准高清矢量设计：带 viewBox、width/height、stroke-width 与 cgpt-btn-icon 类，杜绝变形与字图重叠）
@@ -3386,14 +3395,46 @@
 
   // v1.22.25 回执轮询：读本地脚本写回收件区的 chatgpt-workpkg-result-<batchId>.json
   async function fsSinkReadFileText(name) {
-    if (!fsSinkHandle || !fsSinkReady) return null;
-    try {
-      const fileHandle = await fsSinkHandle.getFileHandle(name, { create: false });
-      const file = await fileHandle.getFile();
-      return await file.text();
-    } catch (error) {
-      return null; // 文件尚未生成或句柄失效
+    // 第一通道：直存句柄（用户点过「开启图片直存」时可用）
+    if (fsSinkHandle && fsSinkReady) {
+      try {
+        const fileHandle = await fsSinkHandle.getFileHandle(name, { create: false });
+        const file = await fileHandle.getFile();
+        return await file.text();
+      } catch (_) {
+        // 句柄失效则继续走 file:// 兜底
+      }
     }
+    // 第二通道：file:// 兜底（独立 Chrome 分身从未点直存时，仍能读到回执）
+    return fsSinkReadFileTextViaFile(name);
+  }
+
+  // 用 GM_xmlhttpRequest 读固定收件区路径下的回执文件（不依赖直存句柄）
+  function fsSinkReadFileTextViaFile(name) {
+    return new Promise((resolve) => {
+      if (typeof GM_xmlhttpRequest !== 'function') { resolve(null); return; }
+      const inbox = (() => {
+        try { return String(GM_getValue(ACK_INBOX_PATH_KEY, '') || '').trim(); } catch { return ''; }
+      })() || ACK_INBOX_DEFAULT_PATH;
+      const normalized = inbox.replace(/\\/g, '/');
+      const url = `file:///${normalized}/${name}`;
+      try {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url,
+          timeout: 3000,
+          onload: (response) => {
+            const ok = response.status >= 200 && response.status < 300;
+            const text = (response.responseText != null) ? String(response.responseText) : '';
+            resolve(ok && text ? text : null);
+          },
+          onerror: () => resolve(null),
+          ontimeout: () => resolve(null)
+        });
+      } catch (_) {
+        resolve(null);
+      }
+    });
   }
 
   async function fetchBlobForSink(url) {
@@ -3776,7 +3817,7 @@
     if (!button) return;
     button.dataset.cgptWorkPackageState = state;
     button.classList.remove('cgpt-work-package-called', 'cgpt-work-package-done', 'cgpt-work-package-warning');
-    button.disabled = ['preparing', 'downloading', 'checking-dedup', 'archiving', 'organizing', 'opening-folder'].includes(state);
+    button.disabled = ['preparing', 'downloading', 'archiving', 'opening-folder'].includes(state);
     if (state === 'preparing') {
       button.classList.add('cgpt-work-package-called');
       button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">检查文案</span>`;
@@ -3793,18 +3834,11 @@
       button.setAttribute('aria-label', button.title);
       return;
     }
-    if (state === 'checking-dedup') {
-      button.classList.add('cgpt-work-package-called');
-      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">正在查重</span>`;
-      button.title = '正在与历史作品比对去重';
-      button.setAttribute('aria-label', '正在查重');
-      return;
-    }
     if (state === 'archiving') {
       button.classList.add('cgpt-work-package-called');
-      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">正在移动到文件夹</span>`;
-      button.title = '图片已入库，正在移动到成品库文件夹';
-      button.setAttribute('aria-label', '正在移动到文件夹');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">正在处理</span>`;
+      button.title = '图片已入库，正在处理并移动到成品库';
+      button.setAttribute('aria-label', '正在处理');
       return;
     }
     if (state === 'opening-folder') {
@@ -3812,13 +3846,6 @@
       button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">正在打开文件夹</span>`;
       button.title = '正在打开本地文件夹验货';
       button.setAttribute('aria-label', '正在打开文件夹');
-      return;
-    }
-    if (state === 'organizing') {
-      button.classList.add('cgpt-work-package-called');
-      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">正在整理作品集</span>`;
-      button.title = '正在整理作品集';
-      button.setAttribute('aria-label', '正在整理作品集');
       return;
     }
     if (state === 'needs-text') {
@@ -3957,8 +3984,8 @@
       }
       await sleep(450);
     }
-    setWorkPackageButtonState(button, 'checking-dedup');
-    showImageDownloadToast('图片下载完成，正在查重并打包…', true);
+    setWorkPackageButtonState(button, 'archiving');
+    showImageDownloadToast('图片下载完成，正在处理并打包…', true);
     try {
       const protocolUrl = `${WORK_PACKAGE_PROTOCOL_URL}?target=library&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}`;
       openWorkPackageProtocol(protocolUrl);
@@ -4008,24 +4035,20 @@
             showImageDownloadToast(`打包失败：${ack.error || '本地脚本报错'}`, false);
             return;
           }
-          // 中间态：processing / waiting_images / incomplete_images → 更新子阶段文案
-          if (status === 'processing' && lastStage !== 'checking-dedup') {
-            lastStage = 'checking-dedup';
-            setWorkPackageButtonState(button, 'checking-dedup');
-          } else if ((status === 'waiting_images' || status === 'incomplete_images') && lastStage !== 'archiving') {
-            lastStage = 'archiving';
-            setWorkPackageButtonState(button, 'archiving');
+          // 中间态：processing / waiting_images / incomplete_images → 统一显示「正在处理」，不再细分子阶段
+          if (status === 'processing' || status === 'waiting_images' || status === 'incomplete_images') {
+            if (lastStage !== 'processing') {
+              lastStage = 'processing';
+              setWorkPackageButtonState(button, 'archiving');
+            }
           }
         } catch (_) {}
       }
-      // 未拿到 ack：按流逝时间推进提示，避免干等无反馈
+      // 未拿到 ack：3 秒后统一显示「正在处理」，不再按时间细分假进度
       const elapsed = Date.now() - t0;
       if (!lastStage && elapsed > 3000) {
-        lastStage = 'archiving';
+        lastStage = 'processing';
         setWorkPackageButtonState(button, 'archiving');
-      } else if (lastStage === 'archiving' && elapsed > 12000) {
-        lastStage = 'organizing';
-        setWorkPackageButtonState(button, 'organizing');
       }
       await sleep(600);
     }
