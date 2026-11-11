@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.35
+// @version      1.22.36
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -18,6 +18,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
 // @grant        GM_xmlhttpRequest
+// @grant        GM_setClipboard
 // @grant        unsafeWindow
 // @connect      raw.githubusercontent.com
 // @connect      chatgpt.com
@@ -30,7 +31,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.27';
+  const SCRIPT_VERSION = '1.22.36';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -1686,14 +1687,21 @@
   }
 
   function promptComposerInput() {
-    return document.querySelector('#prompt-textarea')
-      || [...document.querySelectorAll('main textarea, form textarea, main [contenteditable="true"], form [contenteditable="true"]')]
-        .find((element) => {
-          if (element.closest?.(`#${PROMPT_PANEL_ID}`)) return false;
-          const rect = element.getBoundingClientRect?.();
-          return rect && rect.width > 160 && rect.height > 20 && isElementVisible(element);
-        })
-      || null;
+    // ChatGPT 的输入框会随编辑器升级与对话切换重建：只选可见、可编辑的当前输入节点。
+    const candidates = document.querySelectorAll(
+      '#prompt-textarea, [data-testid="composer-text-input"], [data-testid="composer-input"], ' +
+      '.ProseMirror[contenteditable="true"], main [contenteditable="true"], form [contenteditable="true"], ' +
+      'main textarea, form textarea'
+    );
+    for (const element of candidates) {
+      if (element.closest?.(`#${PROMPT_PANEL_ID}, [inert], [aria-hidden="true"]`)) continue;
+      const isTextControl = element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement;
+      if (!isTextControl && !element.isContentEditable) continue;
+      if (isTextControl && (element.disabled || element.readOnly)) continue;
+      const rect = element.getBoundingClientRect?.();
+      if (rect?.width > 160 && rect?.height > 20 && isElementVisible(element)) return element;
+    }
+    return null;
   }
 
   function composerRootFor(element) {
@@ -1972,123 +1980,145 @@
     renderPromptPanel();
   }
 
-  function dispatchPasteLikeInput(input, text) {
+  // 点击提示词后总是先复制完整正文，自动插入失败时可直接 Ctrl+V 兜底。
+  async function copyPromptToClipboard(text) {
+    if (!text) return false;
     try {
-      input.dispatchEvent(new InputEvent('beforeinput', {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        inputType: 'insertFromPaste',
-        data: text,
-      }));
-    } catch {}
-    try {
-      input.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        composed: true,
-        inputType: 'insertFromPaste',
-        data: text,
-      }));
-    } catch {
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-  }
-
-  function fastPasteIntoContentEditable(input, text) {
-    if (!input?.isContentEditable) return false;
-    input.focus();
-    const selection = window.getSelection();
-    if (!selection) return false;
-    if (!selection.rangeCount || !input.contains(selection.anchorNode)) {
-      const range = document.createRange();
-      range.selectNodeContents(input);
-      range.collapse(false);
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-    const range = selection.rangeCount ? selection.getRangeAt(0) : document.createRange();
-    range.deleteContents();
-    range.insertNode(document.createTextNode(text));
-    range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    dispatchPasteLikeInput(input, text);
-    return true;
-  }
-
-  function insertTextIntoComposer(text) {
-    const input = promptComposerInput();
-    if (!input) {
-      window.alert('没有找到 ChatGPT 输入框。');
-      return false;
-    }
-    input.focus();
-    if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
-      const start = input.selectionStart ?? input.value.length;
-      const end = input.selectionEnd ?? input.value.length;
-      input.setRangeText(text, start, end, 'end');
-      dispatchPasteLikeInput(input, text);
-      return true;
-    }
-    const selection = window.getSelection();
-    if (selection && input.isContentEditable) {
-      if (String(text || '').length > 800 && fastPasteIntoContentEditable(input, text)) {
+      if (typeof GM_setClipboard === 'function') {
+        GM_setClipboard(text, 'text');
         return true;
       }
-      if (!selection.rangeCount || !input.contains(selection.anchorNode)) {
-        const range = document.createRange();
-        range.selectNodeContents(input);
-        range.collapse(false);
-        selection.removeAllRanges();
-        selection.addRange(range);
+    } catch (error) {
+      addDiagnosticLog('prompt:copy-gm-failed', { message: error?.message || String(error) });
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
       }
-      const range = selection.rangeCount ? selection.getRangeAt(0) : document.createRange();
-      range.deleteContents();
-      const lines = String(text || '').split('\n');
-      const fragment = document.createDocumentFragment();
-      lines.forEach((line, index) => {
-        if (index > 0) fragment.append(document.createElement('br'));
-        if (line) fragment.append(document.createTextNode(line));
-      });
-      range.insertNode(fragment);
-      range.collapse(false);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      dispatchPasteLikeInput(input, text);
-      return true;
+    } catch (error) {
+      addDiagnosticLog('prompt:copy-web-failed', { message: error?.message || String(error) });
     }
     return false;
   }
 
+  function composerCurrentText(input) {
+    if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) return input.value || '';
+    return input?.innerText || input?.textContent || '';
+  }
+
+  function comparablePromptText(text) {
+    // 富文本段落、换行和不间断空格可能由编辑器转换；验证时忽略这些排版差异。
+    return String(text || '').replace(/[\\s\\u00a0\\u200b]+/g, '');
+  }
+
+  async function verifyComposerInsertion(input, previous, inserted) {
+    // 等待编辑器内部状态与 React 渲染落定，不能仅凭 DOM 插入动作返回 true。
+    await new Promise((resolve) => window.setTimeout(resolve, 80));
+    if (!input?.isConnected) return false;
+    const before = comparablePromptText(previous);
+    const after = comparablePromptText(composerCurrentText(input));
+    const expected = comparablePromptText(inserted);
+    return Boolean(expected && after !== before && after.includes(expected));
+  }
+
+  async function insertTextIntoComposer(text) {
+    const input = promptComposerInput();
+    if (!input || !text) return false;
+    const before = composerCurrentText(input);
+    input.focus();
+    try {
+      if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? input.value.length;
+        const nextValue = input.value.slice(0, start) + text + input.value.slice(end);
+        // 原生 setter + input 事件，兼容 React 对受控文本框的追踪。
+        const prototype = input instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+        if (setter) setter.call(input, nextValue);
+        else input.value = nextValue;
+        input.setSelectionRange(start + text.length, start + text.length);
+        input.dispatchEvent(new InputEvent('input', {
+          bubbles: true, composed: true, inputType: 'insertText', data: text,
+        }));
+      } else if (input.isContentEditable) {
+        const selection = window.getSelection();
+        if (!selection) return false;
+        if (!selection.rangeCount || !input.contains(selection.anchorNode)) {
+          const range = document.createRange();
+          range.selectNodeContents(input);
+          range.collapse(false);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        // ProseMirror/React 不保证识别直接 Range.insertNode()；使用浏览器编辑命令
+        // 触发原生编辑流程，之后核验渲染后的实际内容；不做可能导致重复的二次插入。
+        document.execCommand('insertText', false, text);
+      } else {
+        return false;
+      }
+    } catch (error) {
+      addDiagnosticLog('prompt:insert-error', { message: error?.message || String(error) });
+      return false;
+    }
+    return verifyComposerInsertion(input, before, text);
+  }
+
+  let promptInsertionBusy = false;
   async function insertPrompt(promptId) {
+    if (promptInsertionBusy) return;
     const item = findPromptItem(promptId);
     if (!item) return;
-    let content = item.content || '';
-    let from = item.source || 'local';
-    // 声明了 skill 引用的条目：优先现拉技能仓库内容，失败退回快照
-    if (item.skill) {
-      if (item.skill.repo) showImageDownloadToast('正在读取技能最新版本…', true);
-      const resolved = await resolvePromptContent(item);
-      content = resolved.content || content;
-      from = resolved.from;
-      if (from === 'snapshot' && !content) {
-        showImageDownloadToast('技能拉取失败且没有本地快照', false);
+    promptInsertionBusy = true;
+    try {
+      let content = item.content || '';
+      let from = item.source || 'local';
+      // 带技能引用的提示词，先拉取实际使用的正文，再复制同一版本，防止剪贴板内容过期。
+      if (item.skill) {
+        if (item.skill.repo) showImageDownloadToast('正在读取技能最新版本…', true);
+        const resolved = await resolvePromptContent(item);
+        content = resolved.content || content;
+        from = resolved.from;
+        if (from === 'snapshot' && !content) {
+          showImageDownloadToast('技能拉取失败且没有本地快照', false);
+          return;
+        }
+      }
+      if (!content) {
+        showImageDownloadToast('这条提示词没有可插入的正文', false);
         return;
       }
-      if (from === 'snapshot' && item.content) {
-        showImageDownloadToast('技能拉取失败，已插入本地快照版本', false);
-      }
-      if (from === 'skill-remote') showImageDownloadToast('已读取技能最新版本', true);
-    }
-    if (!content) return;
-    const ok = insertTextIntoComposer(content);
-    if (ok) {
-      closePromptPanel();
+      const copied = await copyPromptToClipboard(content);
+      const inserted = await insertTextIntoComposer(content);
       addDiagnosticLog('prompt:insert', {
         id: item.id,
         title: item.title,
         source: from,
+        copied,
+        inserted,
+        length: content.length,
       });
+      if (inserted) {
+        closePromptPanel();
+        showImageDownloadToast(
+          copied ? '提示词已插入并复制到剪贴板，可随时 Ctrl+V' : '提示词已插入，剪贴板复制未成功',
+          true
+        );
+      } else {
+        // 未确认成功则保留面板，避免假成功；用户粘贴前应先检查输入框是否已有部分文字。
+        showImageDownloadToast(
+          copied
+            ? '未能确认插入；完整提示词已复制，请检查输入框后按 Ctrl+V'
+            : '提示词未能确认插入，自动复制也失败，请检查浏览器权限',
+          false
+        );
+      }
+    } catch (error) {
+      addDiagnosticLog('prompt:insert-unexpected', { message: error?.message || String(error) });
+      showImageDownloadToast('插入提示词时出现异常，请重新尝试', false);
+    } finally {
+      promptInsertionBusy = false;
     }
   }
 
