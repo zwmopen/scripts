@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [switch]$Apply
+    [switch]$Apply,
+    [switch]$UserscriptOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -104,6 +105,10 @@ $mappings = @(
     }
 )
 
+if ($UserscriptOnly) {
+    $mappings = @($mappings | Where-Object { $_.Name -eq 'ChatGPT userscript' })
+}
+
 $hasMismatch = $false
 foreach ($mapping in $mappings) {
     if (-not (Test-Path -LiteralPath $mapping.Source -PathType Leaf)) {
@@ -134,7 +139,7 @@ if ($hasMismatch -and -not $Apply) {
 }
 
 if ($Apply) {
-    & $PSCommandPath
+    & $PSCommandPath -UserscriptOnly:$UserscriptOnly
     exit $LASTEXITCODE
 }
 

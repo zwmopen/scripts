@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.36
+// @version      1.22.38
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -31,7 +31,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.36';
+  const SCRIPT_VERSION = '1.22.38';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -88,7 +88,7 @@
   const MAX_DIAGNOSTIC_LOGS = 220;
   const WORK_PACKAGE_VISIBLE_KEY = 'work-package-visible';
   const WORK_PACKAGE_HELPER_READY_KEY = 'work-package-helper-ready-v1';
-  // v1.22.22 已下载图片组指纹记忆：按图片 URL 指纹跨会话识别「已下载」，刷新后仍提示避免重复下载
+  // v1.22.37 图片组指纹记录跨会话区分已下载与已打包状态。
   const DOWNLOADED_GROUPS_KEY = 'downloaded-image-groups-v1';
   const MAX_DOWNLOADED_GROUPS = 120;
   const WORK_PACKAGE_INSTALLER_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/master/%E5%AE%89%E8%A3%85GPT%E4%BD%9C%E5%93%81%E5%8A%A9%E6%89%8B.vbs';
@@ -611,7 +611,7 @@
   }
 
   function stripSkillFrontmatter(text) {
-    return String(text || '').replace(/^---\n[\s\S]*?\n---\n/, '');
+    return String(text || '').replace(/[\s\u00a0\u200b]+/g, '');
   }
 
   function stripSkillExportNoise(text) {
@@ -1555,6 +1555,10 @@
         user-select: none !important;
         transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease !important;
       }
+      .${IMAGE_DOWNLOAD_CLASS}[hidden],
+      .${WORK_PACKAGE_CLASS}[hidden] {
+        display: none !important;
+      }
       .${IMAGE_DOWNLOAD_CLASS}:hover {
         background: rgba(128, 128, 128, 0.16) !important;
         border-color: rgba(128, 128, 128, 0.45) !important;
@@ -2009,7 +2013,7 @@
 
   function comparablePromptText(text) {
     // 富文本段落、换行和不间断空格可能由编辑器转换；验证时忽略这些排版差异。
-    return String(text || '').replace(/[\\s\\u00a0\\u200b]+/g, '');
+    return String(text || '').replace(/[\s\u00a0\u200b]+/g, '');
   }
 
   async function verifyComposerInsertion(input, previous, inserted) {
@@ -2333,17 +2337,20 @@
     return false;
   }
 
-  async function freezeWorkPackageTask(batchId, expectedImages) {
-    if (!batchId || !navigator.clipboard?.readText) return null;
-    let copyText = '';
-    try {
-      copyText = await navigator.clipboard.readText();
-    } catch (error) {
-      addDiagnosticLog('workpkg:task-clipboard-read-failed', {
-        batchId,
-        message: error?.message || String(error),
-      });
-      return null;
+  async function freezeWorkPackageTask(batchId, expectedImages, copyTextOverride = '') {
+    if (!batchId) return null;
+    let copyText = String(copyTextOverride || '');
+    if (!copyText.trim()) {
+      if (!navigator.clipboard?.readText) return null;
+      try {
+        copyText = await navigator.clipboard.readText();
+      } catch (error) {
+        addDiagnosticLog('workpkg:task-clipboard-read-failed', {
+          batchId,
+          message: error?.message || String(error),
+        });
+        return null;
+      }
     }
     if (!copyText || !copyText.trim()) return null;
 
@@ -2472,6 +2479,52 @@
       }
     } catch (_) {}
     return null;
+  }
+
+  function assistantMessageForNode(node) {
+    return node?.closest?.('[data-message-author-role="assistant"]') || null;
+  }
+
+  function textCardsForAssistantMessage(message) {
+    if (!message) return [];
+    const cards = new Set();
+    [...message.querySelectorAll('button')]
+      .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isCopyButton(button))
+      .forEach((copyButton) => {
+        const card = textCardForCopyButton(copyButton);
+        if (!card || card === message || !message.contains(card)) return;
+        if (!/(?:纯文本|文本|\btext\b|\btxt\b)/i.test(elementText(card))) return;
+        if (textContentForDownload(card).length < 12) return;
+        cards.add(card);
+      });
+    return [...cards];
+  }
+
+  function nextAssistantTextCardForNode(node) {
+    const currentMessage = assistantMessageForNode(node);
+    if (!currentMessage) return null;
+    const main = document.querySelector('main') || document.body;
+    const messages = [...main.querySelectorAll('[data-message-author-role="assistant"]')];
+    const currentIndex = messages.indexOf(currentMessage);
+    if (currentIndex < 0) return null;
+    // 只认 DOM 中紧邻的下一条助手消息，避免跳过消息后误配到更早/更晚的文案。
+    const nextMessage = messages[currentIndex + 1];
+    if (!nextMessage) return null;
+    const cards = textCardsForAssistantMessage(nextMessage);
+    if (cards.length !== 1) return null;
+    const copyText = textContentForDownload(cards[0]);
+    if (!copyText) return null;
+    return { message: nextMessage, card: cards[0], copyText };
+  }
+
+  function isTextCardActionToolbar(toolbar) {
+    if (!toolbar) return false;
+    return [...toolbar.querySelectorAll('button')]
+      .filter((button) => !button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`) && isCopyButton(button))
+      .some((copyButton) => {
+        const card = textCardForCopyButton(copyButton);
+        return Boolean(card && card !== toolbar && /(?:纯文本|文本|\btext\b|\btxt\b)/i.test(elementText(card)));
+      });
   }
 
   function countFromText(text) {
@@ -3090,10 +3143,14 @@
     const fp = computeImageGroupFingerprint(images);
     if (!fp) return;
     const groups = readDownloadedGroups();
+    const previous = groups[fp] || {};
     groups[fp] = {
       title: String(meta.title || '').slice(0, 80),
       count: Number(meta.count || uniqueImageUrls(images).length || 0),
       time: Date.now(),
+      status: meta.packaged || previous.status === 'packaged' ? 'packaged' : 'downloaded',
+      batchId: String(meta.batchId || previous.batchId || ''),
+      packageFolder: String(meta.packageFolder || previous.packageFolder || ''),
     };
     writeDownloadedGroups(groups);
   }
@@ -3103,6 +3160,10 @@
     if (!fp) return null;
     const rec = readDownloadedGroups()[fp];
     return rec || null;
+  }
+
+  function isImageGroupPackaged(images = []) {
+    return findDownloadedGroup(images)?.status === 'packaged';
   }
 
   function groupImageElements(scope = document) {
@@ -3160,6 +3221,10 @@
     } else if (state === 'done') {
       status.hidden = false;
       status.textContent = '已保存';
+      count.hidden = true;
+    } else if (state === 'packaged' || state === 'previously-downloaded') {
+      status.hidden = false;
+      status.textContent = state === 'packaged' ? '已打包过' : '已下载过';
       count.hidden = true;
     } else {
       status.hidden = true;
@@ -3786,20 +3851,20 @@
     event?.preventDefault?.();
     event?.stopPropagation?.();
     event?.stopImmediatePropagation?.();
+    const priorDownload = findDownloadedGroup(button.__cgptImageElements || []);
+    if (priorDownload) {
+      showImageDownloadToast(
+        priorDownload.status === 'packaged'
+          ? '这组图片已打包过，已阻止重复下载'
+          : '这组图片已下载过，已阻止重复下载',
+        false
+      );
+      return;
+    }
     logImageDownloadStep('外部按钮点击[默认下载]', {
       title: button.title,
       count: button.dataset.cgptImageCount,
     });
-
-    // v1.22.22 已下载确认：本组图指纹命中历史时，弹确认避免重复下载
-    if (button.dataset.cgptImageWasDownloaded === '1') {
-      const ok = window.confirm('这组图片之前已下载过，是否继续下载？');
-      if (!ok) {
-        showImageDownloadToast('已取消，未重复下载', false);
-        return;
-      }
-      delete button.dataset.cgptImageWasDownloaded;
-    }
 
     // 1. 下载本组图片
     const dlResult = await runImageDownloadShortcut(button);
@@ -3827,7 +3892,13 @@
       showImageDownloadToast(`已创建元数据：${title}_manifest.json`, true);
 
       // v1.22.22 下载成功后记录指纹，供后续刷新/跨会话识别「已下载」
-      markImageGroupDownloaded(button.__cgptImageElements, { title, count });
+      if (dlResult.total > 0 && dlResult.downloaded >= dlResult.total) {
+        markImageGroupDownloaded(button.__cgptImageElements, {
+          title,
+          count,
+          batchId: dlResult.batchId,
+        });
+      }
 
       // 3. 唤醒本地整理协议（若本地助手就绪，自动整理入 Downloads）
       const batchId = button.dataset.cgptWorkPackageBatchId || newDownloadBatchId();
@@ -3847,7 +3918,29 @@
     if (!button) return;
     button.dataset.cgptWorkPackageState = state;
     button.classList.remove('cgpt-work-package-called', 'cgpt-work-package-done', 'cgpt-work-package-warning');
-    button.disabled = ['preparing', 'downloading', 'archiving', 'opening-folder'].includes(state);
+    button.disabled = ['preparing', 'downloading', 'archiving', 'opening-folder', 'already-packaged'].includes(state);
+    if (state === 'already-packaged') {
+      button.classList.add('cgpt-work-package-done');
+      const total = Math.max(0, Number(detail.total || 0));
+      const copyCount = Math.max(0, Number(button.dataset.cgptPackageCopyCount || 0));
+      const suffix = copyCount
+        ? `（文案${copyCount}，图片${total}）`
+        : (total ? ' (' + total + '张)' : '');
+      button.innerHTML = icons.package + '<span class="cgpt-work-package-label">已打包过' + suffix + '</span>';
+      button.title = detail.folder ? '本组图片已打包至 ' + detail.folder : '本组图片已打包过，已阻止重复下载';
+      button.setAttribute('aria-label', button.title);
+      return;
+    }
+    if (state === 'legacy-download') {
+      button.classList.add('cgpt-work-package-warning');
+      button.disabled = true;
+      const total = Math.max(0, Number(detail.total || 0));
+      const suffix = total ? ' (' + total + '张)' : '';
+      button.innerHTML = icons.package + '<span class="cgpt-work-package-label">已下载过' + suffix + '</span>';
+      button.title = '旧版下载记录没有批次编号，已阻止重复下载，无法自动复用旧文件';
+      button.setAttribute('aria-label', button.title);
+      return;
+    }
     if (state === 'preparing') {
       button.classList.add('cgpt-work-package-called');
       button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">检查文案</span>`;
@@ -3927,10 +4020,15 @@
       return;
     }
     const total = Math.max(0, Number(detail.total || 0));
-    const suffix = total ? ` (${total})` : '';
+    const copyCount = Math.max(0, Number(button.dataset.cgptPackageCopyCount || 0));
+    const suffix = copyCount
+      ? `（文案${copyCount}，图片${total}）`
+      : (total ? `（${total}张）` : '');
     button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">下载到成品库${suffix}</span>`;
-    button.title = total ? `下载本组 ${total} 张图片，并打包归档到 成品库 \\ A手动制作` : '下载本组全部图片，并打包归档到 成品库 \\ A手动制作';
-    button.setAttribute('aria-label', total ? `下载到成品库（${total} 张）` : '下载到成品库');
+    button.title = copyCount
+      ? `使用紧邻下一条助手消息的文案和本组 ${total} 张图片打包到成品库`
+      : (total ? `下载本组 ${total} 张图片，并打包归档到 成品库 \\ A手动制作` : '下载本组全部图片，并打包归档到 成品库 \\ A手动制作');
+    button.setAttribute('aria-label', copyCount ? `下载到成品库（文案${copyCount}，图片${total}）` : (total ? `下载到成品库（${total} 张）` : '下载到成品库'));
   }
 
   async function triggerWorkPackageButton(button, event = null) {
@@ -3938,6 +4036,22 @@
     event?.preventDefault?.();
     event?.stopPropagation?.();
     event?.stopImmediatePropagation?.();
+    const imageButtonCheck = button.__cgptPackageImageButton
+      || button.parentElement?.querySelector('.' + IMAGE_DOWNLOAD_CLASS);
+    const previousRecord = findDownloadedGroup(imageButtonCheck?.__cgptImageElements || []);
+    if (previousRecord?.status === 'packaged') {
+      setWorkPackageButtonState(button, 'already-packaged', {
+        total: previousRecord.count,
+        folder: previousRecord.packageFolder,
+      });
+      showImageDownloadToast('这组图片已打包过，已阻止重复下载', false);
+      return;
+    }
+    if (previousRecord && !previousRecord.batchId) {
+      setWorkPackageButtonState(button, 'legacy-download', { total: previousRecord.count });
+      showImageDownloadToast('旧版记录已标记为下载过，但缺少批次编号，已停止以免重复下载', false);
+      return;
+    }
     // 直存：趁点击事件的同步栈把目录选择器拉起来
     fsSinkCapturePickerNow();
     if (!await ensureWorkPackageHelperReady()) {
@@ -3946,18 +4060,8 @@
     }
     setWorkPackageButtonState(button, 'preparing');
     const slot = button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
-    const imageButton = slot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
-
-    // v1.22.22 已下载确认：本组图指纹命中历史时，弹确认避免重复打包入库
-    if (imageButton?.dataset.cgptImageWasDownloaded === '1') {
-      const ok = window.confirm('这组图片之前已下载/打包过，是否继续下载并入库？');
-      if (!ok) {
-        showImageDownloadToast('已取消，未重复下载', false);
-        setWorkPackageButtonState(button, 'idle');
-        return;
-      }
-      delete imageButton.dataset.cgptImageWasDownloaded;
-    }
+    const imageButton = button.__cgptPackageImageButton
+      || slot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
 
     let expectedImages = Number(imageButton?.dataset.cgptImageTotal || 0);
     const downloadedImages = Number(imageButton?.dataset.cgptImageDownloaded || 0);
@@ -3985,7 +4089,7 @@
       return;
     }
     const batchId = imageButton?.dataset.cgptWorkPackageBatchId || newDownloadBatchId();
-    const frozenTask = await freezeWorkPackageTask(batchId, expectedImages);
+    const frozenTask = await freezeWorkPackageTask(batchId, expectedImages, button.__cgptPackageCopyText || '');
     if (!frozenTask) {
       showImageDownloadToast('请先复制当前窗口的小红书文案，再点“下载并打包”', false);
       setWorkPackageButtonState(button, 'needs-text');
@@ -4026,7 +4130,7 @@
       return;
     }
     // v1.22.25 真回执：轮询本地脚本写回收件区的 result ack，按真实状态驱动按钮文案
-    const imageElements = imageButton?.__cgptImageElements || [];
+    const imageElements = imageButton?.__cgptImageElements || button.__cgptPackageImageElements || [];
     await pollWorkPackageResult(button, batchId, expectedImages, imageElements);
   }
 
@@ -4047,12 +4151,25 @@
             await sleep(900);
             setWorkPackageButtonState(button, 'done', { total: expectedImages, folder: ack.packageFolder || '' });
             showImageDownloadToast(`已保存至：成品库 \\ ${ack.packageFolder || 'A手动制作'}`, true);
-            markImageGroupDownloaded(imageElements, { title: '', count: expectedImages });
+            markImageGroupDownloaded(imageElements, {
+              title: '',
+              count: expectedImages,
+              batchId,
+              packaged: true,
+              packageFolder: ack.packageFolder || '',
+            });
             return;
           }
           if (status === 'duplicate') {
             setWorkPackageButtonState(button, 'duplicate');
             showImageDownloadToast('本次为重复下载，已清理本地图片', false);
+            markImageGroupDownloaded(imageElements, {
+              title: '',
+              count: expectedImages,
+              batchId,
+              packaged: true,
+              packageFolder: ack.packageFolder || '',
+            });
             return;
           }
           if (status === 'visual_similar') {
@@ -4092,6 +4209,8 @@
     if (!actionRow || isInsideComposerOrForm(actionRow) || isImageOverlayRow(actionRow) || isReasoningRow(actionRow)) {
       return null;
     }
+    const textCardToolbar = isTextCardActionToolbar(actionRow);
+    const pairedText = textCardToolbar ? null : nextAssistantTextCardForNode(actionRow);
 
     container?.setAttribute?.('data-cgpt-image-download-container', 'true');
 
@@ -4140,7 +4259,8 @@
       }, true);
       slot.append(button);
     }
-    button.hidden = !imageDownloadButtonVisible;
+    // 消息级动作栏收敛为一个“下载到成品库”入口；文本卡片自己的按钮保持原样。
+    button.hidden = !imageDownloadButtonVisible || (!textCardToolbar && workPackageButtonVisible);
     let packageButton = slot.querySelector(`.${WORK_PACKAGE_CLASS}`);
     if (workPackageButtonVisible) {
       if (!packageButton) {
@@ -4166,7 +4286,6 @@
         }, true);
         slot.append(packageButton);
       }
-      setWorkPackageButtonState(packageButton, packageButton.dataset.cgptWorkPackageState || 'idle', { total: count });
       packageButton.hidden = false;
     } else if (packageButton) {
       packageButton.hidden = true;
@@ -4177,17 +4296,45 @@
     button.dataset.cgptImageCount = String(count);
     button.dataset.cgptImageElementCount = String(images.length);
     button.title = `下载本组图片（当前共 ${count} 张）`;
+    if (packageButton) {
+      packageButton.__cgptPackageImageButton = button;
+      packageButton.__cgptPackageImageElements = images;
+      packageButton.__cgptPackageCopyText = pairedText?.copyText || '';
+      packageButton.dataset.cgptPackageCopyCount = pairedText ? '1' : '0';
+      packageButton.dataset.cgptPackageCopyMessage = pairedText ? 'next-assistant' : '';
+      setWorkPackageButtonState(packageButton, packageButton.dataset.cgptWorkPackageState || 'idle', {
+        total: count,
+        copyCount: pairedText ? 1 : 0,
+      });
+    }
 
-    // v1.22.22 已下载指纹识别：刷新/跨会话后，若本组图 URL 指纹命中历史，标记为「已下载」，
-    // 按钮显示已下载状态，点击时弹确认「已下载过，是否继续下载？」
+    // 按图片组指纹恢复跨刷新状态，打包按钮显示上次成功结果。
     const downloadedRecord = findDownloadedGroup(images);
     if (downloadedRecord && !button.dataset.cgptImageDownloaded) {
       button.dataset.cgptImageDownloaded = String(downloadedRecord.count || count);
-      button.dataset.cgptImageWasDownloaded = '1';
+      if (downloadedRecord.batchId) {
+        button.dataset.cgptWorkPackageBatchId = downloadedRecord.batchId;
+      }
     }
 
     const downloaded = Number(button.dataset.cgptImageDownloaded || 0);
-    setImageButtonProgress(button, downloaded, count);
+    setImageButtonProgress(
+      button,
+      downloaded,
+      count,
+      false,
+      downloadedRecord?.status === 'packaged' ? 'packaged' : (downloadedRecord ? 'previously-downloaded' : '')
+    );
+    if (downloadedRecord?.status === 'packaged') {
+      setWorkPackageButtonState(packageButton, 'already-packaged', {
+        total: downloadedRecord.count || count,
+        folder: downloadedRecord.packageFolder,
+      });
+    } else if (downloadedRecord && !downloadedRecord.batchId) {
+      setWorkPackageButtonState(packageButton, 'legacy-download', {
+        total: downloadedRecord.count || count,
+      });
+    }
     fitSlotToToolbar(actionRow, slot);
     return slot;
   }
