@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.4.5
-// @description  配合聚光的小红书网页杂七杂八工具：记忆关键词、榜单、筛选、指标和日期，并从内容卡片直达蒲公英作者主页
+// @version      0.4.6
+// @description  配合聚光的小红书网页杂七杂八工具：记忆关键词、筛选、指标和日期，并从内容卡片直达蒲公英作者主页
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
 // @match        https://juguang.xiaohongshu.com/*
