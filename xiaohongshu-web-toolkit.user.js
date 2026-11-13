@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.3.0
-// @description  配合聚光的小红书网页杂七杂八工具：记忆筛选条件，并从内容卡片直达蒲公英作者主页
+// @version      0.4.0
+// @description  配合聚光的小红书网页杂七杂八工具：记忆关键词、榜单、筛选、指标和日期，并从内容卡片直达蒲公英作者主页
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
 // @match        https://juguang.xiaohongshu.com/*
@@ -26,8 +26,12 @@
   const STORAGE_KEY = `xhs-juguang-filter-memory:${VERSION}`;
   const FILTER_NAMES = ['所属行业', '流量场域', '内容类型', '内容来源', '题材'];
   const SEARCH_PLACEHOLDERS = ['使用逗号区隔可进行批量搜索', '试试搜'];
-  const SORT_VALUES = ['互动率', '曝光量', '点赞量', '评论量', '收藏量', '转发量'];
-  const DATE_VALUES = ['近7日', '近30日', '近90日', '全部'];
+  const SORT_VALUES = [
+    '曝光量', '阅读率', '阅读量', '互动量', '互动率',
+    '曝光咨询率', '阅读咨询率', '阅读开口率', '阅读留资率', '表单提交率',
+    '点赞量', '评论量', '收藏量', '转发量',
+  ];
+  const DATE_VALUES = ['近1日', '近3日', '近7日', '近14日', '近30日', '近90日', '近180日', '近365日', '全部'];
   const TAB_PREFIX = 'square-tabs-item-';
   const PUGONGYING_HOST = 'pgy.xiaohongshu.com';
   const PUGONGYING_BUTTON_CLASS = 'xhs-pgy-direct-button';
@@ -134,8 +138,36 @@
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  function findSearchButton(input) {
+    if (!input) return null;
+    const inputRect = input.getBoundingClientRect();
+    const containers = [];
+    let element = input.parentElement;
+    for (let index = 0; index < 6 && element && element !== document.body; index += 1) {
+      containers.push(element);
+      element = element.parentElement;
+    }
+    const candidates = [];
+    for (const container of containers) {
+      for (const button of Array.from(container.querySelectorAll('button, [role="button"]'))) {
+        if (!isVisible(button) || button === host) continue;
+        const rect = button.getBoundingClientRect();
+        const text = normalize(button.textContent);
+        const label = normalize(button.getAttribute('aria-label') || button.getAttribute('title'));
+        const sameRow = Math.abs((rect.top + rect.bottom) / 2 - (inputRect.top + inputRect.bottom) / 2) < Math.max(28, inputRect.height * 1.8);
+        const rightOfInput = rect.left >= inputRect.right - 24;
+        const searchLike = /搜索|查询|search/i.test(`${text} ${label}`);
+        const distance = Math.abs(rect.left - inputRect.right) + Math.abs(rect.top - inputRect.top);
+        if (sameRow && (searchLike || rightOfInput)) candidates.push({ button, searchLike, distance });
+      }
+      if (candidates.some((item) => item.searchLike)) break;
+    }
+    return candidates.sort((a, b) => Number(b.searchLike) - Number(a.searchLike) || a.distance - b.distance)[0]?.button || null;
+  }
+
   function triggerSearch(input) {
-    if (!input) return;
+    if (!input) return false;
+    input.click();
     ['keydown', 'keyup'].forEach((type) => input.dispatchEvent(new KeyboardEvent(type, {
       key: 'Enter',
       code: 'Enter',
@@ -143,9 +175,18 @@
       which: 13,
       bubbles: true,
     })));
+    const button = findSearchButton(input);
+    if (button) {
+      button.click();
+      return true;
+    }
     const scope = input.closest('form, [class*="search"], [class*="Search"]');
-    const button = scope && Array.from(scope.querySelectorAll('button')).find(isVisible);
-    if (button) button.click();
+    const fallback = scope && Array.from(scope.querySelectorAll('button, [role="button"]')).find(isVisible);
+    if (fallback) {
+      fallback.click();
+      return true;
+    }
+    return false;
   }
 
   function parseUrl(raw) {
@@ -186,7 +227,7 @@
 
   function toPugongyingProfileUrl(raw) {
     const profileId = /^[\w-]{4,120}$/.test(String(raw || '')) ? String(raw) : extractProfileId(raw);
-    return profileId ? `https://${PUGONGYING_HOST}/solar/advertiser/kol/${encodeURIComponent(profileId)}` : '';
+    return profileId ? `https://${PUGONGYING_HOST}/solar/pre-trade/blogger-detail/${encodeURIComponent(profileId)}` : '';
   }
 
   function isLikelyNoteHref(raw) {
@@ -377,17 +418,43 @@
     }
   }
 
+  function withPendingPgyQuery(raw) {
+    const url = parseUrl(raw);
+    if (!url) return '';
+    url.searchParams.set('xhs_pgy', '1');
+    url.searchParams.set('xhs_pgy_ts', String(Date.now()));
+    return url.href;
+  }
+
+  function findOriginalNoteHref(card) {
+    const anchors = [];
+    if (card && card.matches && card.matches('a[href]')) anchors.push(card);
+    if (card) anchors.push(...Array.from(card.querySelectorAll('a[href]')));
+    return anchors.map((anchor) => anchor.href).find(isLikelyNoteHref) || '';
+  }
+
+  function findNoteAuthorProfileUrl() {
+    const links = Array.from(document.querySelectorAll('a[href]'))
+      .filter((link) => isLikelyProfileHref(link.href));
+    const preferred = links.find((link) => /xsec_source=pc_user/i.test(link.href))
+      || links.find((link) => link.id === 'user-hover-guide')
+      || links.find((link) => {
+        const rect = link.getBoundingClientRect();
+        return rect.top >= 0 && rect.top < Math.max(720, window.innerHeight * 0.9);
+      })
+      || links[0];
+    return preferred ? toPugongyingProfileUrl(preferred.href) : '';
+  }
+
   function redirectPendingNoteToPugongying() {
-    if (!readPendingPgyNavigation()) return;
+    const queryRequested = new URLSearchParams(location.search).get('xhs_pgy') === '1';
+    if (!queryRequested && !readPendingPgyNavigation()) return;
     let observer;
     let timer;
     let finished = false;
     const tryRedirect = () => {
       if (finished) return true;
-      const profile = Array.from(document.querySelectorAll('a[href]'))
-        .filter((link) => isVisible(link) && isLikelyProfileHref(link.href))
-        .map((link) => toPugongyingProfileUrl(link.href))
-        .find(Boolean);
+      const profile = findNoteAuthorProfileUrl();
       if (!profile) return false;
       finished = true;
       clearPendingPgyNavigation();
@@ -407,7 +474,7 @@
     observer = new MutationObserver(tryRedirect);
     observer.observe(document.documentElement, { childList: true, subtree: true });
     timer = window.setInterval(tryRedirect, 250);
-    window.setTimeout(stop, 10000);
+    window.setTimeout(stop, 30000);
   }
 
   function findOriginalCardTarget(card) {
@@ -442,11 +509,11 @@
         display: inline-flex !important;
         align-items: center !important;
         justify-content: center !important;
-        min-width: 58px !important;
-        height: 28px !important;
-        padding: 0 9px !important;
+        min-width: 28px !important;
+        height: 24px !important;
+        padding: 0 7px !important;
         border: 1px solid rgba(255, 255, 255, .75) !important;
-        border-radius: 14px !important;
+        border-radius: 12px !important;
         background: rgba(22, 24, 28, .78) !important;
         box-shadow: 0 2px 8px rgba(0, 0, 0, .2) !important;
         color: #fff !important;
@@ -475,9 +542,9 @@
     button.className = PUGONGYING_BUTTON_CLASS;
     button.setAttribute('role', 'button');
     button.setAttribute('tabindex', '0');
-    button.setAttribute('aria-label', '打开蒲公英页面');
-    button.title = url ? `打开蒲公英：${url}` : '识别作者后打开蒲公英';
-    button.textContent = '蒲公英';
+    button.setAttribute('aria-label', '打开蒲公英作者主页');
+    button.title = url ? `打开蒲公英作者主页：${url}` : '打开笔记并识别作者后转到蒲公英';
+    button.textContent = '蒲';
 
     const open = (event) => {
       event.preventDefault();
@@ -487,7 +554,12 @@
         window.open(url, '_blank', 'noopener,noreferrer');
       } else {
         markPendingPgyNavigation();
-        triggerOriginalCardNavigation(card);
+        const noteHref = findOriginalNoteHref(card);
+        if (noteHref) {
+          window.open(withPendingPgyQuery(noteHref), '_blank', 'noopener,noreferrer');
+        } else {
+          triggerOriginalCardNavigation(card);
+        }
       }
     };
     button.addEventListener('click', open);
@@ -554,7 +626,7 @@
   }
 
   function tabElements() {
-    return Array.from(document.querySelectorAll(`[id^="${TAB_PREFIX}"]`)).filter(isVisible);
+    return Array.from(document.querySelectorAll(`[id^="${TAB_PREFIX}"], [role="tab"]`)).filter(isVisible);
   }
 
   function tabName(element) {
@@ -772,8 +844,6 @@
       const input = getSearchInput();
       if (input && typeof saved.search === 'string' && normalize(input.value) !== normalize(saved.search)) {
         setNativeValue(input, saved.search);
-        triggerSearch(input);
-        await wait(260);
       }
 
       for (const label of FILTER_NAMES) {
@@ -796,6 +866,12 @@
       if (saved.date && clickChoiceTrigger(DATE_VALUES, lastKnownDate || saved.date)) {
         await wait(100);
         clickOption(openPopup(), saved.date);
+      }
+
+      // 聚光的搜索词写入后不会自动刷新结果，最后显式点击搜索按钮。
+      if (input && typeof saved.search === 'string' && normalize(saved.search)) {
+        triggerSearch(input);
+        await wait(500);
       }
 
       setStatus(manual ? '已恢复上次筛选' : '已恢复上次筛选');
@@ -837,7 +913,7 @@
       const target = event.target instanceof Element ? event.target : null;
       if (!target || restoring) return;
 
-      const tab = target.closest(`[id^="${TAB_PREFIX}"]`);
+      const tab = target.closest(`[id^="${TAB_PREFIX}"], [role="tab"]`);
       if (tab) {
         lastKnownTab = tabName(tab);
         scheduleSave();
