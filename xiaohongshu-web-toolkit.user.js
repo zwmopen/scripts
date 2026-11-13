@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.2.1
+// @version      0.2.2
 // @description  配合聚光的小红书网页杂七杂八工具：记忆筛选条件，并从内容卡片直达蒲公英
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
@@ -226,6 +226,7 @@
   function collectCardMetadata(card) {
     const urls = [];
     const ids = [];
+    const debug = new Set();
     const seen = new WeakSet();
     const addString = (value, keyHint = '') => {
       const text = String(value || '').trim();
@@ -279,12 +280,20 @@
     const elements = [card, ...Array.from(card.querySelectorAll('*')).slice(0, 500)];
     for (const element of elements) {
       try {
+        const elementClass = normalize(String(element.className || '')).replace(/\s+/g, '.').slice(0, 80);
+        if (elementClass) debug.add(`${String(element.tagName || '').toLowerCase()}.${elementClass}`);
         if (element.href) addString(element.href, 'href');
         for (const attribute of Array.from(element.attributes || [])) {
           if (/^(?:data-|href$|src$)/i.test(attribute.name)) addString(attribute.value, attribute.name);
         }
         for (const key of Object.keys(element)) {
           if (key.startsWith('__reactProps') || key.startsWith('__reactFiber') || key.startsWith('__reactInternalInstance')) {
+            debug.add(key.slice(0, 36));
+            try {
+              Object.keys(element[key] || {}).filter((name) => /url|href|link|user|author|creator|profile|note|item|content|route|path|id/i.test(name)).slice(0, 24).forEach((name) => debug.add(`react:${name}`));
+            } catch (error) {
+              // Ignore a React object that is being replaced during a render.
+            }
             visit(element[key], 0, key, '');
           }
         }
@@ -292,10 +301,10 @@
         // React internals are implementation details and may throw while a card rerenders.
       }
     }
-    return { urls: [...new Set(urls)], ids };
+    return { urls: [...new Set(urls)], ids, debug: [...debug].slice(0, 36) };
   }
 
-  function resolvePugongyingUrl(card) {
+  function resolvePugongyingUrl(card, metadata = collectCardMetadata(card)) {
     const profile = findProfileLink(card);
     if (profile) {
       const profileUrl = toPugongyingUrl(profile.href);
@@ -311,7 +320,6 @@
       if (noteUrl) return noteUrl;
     }
 
-    const metadata = collectCardMetadata(card);
     const profilePath = metadata.urls.find((value) => isLikelyProfileHref(value));
     if (profilePath) {
       const profileUrl = toPugongyingUrl(profilePath);
@@ -376,9 +384,10 @@
   }
 
   function addPugongyingButton(card) {
-    if (!card || !(card instanceof Element) || card.querySelector(`.${PUGONGYING_BUTTON_CLASS}`)) return;
-    const url = resolvePugongyingUrl(card);
-    if (!url) return;
+    if (!card || !(card instanceof Element) || card.querySelector(`.${PUGONGYING_BUTTON_CLASS}`)) return { added: false, metadata: { debug: [] } };
+    const metadata = collectCardMetadata(card);
+    const url = resolvePugongyingUrl(card, metadata);
+    if (!url) return { added: false, metadata };
     if (window.getComputedStyle(card).position === 'static') card.style.position = 'relative';
 
     const button = document.createElement('span');
@@ -400,6 +409,7 @@
       if (event.key === 'Enter' || event.key === ' ') open(event);
     });
     card.appendChild(button);
+    return { added: true, metadata };
   }
 
   function scanContentCards() {
@@ -408,6 +418,7 @@
     const seen = new Set();
     let candidates = 0;
     let buttons = 0;
+    const debugHints = new Set();
     const anchors = Array.from(document.querySelectorAll('a[href]')).filter((anchor) => {
       return isVisible(anchor) && isLikelyNoteHref(anchor.href);
     });
@@ -416,9 +427,9 @@
       if (!card || seen.has(card)) continue;
       seen.add(card);
       candidates += 1;
-      const before = card.querySelector(`.${PUGONGYING_BUTTON_CLASS}`);
-      addPugongyingButton(card);
-      if (!before && card.querySelector(`.${PUGONGYING_BUTTON_CLASS}`)) buttons += 1;
+      const result = addPugongyingButton(card);
+      result.metadata.debug.slice(0, 8).forEach((hint) => debugHints.add(hint));
+      if (result.added) buttons += 1;
     }
 
     const images = Array.from(document.querySelectorAll('img')).filter(isVisible);
@@ -440,13 +451,14 @@
       if (candidate && !seen.has(candidate)) {
         seen.add(candidate);
         candidates += 1;
-        const before = candidate.querySelector(`.${PUGONGYING_BUTTON_CLASS}`);
-        addPugongyingButton(candidate);
-        if (!before && candidate.querySelector(`.${PUGONGYING_BUTTON_CLASS}`)) buttons += 1;
+        const result = addPugongyingButton(candidate);
+        result.metadata.debug.slice(0, 8).forEach((hint) => debugHints.add(hint));
+        if (result.added) buttons += 1;
       }
     }
     if (host && candidates > 0) {
-      setStatus(`已扫描 ${candidates} 张卡片${buttons ? `，已添加 ${buttons} 个蒲公英按钮` : '，等待识别作者信息'}`);
+      const hint = [...debugHints].slice(0, 4).join('、');
+      setStatus(`已扫描 ${candidates} 张卡片${buttons ? `，已添加 ${buttons} 个蒲公英按钮` : `，等待识别作者信息${hint ? `（${hint}）` : ''}`}`);
     }
   }
 
