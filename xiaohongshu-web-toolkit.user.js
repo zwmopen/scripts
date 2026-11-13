@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.4.1
+// @version      0.4.2
 // @description  配合聚光的小红书网页杂七杂八工具：记忆关键词、榜单、筛选、指标和日期，并从内容卡片直达蒲公英作者主页
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
@@ -10,6 +10,7 @@
 // @match        https://www.xiaohongshu.com/explore/*
 // @match        https://www.xiaohongshu.com/discovery/item/*
 // @match        https://www.xiaohongshu.com/note/*
+// @match        https://www.xiaohongshu.com/user/profile/*
 // @updateURL    https://raw.githubusercontent.com/zwmopen/scripts/master/xiaohongshu-web-toolkit.user.js
 // @downloadURL  https://raw.githubusercontent.com/zwmopen/scripts/master/xiaohongshu-web-toolkit.user.js
 // @run-at       document-start
@@ -496,6 +497,15 @@
     window.setTimeout(stop, 30000);
   }
 
+  function redirectPendingProfileToPugongying() {
+    const queryRequested = new URLSearchParams(location.search).get('xhs_pgy') === '1';
+    if (!queryRequested && !readPendingPgyNavigation()) return;
+    const profile = toPugongyingProfileUrl(location.href);
+    if (!profile) return;
+    clearPendingPgyNavigation();
+    window.location.replace(profile);
+  }
+
   function findOriginalCardTarget(card) {
     const elements = Array.from(card.querySelectorAll('a[href], button, [role="button"]'))
       .filter((element) => isVisible(element) && !element.closest(`.${PUGONGYING_BUTTON_CLASS}`));
@@ -503,6 +513,15 @@
       || elements[0]
       || Array.from(card.querySelectorAll('img, video')).find(isVisible)
       || card;
+  }
+
+  function findOriginalProfileHref(card) {
+    const target = findOriginalCardTarget(card);
+    const candidates = [];
+    if (target && target.href) candidates.push(target.href);
+    if (card && card.matches && card.matches('a[href]')) candidates.push(card.href);
+    if (card) candidates.push(...Array.from(card.querySelectorAll('a[href]')).map((link) => link.href));
+    return candidates.find(isLikelyProfileHref) || '';
   }
 
   function triggerOriginalCardNavigation(card) {
@@ -577,6 +596,11 @@
         if (noteHref) {
           window.open(withPendingPgyQuery(noteHref), '_blank', 'noopener,noreferrer');
         } else {
+          const profileHref = findOriginalProfileHref(card);
+          if (profileHref) {
+            window.open(withPendingPgyQuery(profileHref), '_blank', 'noopener,noreferrer');
+            return;
+          }
           triggerOriginalCardNavigation(card);
         }
       }
@@ -1036,8 +1060,9 @@
   }
 
   function boot() {
-    if (!isJuguangHost() && isNotePath(location.pathname)) {
-      redirectPendingNoteToPugongying();
+    if (!isJuguangHost()) {
+      if (isNotePath(location.pathname)) redirectPendingNoteToPugongying();
+      else if (isProfilePath(location.pathname)) redirectPendingProfileToPugongying();
       return;
     }
     if (!isJuguangHost()) return;
