@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.4.0
+// @version      0.4.1
 // @description  配合聚光的小红书网页杂七杂八工具：记忆关键词、榜单、筛选、指标和日期，并从内容卡片直达蒲公英作者主页
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
@@ -268,7 +268,12 @@
   }
 
   function findProfileLink(card) {
-    const scopes = [card, card && card.parentElement, card && card.parentElement && card.parentElement.parentElement].filter(Boolean);
+    const scopes = [];
+    let scope = card;
+    for (let index = 0; index < 7 && scope && scope !== document.body; index += 1) {
+      scopes.push(scope);
+      scope = scope.parentElement;
+    }
     for (const scope of scopes) {
       const links = Array.from(scope.querySelectorAll('a[href]'));
       const profile = links.find((link) => isLikelyProfileHref(link.href));
@@ -384,6 +389,20 @@
     }
     const profileId = metadata.ids.find((item) => item.kind === 'profile');
     if (profileId) return toPugongyingProfileUrl(profileId.value);
+
+    // Some card renderers put the avatar/profile link in a sibling wrapper
+    // outside the note anchor's immediate card element. Walk a few bounded
+    // ancestors and inspect their links before falling back to XHS navigation.
+    let scope = card;
+    for (let index = 0; index < 7 && scope && scope !== document.body; index += 1) {
+      const nearbyProfile = Array.from(scope.querySelectorAll('a[href]'))
+        .find((link) => isLikelyProfileHref(link.href));
+      if (nearbyProfile) {
+        const profileUrl = toPugongyingProfileUrl(nearbyProfile.href);
+        if (profileUrl) return profileUrl;
+      }
+      scope = scope.parentElement;
+    }
     return '';
   }
 
