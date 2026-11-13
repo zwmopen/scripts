@@ -9,7 +9,7 @@
 ## 小红书网页脚本
 
 文件：`xiaohongshu-web-toolkit.user.js`
-安装直链：[Raw](https://raw.githubusercontent.com/zwmopen/scripts/master/xiaohongshu-web-toolkit.user.js)
+安装直链：[Raw](https://github.com/zwmopen/scripts/raw/refs/heads/master/xiaohongshu-web-toolkit.user.js)
 
 功能：
 

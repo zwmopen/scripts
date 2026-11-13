@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.4.3
+// @version      0.4.4
 // @description  配合聚光的小红书网页杂七杂八工具：记忆关键词、榜单、筛选、指标和日期，并从内容卡片直达蒲公英作者主页
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
@@ -11,8 +11,8 @@
 // @match        https://www.xiaohongshu.com/discovery/item/*
 // @match        https://www.xiaohongshu.com/note/*
 // @match        https://www.xiaohongshu.com/user/profile/*
-// @updateURL    https://raw.githubusercontent.com/zwmopen/scripts/master/xiaohongshu-web-toolkit.user.js
-// @downloadURL  https://raw.githubusercontent.com/zwmopen/scripts/master/xiaohongshu-web-toolkit.user.js
+// @updateURL    https://github.com/zwmopen/scripts/raw/refs/heads/master/xiaohongshu-web-toolkit.user.js
+// @downloadURL  https://github.com/zwmopen/scripts/raw/refs/heads/master/xiaohongshu-web-toolkit.user.js
 // @run-at       document-start
 // @grant        GM_getValue
 // @grant        GM_setValue
