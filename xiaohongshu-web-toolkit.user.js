@@ -1,12 +1,15 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.2.2
-// @description  配合聚光的小红书网页杂七杂八工具：记忆筛选条件，并从内容卡片直达蒲公英
+// @version      0.3.0
+// @description  配合聚光的小红书网页杂七杂八工具：记忆筛选条件，并从内容卡片直达蒲公英作者主页
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
 // @match        https://juguang.xiaohongshu.com/*
 // @match        https://xhsad.com/*
+// @match        https://www.xiaohongshu.com/explore/*
+// @match        https://www.xiaohongshu.com/discovery/item/*
+// @match        https://www.xiaohongshu.com/note/*
 // @updateURL    https://raw.githubusercontent.com/zwmopen/scripts/master/xiaohongshu-web-toolkit.user.js
 // @downloadURL  https://raw.githubusercontent.com/zwmopen/scripts/master/xiaohongshu-web-toolkit.user.js
 // @run-at       document-start
@@ -28,6 +31,7 @@
   const TAB_PREFIX = 'square-tabs-item-';
   const PUGONGYING_HOST = 'pgy.xiaohongshu.com';
   const PUGONGYING_BUTTON_CLASS = 'xhs-pgy-direct-button';
+  const PENDING_PGY_KEY = 'xhs-juguang-pending-pgy-navigation';
 
   let host;
   let shadow;
@@ -160,6 +164,11 @@
       || host.endsWith('.xhslink.cn');
   }
 
+  function isJuguangHost(hostname = location.hostname) {
+    const host = String(hostname || '').toLowerCase();
+    return host === 'ad.xiaohongshu.com' || host === 'juguang.xiaohongshu.com' || host === 'xhsad.com';
+  }
+
   function isNotePath(pathname) {
     return /\/(?:explore|discovery\/item|note)\//i.test(pathname || '');
   }
@@ -168,12 +177,16 @@
     return /\/(?:user\/profile|profile|creator)\//i.test(pathname || '');
   }
 
-  function toPugongyingUrl(raw) {
+  function extractProfileId(raw) {
     const url = parseUrl(raw);
-    if (!url || !isXhsHost(url.hostname)) return '';
-    url.protocol = 'https:';
-    url.hostname = PUGONGYING_HOST;
-    return url.href;
+    if (!url || !isXhsHost(url.hostname) || !isProfilePath(url.pathname)) return '';
+    const match = url.pathname.match(/\/user\/profile\/([^/?#]+)/i);
+    return match ? decodeURIComponent(match[1]) : '';
+  }
+
+  function toPugongyingProfileUrl(raw) {
+    const profileId = /^[\w-]{4,120}$/.test(String(raw || '')) ? String(raw) : extractProfileId(raw);
+    return profileId ? `https://${PUGONGYING_HOST}/solar/advertiser/kol/${encodeURIComponent(profileId)}` : '';
   }
 
   function isLikelyNoteHref(raw) {
@@ -307,28 +320,17 @@
   function resolvePugongyingUrl(card, metadata = collectCardMetadata(card)) {
     const profile = findProfileLink(card);
     if (profile) {
-      const profileUrl = toPugongyingUrl(profile.href);
+      const profileUrl = toPugongyingProfileUrl(profile.href);
       if (profileUrl) return profileUrl;
     }
 
     const links = [];
     if (card && card.matches && card.matches('a[href]')) links.push(card);
     if (card) links.push(...Array.from(card.querySelectorAll('a[href]')));
-    const note = links.find((link) => isLikelyNoteHref(link.href));
-    if (note) {
-      const noteUrl = toPugongyingUrl(note.href);
-      if (noteUrl) return noteUrl;
-    }
-
     const profilePath = metadata.urls.find((value) => isLikelyProfileHref(value));
     if (profilePath) {
-      const profileUrl = toPugongyingUrl(profilePath);
+      const profileUrl = toPugongyingProfileUrl(profilePath);
       if (profileUrl) return profileUrl;
-    }
-    const notePath = metadata.urls.find((value) => isLikelyNoteHref(value));
-    if (notePath) {
-      const noteUrl = toPugongyingUrl(notePath);
-      if (noteUrl) return noteUrl;
     }
 
     const dataId = card && (
@@ -337,15 +339,94 @@
       || card.getAttribute('data-userid')
     );
     if (dataId && /^[\w-]+$/.test(dataId)) {
-      return `https://${PUGONGYING_HOST}/user/profile/${encodeURIComponent(dataId)}`;
+      return toPugongyingProfileUrl(dataId);
     }
     const profileId = metadata.ids.find((item) => item.kind === 'profile');
-    if (profileId) return `https://${PUGONGYING_HOST}/user/profile/${encodeURIComponent(profileId.value)}`;
-    const noteId = metadata.ids.find((item) => item.kind === 'note');
-    if (noteId) return `https://${PUGONGYING_HOST}/explore/${encodeURIComponent(noteId.value)}`;
-    const unknownId = metadata.ids.find((item) => item.kind === 'unknown');
-    if (unknownId) return `https://${PUGONGYING_HOST}/explore/${encodeURIComponent(unknownId.value)}`;
+    if (profileId) return toPugongyingProfileUrl(profileId.value);
     return '';
+  }
+
+  function readPendingPgyNavigation() {
+    try {
+      const value = typeof GM_getValue === 'function'
+        ? GM_getValue(PENDING_PGY_KEY, null)
+        : JSON.parse(localStorage.getItem(PENDING_PGY_KEY) || 'null');
+      if (!value || !value.createdAt || Date.now() - Number(value.createdAt) > 30000) return null;
+      return value;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function markPendingPgyNavigation() {
+    const value = { createdAt: Date.now() };
+    try {
+      if (typeof GM_setValue === 'function') GM_setValue(PENDING_PGY_KEY, value);
+      else localStorage.setItem(PENDING_PGY_KEY, JSON.stringify(value));
+    } catch (error) {
+      // The note page still opens normally if storage is unavailable.
+    }
+  }
+
+  function clearPendingPgyNavigation() {
+    try {
+      if (typeof GM_deleteValue === 'function') GM_deleteValue(PENDING_PGY_KEY);
+      else localStorage.removeItem(PENDING_PGY_KEY);
+    } catch (error) {
+      // Ignore storage cleanup failures.
+    }
+  }
+
+  function redirectPendingNoteToPugongying() {
+    if (!readPendingPgyNavigation()) return;
+    let observer;
+    let timer;
+    let finished = false;
+    const tryRedirect = () => {
+      if (finished) return true;
+      const profile = Array.from(document.querySelectorAll('a[href]'))
+        .filter((link) => isVisible(link) && isLikelyProfileHref(link.href))
+        .map((link) => toPugongyingProfileUrl(link.href))
+        .find(Boolean);
+      if (!profile) return false;
+      finished = true;
+      clearPendingPgyNavigation();
+      if (observer) observer.disconnect();
+      if (timer) window.clearInterval(timer);
+      window.location.replace(profile);
+      return true;
+    };
+    const stop = () => {
+      if (finished) return;
+      finished = true;
+      clearPendingPgyNavigation();
+      if (observer) observer.disconnect();
+      if (timer) window.clearInterval(timer);
+    };
+    if (tryRedirect()) return;
+    observer = new MutationObserver(tryRedirect);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    timer = window.setInterval(tryRedirect, 250);
+    window.setTimeout(stop, 10000);
+  }
+
+  function findOriginalCardTarget(card) {
+    const elements = Array.from(card.querySelectorAll('a[href], button, [role="button"]'))
+      .filter((element) => isVisible(element) && !element.closest(`.${PUGONGYING_BUTTON_CLASS}`));
+    return elements.find((element) => isLikelyNoteHref(element.href))
+      || elements[0]
+      || Array.from(card.querySelectorAll('img, video')).find(isVisible)
+      || card;
+  }
+
+  function triggerOriginalCardNavigation(card) {
+    const target = findOriginalCardTarget(card);
+    if (!target) return;
+    if (typeof target.click === 'function') {
+      target.click();
+      return;
+    }
+    target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
   }
 
   function installCardStyle() {
@@ -384,10 +465,10 @@
   }
 
   function addPugongyingButton(card) {
-    if (!card || !(card instanceof Element) || card.querySelector(`.${PUGONGYING_BUTTON_CLASS}`)) return { added: false, metadata: { debug: [] } };
+    if (!card || !(card instanceof Element)) return { added: false, present: false, metadata: { debug: [] } };
+    if (card.querySelector(`.${PUGONGYING_BUTTON_CLASS}`)) return { added: false, present: true, metadata: { debug: [] } };
     const metadata = collectCardMetadata(card);
     const url = resolvePugongyingUrl(card, metadata);
-    if (!url) return { added: false, metadata };
     if (window.getComputedStyle(card).position === 'static') card.style.position = 'relative';
 
     const button = document.createElement('span');
@@ -395,21 +476,26 @@
     button.setAttribute('role', 'button');
     button.setAttribute('tabindex', '0');
     button.setAttribute('aria-label', '打开蒲公英页面');
-    button.title = `打开蒲公英：${url}`;
+    button.title = url ? `打开蒲公英：${url}` : '识别作者后打开蒲公英';
     button.textContent = '蒲公英';
 
     const open = (event) => {
       event.preventDefault();
       event.stopPropagation();
       if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
-      window.open(url, '_blank', 'noopener,noreferrer');
+      if (url) {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      } else {
+        markPendingPgyNavigation();
+        triggerOriginalCardNavigation(card);
+      }
     };
     button.addEventListener('click', open);
     button.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') open(event);
     });
     card.appendChild(button);
-    return { added: true, metadata };
+    return { added: true, present: true, metadata };
   }
 
   function scanContentCards() {
@@ -429,7 +515,7 @@
       candidates += 1;
       const result = addPugongyingButton(card);
       result.metadata.debug.slice(0, 8).forEach((hint) => debugHints.add(hint));
-      if (result.added) buttons += 1;
+      if (result.present) buttons += 1;
     }
 
     const images = Array.from(document.querySelectorAll('img')).filter(isVisible);
@@ -453,7 +539,7 @@
         candidates += 1;
         const result = addPugongyingButton(candidate);
         result.metadata.debug.slice(0, 8).forEach((hint) => debugHints.add(hint));
-        if (result.added) buttons += 1;
+        if (result.present) buttons += 1;
       }
     }
     if (host && candidates > 0) {
@@ -855,6 +941,11 @@
   }
 
   function boot() {
+    if (!isJuguangHost() && isNotePath(location.pathname)) {
+      redirectPendingNoteToPugongying();
+      return;
+    }
+    if (!isJuguangHost()) return;
     installClickTracking();
     installHistoryTracking();
     registerMenu();
