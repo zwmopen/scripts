@@ -6,6 +6,17 @@
 
 这里集中保存适合公开安装、复用或自动更新的轻量脚本。它是发布仓库，也可承载尚未拆成独立产品的小脚本，但不再保存已有独立项目的第二份可编辑源码。
 
+## 小红书网页脚本
+
+文件：`xiaohongshu-web-toolkit.user.js`
+安装直链：[Raw](https://raw.githubusercontent.com/zwmopen/scripts/master/xiaohongshu-web-toolkit.user.js)
+
+功能：
+
+- 记忆聚光内容广场的搜索词、榜单、筛选项、排序和日期范围；
+- 在内容卡片右下角增加“蒲公英”按钮；
+- 优先读取卡片作者主页链接，将原路径切换到 `pgy.xiaohongshu.com`，找不到作者链接时回退到笔记链接。
+
 ## 当前边界
 
 - 普通轻量脚本：可直接在本仓库维护。
