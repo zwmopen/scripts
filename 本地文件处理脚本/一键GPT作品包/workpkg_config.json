@@ -1,9 +1,9 @@
 {
     "library_name": "成品库",
-    "library_path": "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目\\成品库（GPT+本地脚本制作）",
+    "library_path": "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目\\03-成品库",
     "target_subfolder": "A手动制作",
-    "portfolio_output_path": "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目\\成品库（GPT+本地脚本制作）\\抖音小红书",
-    "image_inbox_path": "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目\\成品库（GPT+本地脚本制作）\\_收件区;C:\\Users\\z\\Downloads",
+    "portfolio_output_path": "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目\\03-成品库\\A手动制作",
+    "image_inbox_path": "D:\\AICode\\项目推进\\projects\\江湖有旅人\\主项目\\03-成品库\\_收件区;C:\\Users\\z\\Downloads",
     "success_message": "已保存至 成品库\\A手动制作",
     "no_text_message": "请先复制文案",
     "no_image_message": "请先下载作品图",

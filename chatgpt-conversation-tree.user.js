@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.39
+// @version      1.22.40
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -31,7 +31,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.39';
+  const SCRIPT_VERSION = '1.22.40';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -1484,6 +1484,7 @@
 
       .${IMAGE_DOWNLOAD_SLOT_CLASS} {
         display: inline-flex !important;
+        pointer-events: auto !important;
         align-items: center !important;
         gap: 6px !important;
         margin-inline-start: 6px !important;
@@ -1527,6 +1528,7 @@
       .${IMAGE_DOWNLOAD_CLASS},
       .${WORK_PACKAGE_CLASS} {
         all: unset !important;
+        pointer-events: auto !important;
         box-sizing: border-box !important;
         position: relative !important;
         height: 28px !important;
@@ -2482,7 +2484,9 @@
   }
 
   function assistantMessageForNode(node) {
-    return node?.closest?.('[data-message-author-role="assistant"]') || null;
+    return node?.closest?.('[data-message-author-role="assistant"]')
+      || node?.closest?.('[data-turn-key]')
+      || null;
   }
 
   function textCardsForAssistantMessage(message) {
@@ -2504,17 +2508,24 @@
     const currentMessage = assistantMessageForNode(node);
     if (!currentMessage) return null;
     const main = document.querySelector('main') || document.body;
-    const messages = [...main.querySelectorAll('[data-message-author-role="assistant"]')];
+    const assistantMessages = [...main.querySelectorAll('[data-message-author-role="assistant"]')];
+    const usingAssistantRoles = assistantMessages.includes(currentMessage);
+    const messages = usingAssistantRoles
+      ? assistantMessages
+      : [...main.querySelectorAll('[data-turn-key]')];
     const currentIndex = messages.indexOf(currentMessage);
     if (currentIndex < 0) return null;
-    // 只认 DOM 中紧邻的下一条助手消息，避免跳过消息后误配到更早/更晚的文案。
-    const nextMessage = messages[currentIndex + 1];
-    if (!nextMessage) return null;
-    const cards = textCardsForAssistantMessage(nextMessage);
-    if (cards.length !== 1) return null;
-    const copyText = textContentForDownload(cards[0]);
-    if (!copyText) return null;
-    return { message: nextMessage, card: cards[0], copyText };
+    // 新版 ChatGPT 把同一助手回合的图片与文本卡放在一个 [data-turn-key] 中；
+    // 先检查同一回合，再检查紧邻的下一条助手消息/回合，不跨过其他回合配文。
+    for (const candidateIndex of [currentIndex, currentIndex + 1]) {
+      const candidate = messages[candidateIndex];
+      if (!candidate) continue;
+      const cards = textCardsForAssistantMessage(candidate);
+      if (cards.length !== 1) continue;
+      const copyText = textContentForDownload(cards[0]);
+      if (copyText) return { message: candidate, card: cards[0], copyText };
+    }
+    return null;
   }
 
   function isTextCardActionToolbar(toolbar) {
@@ -4342,15 +4353,43 @@
     const main = document.querySelector('main');
     const header = document.querySelector('header');
     if (!main || !header) return;
-    const messages = [...main.querySelectorAll('[data-message-author-role="assistant"]')];
+    const roleMessages = [...main.querySelectorAll('[data-message-author-role="assistant"]')];
+    const usesRoleMessages = roleMessages.length > 0;
+    // ChatGPT 新版移除了 data-message-author-role，改为以 data-turn-key 包裹每轮内容。
+    const messages = usesRoleMessages ? roleMessages : [...main.querySelectorAll('[data-turn-key]')];
+    const imagesIn = (message) => {
+      if (!message) return [];
+      let insertedImages = [];
+      try {
+        insertedImages = [...message.querySelectorAll(`.${IMAGE_DOWNLOAD_CLASS}`)]
+          .flatMap((button) => Array.isArray(button.__cgptImageElements) ? button.__cgptImageElements : []);
+      } catch (_) {}
+      if (insertedImages.length) return [...new Set(insertedImages)];
+      return broadImageElements(message, 105);
+    };
     let binding = null;
-    for (let index = messages.length - 1; index > 0; index -= 1) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
       const cards = textCardsForAssistantMessage(messages[index]);
       if (!cards.length) continue;
-      const images = broadImageElements(messages[index - 1], 105);
-      if (!images.length) break;
       const copyText = cards.map(textContentForDownload).filter(Boolean).join('\n\n');
-      if (copyText) binding = { images, copyText, container: messages[index - 1] };
+      if (!copyText) break;
+
+      // 旧 DOM 仍优先绑定紧邻的上一条助手消息；新 DOM 先认同一回合内已确认的图片，
+      // 再认紧邻上一回合。图片插槽提供经过助手图片筛选的元素，避免把用户附件算进去。
+      const candidates = usesRoleMessages
+        ? [messages[index - 1], messages[index]]
+        : [messages[index], messages[index - 1]];
+      let imageBinding = null;
+      for (const candidate of candidates) {
+        if (!candidate) continue;
+        const images = imagesIn(candidate);
+        if (images.length) {
+          imageBinding = { images, container: candidate };
+          break;
+        }
+      }
+      if (!imageBinding) break;
+      binding = { ...imageBinding, copyText, copyCount: cards.length };
       break;
     }
     if (!binding) return;
@@ -4374,10 +4413,10 @@
       record ? (record.status === 'packaged' ? 'packaged' : 'previously-downloaded') : '');
     if (packageButton) {
       packageButton.__cgptPackageCopyText = binding.copyText;
-      packageButton.dataset.cgptPackageCopyCount = '1';
+      packageButton.dataset.cgptPackageCopyCount = String(binding.copyCount || 1);
       setWorkPackageButtonState(packageButton, record?.status === 'packaged' ? 'already-packaged' :
         (record && !record.batchId ? 'legacy-download' : packageButton.dataset.cgptWorkPackageState || 'idle'),
-        { total: uniqueImageUrls(binding.images).length });
+        { total: uniqueImageUrls(binding.images).length, copyCount: binding.copyCount || 1 });
     }
     slot.classList.remove('cgpt-slot-compact');
   }
