@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.4.2
+// @version      0.4.3
 // @description  配合聚光的小红书网页杂七杂八工具：记忆关键词、榜单、筛选、指标和日期，并从内容卡片直达蒲公英作者主页
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
@@ -275,12 +275,28 @@
       scopes.push(scope);
       scope = scope.parentElement;
     }
+    const cardRect = card && card.getBoundingClientRect ? card.getBoundingClientRect() : null;
+    const cardCenter = cardRect ? {
+      x: (cardRect.left + cardRect.right) / 2,
+      y: (cardRect.top + cardRect.bottom) / 2,
+    } : null;
+    const candidates = [];
     for (const scope of scopes) {
       const links = Array.from(scope.querySelectorAll('a[href]'));
-      const profile = links.find((link) => isLikelyProfileHref(link.href));
-      if (profile) return profile;
+      links.filter((link) => isLikelyProfileHref(link.href)).forEach((link) => {
+        if (!candidates.includes(link)) candidates.push(link);
+      });
     }
-    return null;
+    return candidates.sort((a, b) => {
+      if (!cardCenter) return 0;
+      const distance = (link) => {
+        const rect = link.getBoundingClientRect();
+        const x = (rect.left + rect.right) / 2;
+        const y = (rect.top + rect.bottom) / 2;
+        return Math.hypot(x - cardCenter.x, y - cardCenter.y);
+      };
+      return distance(a) - distance(b);
+    })[0] || null;
   }
 
   function collectCardMetadata(card) {
