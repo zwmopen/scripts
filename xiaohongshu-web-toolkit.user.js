@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.4.4
+// @version      0.4.5
 // @description  配合聚光的小红书网页杂七杂八工具：记忆关键词、榜单、筛选、指标和日期，并从内容卡片直达蒲公英作者主页
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
@@ -43,7 +43,6 @@
   let statusNode;
   let currentOpenFilter = null;
   let currentFilterPath = [];
-  let lastKnownTab = '';
   let lastKnownSort = '';
   let lastKnownDate = '';
   const triggerCache = new Map();
@@ -688,29 +687,6 @@
     return Array.from(document.querySelectorAll(`[id^="${TAB_PREFIX}"], [role="tab"]`)).filter(isVisible);
   }
 
-  function tabName(element) {
-    if (!element) return '';
-    const id = element.id || '';
-    return id.startsWith(TAB_PREFIX) ? id.slice(TAB_PREFIX.length) : shortText(element.textContent, 60);
-  }
-
-  function isActiveTab(element) {
-    const aria = element.getAttribute('aria-selected');
-    const className = String(element.className || '');
-    return aria === 'true' || /active|selected|current/i.test(className);
-  }
-
-  function readTab() {
-    const active = tabElements().find(isActiveTab);
-    return tabName(active) || lastKnownTab || '';
-  }
-
-  function findTab(value) {
-    const wanted = normalize(value);
-    return tabElements().find((element) => tabName(element) === wanted)
-      || tabElements().find((element) => normalize(element.textContent).includes(wanted));
-  }
-
   function filterTrigger(label) {
     const wanted = normalize(label);
     const cached = triggerCache.get(wanted);
@@ -863,7 +839,6 @@
     const next = {
       ...previous,
       search: searchInput ? normalize(searchInput.value) : (previous.search || ''),
-      tab: readTab() || previous.tab || '',
       sort: lastKnownSort || visibleKnownValue(SORT_VALUES) || previous.sort || '',
       date: lastKnownDate || visibleKnownValue(DATE_VALUES) || previous.date || '',
       filters: { ...(previous.filters || {}) },
@@ -894,12 +869,6 @@
     restoring = true;
     setStatus('正在恢复…');
     try {
-      const tab = findTab(saved.tab);
-      if (tab && tabName(tab) !== readTab()) {
-        tab.click();
-        await wait(220);
-      }
-
       const input = getSearchInput();
       if (input && typeof saved.search === 'string' && normalize(input.value) !== normalize(saved.search)) {
         setNativeValue(input, saved.search);
@@ -971,13 +940,6 @@
     document.addEventListener('click', (event) => {
       const target = event.target instanceof Element ? event.target : null;
       if (!target || restoring) return;
-
-      const tab = target.closest(`[id^="${TAB_PREFIX}"], [role="tab"]`);
-      if (tab) {
-        lastKnownTab = tabName(tab);
-        scheduleSave();
-        return;
-      }
 
       for (const label of FILTER_NAMES) {
         const trigger = filterTrigger(label);
