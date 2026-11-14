@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.4.6
-// @description  配合聚光的小红书网页杂七杂八工具：记忆关键词、筛选、指标和日期，并从内容卡片直达蒲公英作者主页
+// @version      0.4.7
+// @description  配合聚光的小红书网页杂七杂八工具：记忆关键词、筛选、指标和日期；卡片按钮只直达蒲公英作者主页
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
 // @match        https://juguang.xiaohongshu.com/*
@@ -36,7 +36,6 @@
   const TAB_PREFIX = 'square-tabs-item-';
   const PUGONGYING_HOST = 'pgy.xiaohongshu.com';
   const PUGONGYING_BUTTON_CLASS = 'xhs-pgy-direct-button';
-  const PENDING_PGY_KEY = 'xhs-juguang-pending-pgy-navigation';
 
   let host;
   let shadow;
@@ -422,133 +421,6 @@
     return '';
   }
 
-  function readPendingPgyNavigation() {
-    try {
-      const value = typeof GM_getValue === 'function'
-        ? GM_getValue(PENDING_PGY_KEY, null)
-        : JSON.parse(localStorage.getItem(PENDING_PGY_KEY) || 'null');
-      if (!value || !value.createdAt || Date.now() - Number(value.createdAt) > 30000) return null;
-      return value;
-    } catch (error) {
-      return null;
-    }
-  }
-
-  function markPendingPgyNavigation() {
-    const value = { createdAt: Date.now() };
-    try {
-      if (typeof GM_setValue === 'function') GM_setValue(PENDING_PGY_KEY, value);
-      else localStorage.setItem(PENDING_PGY_KEY, JSON.stringify(value));
-    } catch (error) {
-      // The note page still opens normally if storage is unavailable.
-    }
-  }
-
-  function clearPendingPgyNavigation() {
-    try {
-      if (typeof GM_deleteValue === 'function') GM_deleteValue(PENDING_PGY_KEY);
-      else localStorage.removeItem(PENDING_PGY_KEY);
-    } catch (error) {
-      // Ignore storage cleanup failures.
-    }
-  }
-
-  function withPendingPgyQuery(raw) {
-    const url = parseUrl(raw);
-    if (!url) return '';
-    url.searchParams.set('xhs_pgy', '1');
-    url.searchParams.set('xhs_pgy_ts', String(Date.now()));
-    return url.href;
-  }
-
-  function findOriginalNoteHref(card) {
-    const anchors = [];
-    if (card && card.matches && card.matches('a[href]')) anchors.push(card);
-    if (card) anchors.push(...Array.from(card.querySelectorAll('a[href]')));
-    return anchors.map((anchor) => anchor.href).find(isLikelyNoteHref) || '';
-  }
-
-  function findNoteAuthorProfileUrl() {
-    const links = Array.from(document.querySelectorAll('a[href]'))
-      .filter((link) => isLikelyProfileHref(link.href));
-    const preferred = links.find((link) => /xsec_source=pc_user/i.test(link.href))
-      || links.find((link) => link.id === 'user-hover-guide')
-      || links.find((link) => {
-        const rect = link.getBoundingClientRect();
-        return rect.top >= 0 && rect.top < Math.max(720, window.innerHeight * 0.9);
-      })
-      || links[0];
-    return preferred ? toPugongyingProfileUrl(preferred.href) : '';
-  }
-
-  function redirectPendingNoteToPugongying() {
-    const queryRequested = new URLSearchParams(location.search).get('xhs_pgy') === '1';
-    if (!queryRequested && !readPendingPgyNavigation()) return;
-    let observer;
-    let timer;
-    let finished = false;
-    const tryRedirect = () => {
-      if (finished) return true;
-      const profile = findNoteAuthorProfileUrl();
-      if (!profile) return false;
-      finished = true;
-      clearPendingPgyNavigation();
-      if (observer) observer.disconnect();
-      if (timer) window.clearInterval(timer);
-      window.location.replace(profile);
-      return true;
-    };
-    const stop = () => {
-      if (finished) return;
-      finished = true;
-      clearPendingPgyNavigation();
-      if (observer) observer.disconnect();
-      if (timer) window.clearInterval(timer);
-    };
-    if (tryRedirect()) return;
-    observer = new MutationObserver(tryRedirect);
-    observer.observe(document.documentElement, { childList: true, subtree: true });
-    timer = window.setInterval(tryRedirect, 250);
-    window.setTimeout(stop, 30000);
-  }
-
-  function redirectPendingProfileToPugongying() {
-    const queryRequested = new URLSearchParams(location.search).get('xhs_pgy') === '1';
-    if (!queryRequested && !readPendingPgyNavigation()) return;
-    const profile = toPugongyingProfileUrl(location.href);
-    if (!profile) return;
-    clearPendingPgyNavigation();
-    window.location.replace(profile);
-  }
-
-  function findOriginalCardTarget(card) {
-    const elements = Array.from(card.querySelectorAll('a[href], button, [role="button"]'))
-      .filter((element) => isVisible(element) && !element.closest(`.${PUGONGYING_BUTTON_CLASS}`));
-    return elements.find((element) => isLikelyNoteHref(element.href))
-      || elements[0]
-      || Array.from(card.querySelectorAll('img, video')).find(isVisible)
-      || card;
-  }
-
-  function findOriginalProfileHref(card) {
-    const target = findOriginalCardTarget(card);
-    const candidates = [];
-    if (target && target.href) candidates.push(target.href);
-    if (card && card.matches && card.matches('a[href]')) candidates.push(card.href);
-    if (card) candidates.push(...Array.from(card.querySelectorAll('a[href]')).map((link) => link.href));
-    return candidates.find(isLikelyProfileHref) || '';
-  }
-
-  function triggerOriginalCardNavigation(card) {
-    const target = findOriginalCardTarget(card);
-    if (!target) return;
-    if (typeof target.click === 'function') {
-      target.click();
-      return;
-    }
-    target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-  }
-
   function installCardStyle() {
     if (cardStyleInstalled || !document.head) return;
     const style = document.createElement('style');
@@ -595,30 +467,22 @@
     button.className = PUGONGYING_BUTTON_CLASS;
     button.setAttribute('role', 'button');
     button.setAttribute('tabindex', '0');
-    button.setAttribute('aria-label', '打开蒲公英作者主页');
-    button.title = url ? `打开蒲公英作者主页：${url}` : '打开笔记并识别作者后转到蒲公英';
+    button.setAttribute('aria-label', url ? '直接打开蒲公英作者主页' : '识别作者后直接打开蒲公英');
+    button.title = url
+      ? `直接打开蒲公英作者主页：${url}`
+      : '点击时重试识别作者；识别失败不会打开小红书中转页';
     button.textContent = '蒲';
 
     const open = (event) => {
       event.preventDefault();
       event.stopPropagation();
       if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
-      if (url) {
-        window.open(url, '_blank', 'noopener,noreferrer');
-      } else {
-        markPendingPgyNavigation();
-        const noteHref = findOriginalNoteHref(card);
-        if (noteHref) {
-          window.open(withPendingPgyQuery(noteHref), '_blank', 'noopener,noreferrer');
-        } else {
-          const profileHref = findOriginalProfileHref(card);
-          if (profileHref) {
-            window.open(withPendingPgyQuery(profileHref), '_blank', 'noopener,noreferrer');
-            return;
-          }
-          triggerOriginalCardNavigation(card);
-        }
+      const directUrl = url || resolvePugongyingUrl(card, collectCardMetadata(card));
+      if (!directUrl) {
+        setStatus('未识别到作者 ID，未打开任何页面；稍后可重试', 'warn');
+        return;
       }
+      window.open(directUrl, '_blank', 'noopener,noreferrer');
     };
     button.addEventListener('click', open);
     button.addEventListener('keydown', (event) => {
@@ -1038,11 +902,6 @@
   }
 
   function boot() {
-    if (!isJuguangHost()) {
-      if (isNotePath(location.pathname)) redirectPendingNoteToPugongying();
-      else if (isProfilePath(location.pathname)) redirectPendingProfileToPugongying();
-      return;
-    }
     if (!isJuguangHost()) return;
     installClickTracking();
     installHistoryTracking();
