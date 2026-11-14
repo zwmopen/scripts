@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.4.9
-// @description  配合聚光的小红书网页工具：自动保存并恢复筛选；卡片按钮直达蒲公英；菜单可检查更新
+// @version      0.5.0
+// @description  配合聚光的小红书网页工具：自动保存并恢复筛选；按头像识别作者并直达蒲公英；菜单可检查更新
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
 // @match        https://juguang.xiaohongshu.com/*
@@ -38,6 +38,7 @@
   const PUGONGYING_HOST = 'pgy.xiaohongshu.com';
   const PUGONGYING_BUTTON_CLASS = 'xhs-pgy-direct-button';
   const SCRIPT_UPDATE_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/xiaohongshu-web-toolkit.user.js';
+  const USER_AVATAR_XPATH_HINT = '/html/body/div[1]/div/div[2]/div[3]/div[1]/div/div/div/div/div[1]/section[4]/div/div[2]/div[1]/div[3]/section/section/section[1]';
 
   let currentOpenFilter = null;
   let currentFilterPath = [];
@@ -315,29 +316,67 @@
       scope = scope.parentElement;
     }
 
-    const images = [];
+    const avatarNodes = [];
+    const seenNodes = new Set();
+    const selector = 'img, a[href], button, [role="button"], section, [class*="avatar" i], [data-user-id], [data-author-id], [data-userid]';
     for (const candidateScope of scopes) {
-      for (const image of Array.from(candidateScope.querySelectorAll('img'))) {
-        if (images.includes(image)) continue;
-        const rect = image.getBoundingClientRect();
-        const smallSquare = rect.width >= 16 && rect.width <= 112
-          && rect.height >= 16 && rect.height <= 112
-          && rect.width / rect.height >= 0.65 && rect.width / rect.height <= 1.5;
+      for (const node of Array.from(candidateScope.querySelectorAll(selector))) {
+        if (seenNodes.has(node)) continue;
+        seenNodes.add(node);
+        const rect = node.getBoundingClientRect();
+        const compact = rect.width >= 16 && rect.width <= 180
+          && rect.height >= 16 && rect.height <= 180
+          && rect.width / rect.height >= 0.5 && rect.width / rect.height <= 2;
         const nearCardAvatarPosition = rect.left >= cardRect.left - 36
           && rect.left <= cardRect.left + 150
           && rect.top >= cardRect.top - 30
           && rect.top <= cardRect.top + 170;
-        if (smallSquare && nearCardAvatarPosition) images.push(image);
+        const identityHint = /avatar|author|creator|profile|user/i.test([
+          node.getAttribute('class'), node.getAttribute('aria-label'), node.getAttribute('title'),
+        ].join(' '));
+        const containsImage = node.tagName === 'IMG' || Boolean(node.querySelector('img'));
+        if (compact && nearCardAvatarPosition && (identityHint || containsImage || node.tagName === 'SECTION')) {
+          const score = Math.hypot(rect.left - cardRect.left, rect.top - cardRect.top)
+            - (identityHint ? 120 : 0)
+            - (containsImage ? 24 : 0)
+            - (node.tagName === 'SECTION' ? 12 : 0);
+          avatarNodes.push({ node, score });
+        }
       }
       // Once the search reaches a broad list/grid, avoid scanning every card.
       if (candidateScope.querySelectorAll('a[href]').length > 300) break;
     }
 
-    for (const image of images) {
-      let element = image;
+    // A user-provided XPath points to the current avatar section. Use it only
+    // when it belongs to this card; the geometric search above covers other cards.
+    try {
+      const knownAvatar = document.evaluate(
+        USER_AVATAR_XPATH_HINT,
+        document,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null,
+      ).singleNodeValue;
+      if (knownAvatar instanceof Element && (card.contains(knownAvatar) || knownAvatar.contains(card))) {
+        avatarNodes.unshift({ node: knownAvatar, score: -10000 });
+      }
+    } catch (error) {
+      // The page structure can change; keep using the relative avatar search.
+    }
+
+    avatarNodes.sort((a, b) => a.score - b.score);
+    for (const { node } of avatarNodes.slice(0, 32)) {
+      let element = node;
       for (let depth = 0; depth < 6 && element && element !== document.body; depth += 1) {
         if (element.matches('a[href]')) {
           const profileUrl = toPugongyingProfileUrl(element.href);
+          if (profileUrl) return profileUrl;
+        }
+
+        const nestedProfileLink = Array.from(element.querySelectorAll('a[href]'))
+          .find((link) => isLikelyProfileHref(link.href));
+        if (nestedProfileLink) {
+          const profileUrl = toPugongyingProfileUrl(nestedProfileLink.href);
           if (profileUrl) return profileUrl;
         }
 
