@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.5.0
-// @description  配合聚光的小红书网页工具：自动保存并恢复筛选；按头像识别作者并直达蒲公英；菜单可检查更新
+// @version      0.5.1
+// @description  配合聚光的小红书网页工具：自动保存并恢复筛选；优先直达蒲公英，识别失败时自动跳转；菜单可检查更新
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
 // @match        https://juguang.xiaohongshu.com/*
@@ -11,6 +11,8 @@
 // @match        https://www.xiaohongshu.com/discovery/item/*
 // @match        https://www.xiaohongshu.com/note/*
 // @match        https://www.xiaohongshu.com/user/profile/*
+// @match        https://www.xiaohongshu.com/profile/*
+// @match        https://www.xiaohongshu.com/creator/*
 // @updateURL    https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/xiaohongshu-web-toolkit.user.js
 // @downloadURL  https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/xiaohongshu-web-toolkit.user.js
 // @run-at       document-start
@@ -37,6 +39,7 @@
   const TAB_PREFIX = 'square-tabs-item-';
   const PUGONGYING_HOST = 'pgy.xiaohongshu.com';
   const PUGONGYING_BUTTON_CLASS = 'xhs-pgy-direct-button';
+  const PENDING_PGY_KEY = 'xhs-juguang-pending-pgy-navigation';
   const SCRIPT_UPDATE_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/xiaohongshu-web-toolkit.user.js';
   const USER_AVATAR_XPATH_HINT = '/html/body/div[1]/div/div[2]/div[3]/div[1]/div/div/div/div/div[1]/section[4]/div/div[2]/div[1]/div[3]/section/section/section[1]';
 
@@ -306,6 +309,134 @@
     })[0] || null;
   }
 
+  function readPendingPgyNavigation() {
+    try {
+      const value = typeof GM_getValue === 'function'
+        ? GM_getValue(PENDING_PGY_KEY, null)
+        : JSON.parse(localStorage.getItem(PENDING_PGY_KEY) || 'null');
+      if (!value || !value.createdAt || Date.now() - Number(value.createdAt) > 30000) return null;
+      return value;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function markPendingPgyNavigation() {
+    const value = { createdAt: Date.now() };
+    try {
+      if (typeof GM_setValue === 'function') GM_setValue(PENDING_PGY_KEY, value);
+      else localStorage.setItem(PENDING_PGY_KEY, JSON.stringify(value));
+    } catch (error) {
+      // The URL marker still enables the redirect if storage is unavailable.
+    }
+  }
+
+  function clearPendingPgyNavigation() {
+    try {
+      if (typeof GM_deleteValue === 'function') GM_deleteValue(PENDING_PGY_KEY);
+      else localStorage.removeItem(PENDING_PGY_KEY);
+    } catch (error) {
+      // Ignore cleanup errors after the redirect has started.
+    }
+  }
+
+  function withPendingPgyQuery(raw) {
+    const url = parseUrl(raw);
+    if (!url) return '';
+    url.searchParams.set('xhs_pgy', '1');
+    url.searchParams.set('xhs_pgy_ts', String(Date.now()));
+    return url.href;
+  }
+
+  function findOriginalNoteHref(card) {
+    const anchors = [];
+    if (card && card.matches && card.matches('a[href]')) anchors.push(card);
+    if (card) anchors.push(...Array.from(card.querySelectorAll('a[href]')));
+    return anchors.map((anchor) => anchor.href).find(isLikelyNoteHref) || '';
+  }
+
+  function findOriginalProfileHref(card) {
+    const profile = findProfileLink(card);
+    if (profile) return profile.href;
+    const links = [];
+    if (card && card.matches && card.matches('a[href]')) links.push(card);
+    if (card) links.push(...Array.from(card.querySelectorAll('a[href]')));
+    return links.map((link) => link.href).find(isLikelyProfileHref) || '';
+  }
+
+  function findNoteAuthorProfileUrl() {
+    const links = Array.from(document.querySelectorAll('a[href]'))
+      .filter((link) => isVisible(link) && isLikelyProfileHref(link.href));
+    const preferred = links.find((link) => /xsec_source=pc_user/i.test(link.href))
+      || links.find((link) => link.id === 'user-hover-guide')
+      || links.find((link) => {
+        const rect = link.getBoundingClientRect();
+        return rect.top >= 0 && rect.top < Math.max(720, window.innerHeight * 0.9);
+      })
+      || links[0];
+    return preferred ? toPugongyingProfileUrl(preferred.href) : '';
+  }
+
+  function redirectPendingNoteToPugongying() {
+    const queryRequested = new URLSearchParams(location.search).get('xhs_pgy') === '1';
+    if (!queryRequested && !readPendingPgyNavigation()) return;
+    let observer;
+    let timer;
+    let finished = false;
+    const tryRedirect = () => {
+      if (finished) return true;
+      const profile = findNoteAuthorProfileUrl();
+      if (!profile) return false;
+      finished = true;
+      clearPendingPgyNavigation();
+      if (observer) observer.disconnect();
+      if (timer) window.clearInterval(timer);
+      window.location.replace(profile);
+      return true;
+    };
+    const stop = () => {
+      if (finished) return;
+      finished = true;
+      clearPendingPgyNavigation();
+      if (observer) observer.disconnect();
+      if (timer) window.clearInterval(timer);
+    };
+    if (tryRedirect()) return;
+    observer = new MutationObserver(tryRedirect);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    timer = window.setInterval(tryRedirect, 250);
+    window.setTimeout(stop, 30000);
+  }
+
+  function redirectPendingProfileToPugongying() {
+    const queryRequested = new URLSearchParams(location.search).get('xhs_pgy') === '1';
+    if (!queryRequested && !readPendingPgyNavigation()) return;
+    const profile = toPugongyingProfileUrl(location.href);
+    if (!profile) return;
+    clearPendingPgyNavigation();
+    window.location.replace(profile);
+  }
+
+  function findOriginalCardTarget(card) {
+    const elements = Array.from(card.querySelectorAll('a[href], button, [role="button"]'))
+      .filter((element) => isVisible(element) && !element.closest(`.${PUGONGYING_BUTTON_CLASS}`));
+    return elements.find((element) => isLikelyProfileHref(element.href))
+      || elements.find((element) => isLikelyNoteHref(element.href))
+      || elements[0]
+      || Array.from(card.querySelectorAll('img, video')).find(isVisible)
+      || card;
+  }
+
+  function triggerOriginalCardNavigation(card) {
+    const target = findOriginalCardTarget(card);
+    if (!target) return;
+    if (typeof target.click === 'function') {
+      target.click();
+      return;
+    }
+    target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+  }
+
   function findAvatarProfileUrl(card) {
     if (!card || !card.getBoundingClientRect) return '';
     const cardRect = card.getBoundingClientRect();
@@ -571,10 +702,10 @@
     button.className = PUGONGYING_BUTTON_CLASS;
     button.setAttribute('role', 'button');
     button.setAttribute('tabindex', '0');
-    button.setAttribute('aria-label', url ? '直接打开蒲公英作者主页' : '识别作者后直接打开蒲公英');
+    button.setAttribute('aria-label', url ? '直接打开蒲公英作者主页' : '打开作者主页并跳转蒲公英');
     button.title = url
       ? `直接打开蒲公英作者主页：${url}`
-      : '点击时重试识别作者；识别失败不会打开小红书中转页';
+      : '点击后打开作者主页，并尝试继续跳转蒲公英';
     button.textContent = '蒲';
 
     const open = (event) => {
@@ -583,8 +714,18 @@
       if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
       const directUrl = url || resolvePugongyingUrl(card, collectCardMetadata(card));
       if (!directUrl) {
-        button.title = '没有找到头像对应的作者链接或作者 ID';
-        button.setAttribute('aria-label', '未找到作者 ID，未打开页面');
+        button.title = '正在打开作者主页并尝试跳转蒲公英';
+        button.setAttribute('aria-label', '打开作者主页并跳转蒲公英');
+        markPendingPgyNavigation();
+        const profileHref = findOriginalProfileHref(card);
+        const noteHref = findOriginalNoteHref(card);
+        const fallbackHref = profileHref || noteHref;
+        if (fallbackHref) {
+          const redirectHref = withPendingPgyQuery(fallbackHref) || fallbackHref;
+          window.open(redirectHref, '_blank', 'noopener,noreferrer');
+        } else {
+          triggerOriginalCardNavigation(card);
+        }
         return;
       }
       window.open(directUrl, '_blank', 'noopener,noreferrer');
@@ -960,7 +1101,11 @@
   }
 
   function boot() {
-    if (!isJuguangHost()) return;
+    if (!isJuguangHost()) {
+      if (isNotePath(location.pathname)) redirectPendingNoteToPugongying();
+      else if (isProfilePath(location.pathname)) redirectPendingProfileToPugongying();
+      return;
+    }
     installClickTracking();
     installHistoryTracking();
     registerMenu();
