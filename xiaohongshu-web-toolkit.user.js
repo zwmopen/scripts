@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.4.8
-// @description  配合聚光的小红书网页工具：自动保存并恢复关键词、筛选、指标和日期；卡片按钮直达蒲公英作者主页
+// @version      0.4.9
+// @description  配合聚光的小红书网页工具：自动保存并恢复筛选；卡片按钮直达蒲公英；菜单可检查更新
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
 // @match        https://juguang.xiaohongshu.com/*
@@ -11,12 +11,13 @@
 // @match        https://www.xiaohongshu.com/discovery/item/*
 // @match        https://www.xiaohongshu.com/note/*
 // @match        https://www.xiaohongshu.com/user/profile/*
-// @updateURL    https://github.com/zwmopen/scripts/raw/refs/heads/master/xiaohongshu-web-toolkit.user.js
-// @downloadURL  https://github.com/zwmopen/scripts/raw/refs/heads/master/xiaohongshu-web-toolkit.user.js
+// @updateURL    https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/xiaohongshu-web-toolkit.user.js
+// @downloadURL  https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/xiaohongshu-web-toolkit.user.js
 // @run-at       document-start
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @grant        GM_openInTab
 // @grant        GM_registerMenuCommand
 // ==/UserScript==
 
@@ -36,6 +37,7 @@
   const TAB_PREFIX = 'square-tabs-item-';
   const PUGONGYING_HOST = 'pgy.xiaohongshu.com';
   const PUGONGYING_BUTTON_CLASS = 'xhs-pgy-direct-button';
+  const SCRIPT_UPDATE_URL = 'https://raw.githubusercontent.com/zwmopen/scripts/refs/heads/master/xiaohongshu-web-toolkit.user.js';
 
   let currentOpenFilter = null;
   let currentFilterPath = [];
@@ -907,6 +909,15 @@
     if (typeof GM_registerMenuCommand !== 'function') return;
     GM_registerMenuCommand('聚光：重新应用上次筛选', applySavedState);
     GM_registerMenuCommand('聚光：清除此页筛选记录', clearCurrentState);
+    GM_registerMenuCommand('检查更新', checkForUpdates);
+  }
+
+  function checkForUpdates() {
+    if (typeof GM_openInTab === 'function') {
+      GM_openInTab(SCRIPT_UPDATE_URL, { active: true, setParent: true });
+      return;
+    }
+    window.open(SCRIPT_UPDATE_URL, '_blank', 'noopener,noreferrer');
   }
 
   function boot() {
