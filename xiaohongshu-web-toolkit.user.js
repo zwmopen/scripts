@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.4.7
-// @description  配合聚光的小红书网页杂七杂八工具：记忆关键词、筛选、指标和日期；卡片按钮只直达蒲公英作者主页
+// @version      0.4.8
+// @description  配合聚光的小红书网页工具：自动保存并恢复关键词、筛选、指标和日期；卡片按钮直达蒲公英作者主页
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
 // @match        https://juguang.xiaohongshu.com/*
@@ -37,9 +37,6 @@
   const PUGONGYING_HOST = 'pgy.xiaohongshu.com';
   const PUGONGYING_BUTTON_CLASS = 'xhs-pgy-direct-button';
 
-  let host;
-  let shadow;
-  let statusNode;
   let currentOpenFilter = null;
   let currentFilterPath = [];
   let lastKnownSort = '';
@@ -107,12 +104,6 @@
     return store[pageKey()] || null;
   }
 
-  function setStatus(message, tone = 'normal') {
-    if (!statusNode) return;
-    statusNode.textContent = message;
-    statusNode.dataset.tone = tone;
-  }
-
   function getSearchInput() {
     const inputs = Array.from(document.querySelectorAll('input, textarea'))
       .filter((input) => isVisible(input));
@@ -149,7 +140,7 @@
     const candidates = [];
     for (const container of containers) {
       for (const button of Array.from(container.querySelectorAll('button, [role="button"]'))) {
-        if (!isVisible(button) || button === host) continue;
+        if (!isVisible(button)) continue;
         const rect = button.getBoundingClientRect();
         const text = normalize(button.textContent);
         const label = normalize(button.getAttribute('aria-label') || button.getAttribute('title'));
@@ -214,14 +205,29 @@
   }
 
   function isProfilePath(pathname) {
-    return /\/(?:user\/profile|profile|creator)\//i.test(pathname || '');
+    return /\/(?:user\/profile|profile|creator)(?:\/|$)/i.test(pathname || '');
   }
 
   function extractProfileId(raw) {
     const url = parseUrl(raw);
     if (!url || !isXhsHost(url.hostname) || !isProfilePath(url.pathname)) return '';
-    const match = url.pathname.match(/\/user\/profile\/([^/?#]+)/i);
-    return match ? decodeURIComponent(match[1]) : '';
+    const match = url.pathname.match(/\/(?:user\/)?profile\/([^/?#]+)/i)
+      || url.pathname.match(/\/creator\/([^/?#]+)/i);
+    let profileId = match ? match[1] : '';
+    if (!profileId) {
+      profileId = url.searchParams.get('user_id')
+        || url.searchParams.get('userid')
+        || url.searchParams.get('author_id')
+        || url.searchParams.get('creator_id')
+        || url.searchParams.get('profile_id')
+        || '';
+    }
+    try {
+      profileId = decodeURIComponent(profileId);
+    } catch (error) {
+      // Keep the raw route segment if it contains a malformed escape sequence.
+    }
+    return /^[\w-]{4,120}$/.test(profileId) ? profileId : '';
   }
 
   function toPugongyingProfileUrl(raw) {
@@ -269,7 +275,7 @@
   function findProfileLink(card) {
     const scopes = [];
     let scope = card;
-    for (let index = 0; index < 7 && scope && scope !== document.body; index += 1) {
+    for (let index = 0; index < 12 && scope && scope !== document.body; index += 1) {
       scopes.push(scope);
       scope = scope.parentElement;
     }
@@ -295,6 +301,63 @@
       };
       return distance(a) - distance(b);
     })[0] || null;
+  }
+
+  function findAvatarProfileUrl(card) {
+    if (!card || !card.getBoundingClientRect) return '';
+    const cardRect = card.getBoundingClientRect();
+    const scopes = [];
+    let scope = card;
+    for (let index = 0; index < 12 && scope && scope !== document.body; index += 1) {
+      scopes.push(scope);
+      scope = scope.parentElement;
+    }
+
+    const images = [];
+    for (const candidateScope of scopes) {
+      for (const image of Array.from(candidateScope.querySelectorAll('img'))) {
+        if (images.includes(image)) continue;
+        const rect = image.getBoundingClientRect();
+        const smallSquare = rect.width >= 16 && rect.width <= 112
+          && rect.height >= 16 && rect.height <= 112
+          && rect.width / rect.height >= 0.65 && rect.width / rect.height <= 1.5;
+        const nearCardAvatarPosition = rect.left >= cardRect.left - 36
+          && rect.left <= cardRect.left + 150
+          && rect.top >= cardRect.top - 30
+          && rect.top <= cardRect.top + 170;
+        if (smallSquare && nearCardAvatarPosition) images.push(image);
+      }
+      // Once the search reaches a broad list/grid, avoid scanning every card.
+      if (candidateScope.querySelectorAll('a[href]').length > 300) break;
+    }
+
+    for (const image of images) {
+      let element = image;
+      for (let depth = 0; depth < 6 && element && element !== document.body; depth += 1) {
+        if (element.matches('a[href]')) {
+          const profileUrl = toPugongyingProfileUrl(element.href);
+          if (profileUrl) return profileUrl;
+        }
+
+        for (const attribute of Array.from(element.attributes || [])) {
+          const key = attribute.name.toLowerCase();
+          if (!/(?:user|author|creator|profile)[-_]?(?:id)?$/.test(key)) continue;
+          const value = attribute.value.trim();
+          if (/^[\w-]{4,120}$/.test(value)) return toPugongyingProfileUrl(value);
+        }
+
+        const localMetadata = collectCardMetadata(element);
+        const localProfilePath = localMetadata.urls.find((value) => isLikelyProfileHref(value));
+        if (localProfilePath) {
+          const profileUrl = toPugongyingProfileUrl(localProfilePath);
+          if (profileUrl) return profileUrl;
+        }
+        const localProfileId = localMetadata.ids.find((item) => item.kind === 'profile');
+        if (localProfileId) return toPugongyingProfileUrl(localProfileId.value);
+        element = element.parentElement;
+      }
+    }
+    return '';
   }
 
   function collectCardMetadata(card) {
@@ -385,9 +448,6 @@
       if (profileUrl) return profileUrl;
     }
 
-    const links = [];
-    if (card && card.matches && card.matches('a[href]')) links.push(card);
-    if (card) links.push(...Array.from(card.querySelectorAll('a[href]')));
     const profilePath = metadata.urls.find((value) => isLikelyProfileHref(value));
     if (profilePath) {
       const profileUrl = toPugongyingProfileUrl(profilePath);
@@ -404,6 +464,9 @@
     }
     const profileId = metadata.ids.find((item) => item.kind === 'profile');
     if (profileId) return toPugongyingProfileUrl(profileId.value);
+
+    const avatarProfileUrl = findAvatarProfileUrl(card);
+    if (avatarProfileUrl) return avatarProfileUrl;
 
     // Some card renderers put the avatar/profile link in a sibling wrapper
     // outside the note anchor's immediate card element. Walk a few bounded
@@ -479,7 +542,8 @@
       if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
       const directUrl = url || resolvePugongyingUrl(card, collectCardMetadata(card));
       if (!directUrl) {
-        setStatus('未识别到作者 ID，未打开任何页面；稍后可重试', 'warn');
+        button.title = '没有找到头像对应的作者链接或作者 ID';
+        button.setAttribute('aria-label', '未找到作者 ID，未打开页面');
         return;
       }
       window.open(directUrl, '_blank', 'noopener,noreferrer');
@@ -496,9 +560,6 @@
     if (!document.body || !isXhsHost(location.hostname)) return;
     installCardStyle();
     const seen = new Set();
-    let candidates = 0;
-    let buttons = 0;
-    const debugHints = new Set();
     const anchors = Array.from(document.querySelectorAll('a[href]')).filter((anchor) => {
       return isVisible(anchor) && isLikelyNoteHref(anchor.href);
     });
@@ -506,10 +567,7 @@
       const card = findCardForNoteAnchor(anchor);
       if (!card || seen.has(card)) continue;
       seen.add(card);
-      candidates += 1;
-      const result = addPugongyingButton(card);
-      result.metadata.debug.slice(0, 8).forEach((hint) => debugHints.add(hint));
-      if (result.present) buttons += 1;
+      addPugongyingButton(card);
     }
 
     const images = Array.from(document.querySelectorAll('img')).filter(isVisible);
@@ -530,15 +588,8 @@
       }
       if (candidate && !seen.has(candidate)) {
         seen.add(candidate);
-        candidates += 1;
-        const result = addPugongyingButton(candidate);
-        result.metadata.debug.slice(0, 8).forEach((hint) => debugHints.add(hint));
-        if (result.present) buttons += 1;
+        addPugongyingButton(candidate);
       }
-    }
-    if (host && candidates > 0) {
-      const hint = [...debugHints].slice(0, 4).join('、');
-      setStatus(`已扫描 ${candidates} 张卡片${buttons ? `，已添加 ${buttons} 个蒲公英按钮` : `，等待识别作者信息${hint ? `（${hint}）` : ''}`}`);
     }
   }
 
@@ -713,25 +764,19 @@
     }
     store[pageKey()] = next;
     writeStore(store);
-    setStatus('已自动保存');
   }
 
   function clearCurrentState() {
     const store = readStore();
     delete store[pageKey()];
     writeStore(store);
-    setStatus('已清除本页记忆', 'muted');
   }
 
-  async function applySavedState(manual = false) {
+  async function applySavedState() {
     const saved = getSavedState();
-    if (!saved) {
-      setStatus('还没有保存的条件', 'muted');
-      return;
-    }
+    if (!saved) return;
     if (restoring) return;
     restoring = true;
-    setStatus('正在恢复…');
     try {
       const input = getSearchInput();
       if (input && typeof saved.search === 'string' && normalize(input.value) !== normalize(saved.search)) {
@@ -765,11 +810,8 @@
         triggerSearch(input);
         await wait(500);
       }
-
-      setStatus(manual ? '已恢复上次筛选' : '已恢复上次筛选');
     } catch (error) {
       console.warn('[聚光筛选记忆] 恢复失败', error);
-      setStatus('恢复时遇到页面差异', 'warn');
     } finally {
       restoring = false;
       currentOpenFilter = null;
@@ -777,7 +819,7 @@
     }
   }
 
-  function scheduleRestore(reason = 'load') {
+  function scheduleRestore() {
     if (restoreScheduled) return;
     restoreScheduled = true;
     let attempts = 0;
@@ -786,14 +828,13 @@
       const saved = getSavedState();
       if (saved && (getSearchInput() || tabElements().length || filterTrigger(FILTER_NAMES[0]))) {
         restoreScheduled = false;
-        applySavedState(false);
+        applySavedState();
         return;
       }
       if (attempts < 12) {
         restoreTimer = window.setTimeout(run, 500);
       } else {
         restoreScheduled = false;
-        setStatus(`未找到可恢复的页面控件（${reason}）`, 'muted');
       }
     };
     window.clearTimeout(restoreTimer);
@@ -851,54 +892,21 @@
       const original = history[method];
       history[method] = function (...args) {
         const result = original.apply(this, args);
-        window.setTimeout(() => scheduleRestore(method), 80);
+        window.setTimeout(scheduleRestore, 80);
         window.setTimeout(scheduleCardScan, 180);
         return result;
       };
     });
     window.addEventListener('popstate', () => {
-      scheduleRestore('popstate');
+      scheduleRestore();
       scheduleCardScan();
     });
   }
 
-  function createPanel() {
-    if (!document.body || document.getElementById('xhs-juguang-filter-memory')) return;
-    host = document.createElement('div');
-    host.id = 'xhs-juguang-filter-memory';
-    host.style.cssText = 'all:initial;position:fixed;z-index:2147483647;right:18px;bottom:18px;';
-    shadow = host.attachShadow({ mode: 'open' });
-    shadow.innerHTML = `
-      <style>
-        :host { all: initial; }
-        .box { font: 13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; color:#263238; background:#fff; border:1px solid #e6e9ef; border-radius:10px; box-shadow:0 5px 22px rgba(0,0,0,.14); padding:8px; width:176px; }
-        .title { display:flex; align-items:center; justify-content:space-between; gap:8px; font-weight:600; margin:0 2px 6px; }
-        .dot { width:7px; height:7px; border-radius:50%; background:#37c58a; display:inline-block; margin-right:5px; }
-        .status { color:#607080; font-size:12px; min-height:17px; margin:0 2px 7px; }
-        .status[data-tone="warn"] { color:#c97a00; }
-        .status[data-tone="muted"] { color:#8a949e; }
-        .actions { display:flex; gap:6px; }
-        button { border:0; border-radius:6px; padding:6px 8px; cursor:pointer; font:inherit; }
-        .restore { background:#3478f6; color:#fff; flex:1; }
-        .clear { color:#65717c; background:#f2f4f7; }
-        button:hover { filter:brightness(.97); }
-      </style>
-      <div class="box">
-        <div class="title"><span><span class="dot"></span>筛选记忆</span><span>聚光</span></div>
-        <div class="status" data-tone="muted">等待页面控件</div>
-        <div class="actions"><button class="restore" type="button">恢复上次</button><button class="clear" type="button">清除</button></div>
-      </div>`;
-    document.body.appendChild(host);
-    statusNode = shadow.querySelector('.status');
-    shadow.querySelector('.restore').addEventListener('click', () => applySavedState(true));
-    shadow.querySelector('.clear').addEventListener('click', clearCurrentState);
-    setStatus(getSavedState() ? '已找到上次条件' : '等待页面控件', 'muted');
-  }
-
   function registerMenu() {
     if (typeof GM_registerMenuCommand !== 'function') return;
-    GM_registerMenuCommand('聚光：恢复上次筛选', () => applySavedState(true));
-    GM_registerMenuCommand('聚光：清除本页记忆', clearCurrentState);
+    GM_registerMenuCommand('聚光：重新应用上次筛选', applySavedState);
+    GM_registerMenuCommand('聚光：清除此页筛选记录', clearCurrentState);
   }
 
   function boot() {
@@ -906,11 +914,9 @@
     installClickTracking();
     installHistoryTracking();
     registerMenu();
-    createPanel();
-    scheduleRestore('boot');
+    scheduleRestore();
     scheduleCardScan();
     const observer = new MutationObserver(() => {
-      if (!host || !document.body.contains(host)) createPanel();
       scheduleCardScan();
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
