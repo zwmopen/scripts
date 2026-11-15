@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.5.1
-// @description  配合聚光的小红书网页工具：自动保存并恢复筛选；优先直达蒲公英，识别失败时自动跳转；菜单可检查更新
+// @version      0.5.2
+// @description  配合聚光的小红书网页工具：自动恢复关键词、顶部类型、筛选和日期；卡片按钮支持蒲公英直达与原生跳转兜底
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
 // @match        https://juguang.xiaohongshu.com/*
@@ -36,6 +36,7 @@
     '点赞量', '评论量', '收藏量', '转发量',
   ];
   const DATE_VALUES = ['近1日', '近3日', '近7日', '近14日', '近30日', '近90日', '近180日', '近365日', '全部'];
+  const DATE_VALUE_PATTERN = /^(?:近|最近)?\s*\d+\s*(?:天|日)$/;
   const TAB_PREFIX = 'square-tabs-item-';
   const PUGONGYING_HOST = 'pgy.xiaohongshu.com';
   const PUGONGYING_BUTTON_CLASS = 'xhs-pgy-direct-button';
@@ -45,6 +46,7 @@
 
   let currentOpenFilter = null;
   let currentFilterPath = [];
+  let lastKnownTab = '';
   let lastKnownSort = '';
   let lastKnownDate = '';
   const triggerCache = new Map();
@@ -137,52 +139,50 @@
   function findSearchButton(input) {
     if (!input) return null;
     const inputRect = input.getBoundingClientRect();
-    const containers = [];
-    let element = input.parentElement;
-    for (let index = 0; index < 6 && element && element !== document.body; index += 1) {
-      containers.push(element);
-      element = element.parentElement;
-    }
-    const candidates = [];
-    for (const container of containers) {
-      for (const button of Array.from(container.querySelectorAll('button, [role="button"]'))) {
-        if (!isVisible(button)) continue;
-        const rect = button.getBoundingClientRect();
-        const text = normalize(button.textContent);
-        const label = normalize(button.getAttribute('aria-label') || button.getAttribute('title'));
-        const sameRow = Math.abs((rect.top + rect.bottom) / 2 - (inputRect.top + inputRect.bottom) / 2) < Math.max(28, inputRect.height * 1.8);
-        const rightOfInput = rect.left >= inputRect.right - 24;
-        const searchLike = /搜索|查询|search/i.test(`${text} ${label}`);
-        const distance = Math.abs(rect.left - inputRect.right) + Math.abs(rect.top - inputRect.top);
-        if (sameRow && (searchLike || rightOfInput)) candidates.push({ button, searchLike, distance });
-      }
-      if (candidates.some((item) => item.searchLike)) break;
-    }
+    const selector = 'button, [role="button"], [tabindex], input[type="submit"]';
+    const candidates = Array.from(document.querySelectorAll(selector)).filter((button) => {
+      if (!isVisible(button) || button === input) return false;
+      const rect = button.getBoundingClientRect();
+      const centerY = (rect.top + rect.bottom) / 2;
+      const inputCenterY = (inputRect.top + inputRect.bottom) / 2;
+      const sameRow = Math.abs(centerY - inputCenterY) < Math.max(32, inputRect.height * 2);
+      const rightOfInput = rect.left >= inputRect.right - 40;
+      const text = normalize(button.textContent);
+      const label = normalize(button.getAttribute('aria-label') || button.getAttribute('title'));
+      const searchLike = /搜索|查询|search/i.test(`${text} ${label}`);
+      const overlapsInputEnd = rect.right >= inputRect.right - 80 && rect.left <= inputRect.right + 200;
+      return sameRow && (rightOfInput || (searchLike && overlapsInputEnd));
+    }).map((button) => {
+      const rect = button.getBoundingClientRect();
+      const text = normalize(button.textContent);
+      const label = normalize(button.getAttribute('aria-label') || button.getAttribute('title'));
+      const searchLike = /搜索|查询|search/i.test(`${text} ${label}`);
+      const distance = Math.abs(rect.left - inputRect.right) + Math.abs(rect.top - inputRect.top);
+      return { button, searchLike, distance };
+    });
     return candidates.sort((a, b) => Number(b.searchLike) - Number(a.searchLike) || a.distance - b.distance)[0]?.button || null;
   }
 
   function triggerSearch(input) {
     if (!input) return false;
-    input.click();
-    ['keydown', 'keyup'].forEach((type) => input.dispatchEvent(new KeyboardEvent(type, {
-      key: 'Enter',
-      code: 'Enter',
-      keyCode: 13,
-      which: 13,
-      bubbles: true,
-    })));
     const button = findSearchButton(input);
     if (button) {
       button.click();
       return true;
     }
-    const scope = input.closest('form, [class*="search"], [class*="Search"]');
-    const fallback = scope && Array.from(scope.querySelectorAll('button, [role="button"]')).find(isVisible);
-    if (fallback) {
-      fallback.click();
+    const form = input.closest('form');
+    if (form && typeof form.requestSubmit === 'function') {
+      form.requestSubmit();
       return true;
     }
-    return false;
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true,
+    }));
+    input.dispatchEvent(new KeyboardEvent('keyup', {
+      key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true,
+    }));
+    return true;
   }
 
   function parseUrl(raw) {
@@ -340,30 +340,6 @@
     }
   }
 
-  function withPendingPgyQuery(raw) {
-    const url = parseUrl(raw);
-    if (!url) return '';
-    url.searchParams.set('xhs_pgy', '1');
-    url.searchParams.set('xhs_pgy_ts', String(Date.now()));
-    return url.href;
-  }
-
-  function findOriginalNoteHref(card) {
-    const anchors = [];
-    if (card && card.matches && card.matches('a[href]')) anchors.push(card);
-    if (card) anchors.push(...Array.from(card.querySelectorAll('a[href]')));
-    return anchors.map((anchor) => anchor.href).find(isLikelyNoteHref) || '';
-  }
-
-  function findOriginalProfileHref(card) {
-    const profile = findProfileLink(card);
-    if (profile) return profile.href;
-    const links = [];
-    if (card && card.matches && card.matches('a[href]')) links.push(card);
-    if (card) links.push(...Array.from(card.querySelectorAll('a[href]')));
-    return links.map((link) => link.href).find(isLikelyProfileHref) || '';
-  }
-
   function findNoteAuthorProfileUrl() {
     const links = Array.from(document.querySelectorAll('a[href]'))
       .filter((link) => isVisible(link) && isLikelyProfileHref(link.href));
@@ -420,8 +396,8 @@
   function findOriginalCardTarget(card) {
     const elements = Array.from(card.querySelectorAll('a[href], button, [role="button"]'))
       .filter((element) => isVisible(element) && !element.closest(`.${PUGONGYING_BUTTON_CLASS}`));
-    return elements.find((element) => isLikelyProfileHref(element.href))
-      || elements.find((element) => isLikelyNoteHref(element.href))
+    return elements.find((element) => isLikelyNoteHref(element.href))
+      || elements.find((element) => isLikelyProfileHref(element.href))
       || elements[0]
       || Array.from(card.querySelectorAll('img, video')).find(isVisible)
       || card;
@@ -712,20 +688,12 @@
       event.preventDefault();
       event.stopPropagation();
       if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
-      const directUrl = url || resolvePugongyingUrl(card, collectCardMetadata(card));
+      const directUrl = resolvePugongyingUrl(card, collectCardMetadata(card));
       if (!directUrl) {
         button.title = '正在打开作者主页并尝试跳转蒲公英';
         button.setAttribute('aria-label', '打开作者主页并跳转蒲公英');
         markPendingPgyNavigation();
-        const profileHref = findOriginalProfileHref(card);
-        const noteHref = findOriginalNoteHref(card);
-        const fallbackHref = profileHref || noteHref;
-        if (fallbackHref) {
-          const redirectHref = withPendingPgyQuery(fallbackHref) || fallbackHref;
-          window.open(redirectHref, '_blank', 'noopener,noreferrer');
-        } else {
-          triggerOriginalCardNavigation(card);
-        }
+        triggerOriginalCardNavigation(card);
         return;
       }
       window.open(directUrl, '_blank', 'noopener,noreferrer');
@@ -782,6 +750,31 @@
 
   function tabElements() {
     return Array.from(document.querySelectorAll(`[id^="${TAB_PREFIX}"], [role="tab"]`)).filter(isVisible);
+  }
+
+  function tabName(element) {
+    if (!element) return '';
+    const id = element.id || '';
+    return id.startsWith(TAB_PREFIX) ? id.slice(TAB_PREFIX.length) : shortText(element.textContent, 60);
+  }
+
+  function isActiveTab(element) {
+    const aria = element.getAttribute('aria-selected');
+    const className = String(element.className || '');
+    return aria === 'true' || /active|selected|current/i.test(className);
+  }
+
+  function readTab() {
+    const active = tabElements().find(isActiveTab);
+    return tabName(active) || lastKnownTab || '';
+  }
+
+  function findTab(value) {
+    const wanted = normalize(value);
+    if (!wanted) return null;
+    return tabElements().find((element) => tabName(element) === wanted)
+      || tabElements().find((element) => normalize(element.textContent).includes(wanted))
+      || null;
   }
 
   function filterTrigger(label) {
@@ -848,8 +841,22 @@
       .map((element) => normalize(element.textContent))[0] || '';
   }
 
+  function visibleDateValue() {
+    return Array.from(document.querySelectorAll('body *'))
+      .filter((element) => isVisible(element) && DATE_VALUE_PATTERN.test(normalize(element.textContent)))
+      .sort((a, b) => a.children.length - b.children.length)
+      .map((element) => normalize(element.textContent))[0] || '';
+  }
+
+  function dateValueFromTarget(target) {
+    const text = targetContextText(target);
+    const matched = text.match(/(?:近|最近)?\s*\d+\s*(?:天|日)/);
+    return matched ? normalize(matched[0]).replace(/\s+/g, '') : '';
+  }
+
   function clickChoiceTrigger(values, preferred) {
-    const candidates = [preferred, visibleKnownValue(values), ...values].filter(Boolean);
+    const dynamicDate = values === DATE_VALUES ? visibleDateValue() : '';
+    const candidates = [preferred, visibleKnownValue(values), dynamicDate, ...values].filter(Boolean);
     for (const value of candidates) {
       const trigger = filterTrigger(value);
       if (trigger) {
@@ -900,8 +907,18 @@
     return true;
   }
 
+  function targetContextText(target) {
+    let element = target instanceof Element ? target : null;
+    for (let depth = 0; depth < 5 && element && element !== document.body; depth += 1) {
+      const text = normalize(element.textContent);
+      if (text && text.length <= 120) return text;
+      element = element.parentElement;
+    }
+    return '';
+  }
+
   function knownValueFromTarget(target, values) {
-    const text = normalize(target && target.textContent);
+    const text = targetContextText(target);
     return values.find((value) => text === value || text.includes(value)) || '';
   }
 
@@ -936,8 +953,9 @@
     const next = {
       ...previous,
       search: searchInput ? normalize(searchInput.value) : (previous.search || ''),
+      tab: readTab() || previous.tab || '',
       sort: lastKnownSort || visibleKnownValue(SORT_VALUES) || previous.sort || '',
-      date: lastKnownDate || visibleKnownValue(DATE_VALUES) || previous.date || '',
+      date: lastKnownDate || visibleKnownValue(DATE_VALUES) || visibleDateValue() || previous.date || '',
       filters: { ...(previous.filters || {}) },
       updatedAt: new Date().toISOString(),
     };
@@ -960,6 +978,12 @@
     if (restoring) return;
     restoring = true;
     try {
+      const tab = findTab(saved.tab);
+      if (tab && (!readTab() || tabName(tab) !== readTab())) {
+        tab.click();
+        await wait(400);
+      }
+
       const input = getSearchInput();
       if (input && typeof saved.search === 'string' && normalize(input.value) !== normalize(saved.search)) {
         setNativeValue(input, saved.search);
@@ -998,6 +1022,7 @@
       restoring = false;
       currentOpenFilter = null;
       currentFilterPath = [];
+      saveCurrentState();
     }
   }
 
@@ -1008,12 +1033,17 @@
     const run = () => {
       attempts += 1;
       const saved = getSavedState();
-      if (saved && (getSearchInput() || tabElements().length || filterTrigger(FILTER_NAMES[0]))) {
+      if (!saved && basePageControlsReady()) {
+        saveCurrentState();
+        restoreScheduled = false;
+        return;
+      }
+      if (saved && restoreControlsReady(saved)) {
         restoreScheduled = false;
         applySavedState();
         return;
       }
-      if (attempts < 12) {
+      if (attempts < 40) {
         restoreTimer = window.setTimeout(run, 500);
       } else {
         restoreScheduled = false;
@@ -1023,10 +1053,35 @@
     restoreTimer = window.setTimeout(run, 600);
   }
 
+  function restoreControlsReady(saved) {
+    if (saved.search && !getSearchInput()) return false;
+    if (saved.tab && !findTab(saved.tab)) return false;
+    if (saved.sort && !filterTrigger(saved.sort) && !visibleKnownValue(SORT_VALUES)) return false;
+    if (saved.date && !filterTrigger(saved.date) && !visibleKnownValue(DATE_VALUES) && !visibleDateValue()) return false;
+    for (const label of FILTER_NAMES) {
+      const entry = saved.filters && saved.filters[label];
+      if (entry && Array.isArray(entry.path) && entry.path.length && !filterTrigger(label)) return false;
+    }
+    return Boolean(getSearchInput() || tabElements().length || filterTrigger(FILTER_NAMES[0]));
+  }
+
+  function basePageControlsReady() {
+    return Boolean(getSearchInput() && tabElements().length
+      && visibleKnownValue(SORT_VALUES)
+      && (visibleKnownValue(DATE_VALUES) || visibleDateValue()));
+  }
+
   function installClickTracking() {
     document.addEventListener('click', (event) => {
       const target = event.target instanceof Element ? event.target : null;
       if (!target || restoring) return;
+
+      const tab = target.closest(`[id^="${TAB_PREFIX}"], [role="tab"]`);
+      if (tab && isVisible(tab)) {
+        lastKnownTab = tabName(tab);
+        scheduleSave();
+        return;
+      }
 
       for (const label of FILTER_NAMES) {
         const trigger = filterTrigger(label);
@@ -1038,7 +1093,7 @@
       }
 
       const sort = knownValueFromTarget(target, SORT_VALUES);
-      const date = knownValueFromTarget(target, DATE_VALUES);
+      const date = knownValueFromTarget(target, DATE_VALUES) || dateValueFromTarget(target);
       if (sort) {
         lastKnownSort = sort;
         scheduleSave();
