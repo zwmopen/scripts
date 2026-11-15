@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         小红书网页脚本
 // @namespace    https://github.com/zwmopen/userscripts
-// @version      0.5.2
-// @description  配合聚光的小红书网页工具：自动恢复关键词、顶部类型、筛选和日期；卡片按钮支持蒲公英直达与原生跳转兜底
+// @version      0.5.3
+// @description  配合聚光的小红书网页工具：自动恢复关键词、顶部类型、筛选和日期；卡片按钮支持蒲公英直达与原生跳转兜底；提供检查更新菜单
 // @author       Codex
 // @match        https://ad.xiaohongshu.com/*
 // @match        https://juguang.xiaohongshu.com/*
@@ -1142,9 +1142,9 @@
 
   function registerMenu() {
     if (typeof GM_registerMenuCommand !== 'function') return;
-    GM_registerMenuCommand('聚光：重新应用上次筛选', applySavedState);
-    GM_registerMenuCommand('聚光：清除此页筛选记录', clearCurrentState);
-    GM_registerMenuCommand('检查更新', checkForUpdates);
+    GM_registerMenuCommand('小红书网页脚本：重新应用上次筛选', applySavedState);
+    GM_registerMenuCommand('小红书网页脚本：清除此页筛选记录', clearCurrentState);
+    GM_registerMenuCommand('小红书网页脚本：检查更新', checkForUpdates);
   }
 
   function checkForUpdates() {
