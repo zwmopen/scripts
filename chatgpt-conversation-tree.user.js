@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.46
+// @version      1.22.47
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -31,7 +31,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.46';
+  const SCRIPT_VERSION = '1.22.47';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2217,9 +2217,9 @@
       button = document.createElement('button');
       button.type = 'button';
       button.className = TEXT_DOWNLOAD_CLASS;
-      button.title = '下载这个文本为 TXT';
-      button.setAttribute('aria-label', '下载 TXT');
-      button.innerHTML = icons.download;
+      button.title = '下载当前文案为 .TXT 文本文档';
+      button.setAttribute('aria-label', '下载文案 TXT');
+      button.innerHTML = `${icons.download}<span style="margin-left:3px;font-size:12px;font-weight:500;">下载文案TXT</span>`;
       slot.append(button);
     }
     button.__cgptTextDownloadCard = card;
@@ -2259,12 +2259,14 @@
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = textDownloadFilename(text);
+    let fname = textDownloadFilename(text);
+    if (!fname.toLowerCase().endsWith('.txt')) fname += '.txt';
+    anchor.download = fname;
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 800);
-    showImageDownloadToast('TXT 下载完成', true);
+    showImageDownloadToast(`已下载文案：${fname}`, true);
   }
 
   // ==========================================
@@ -2516,7 +2518,34 @@
     return [...cards];
   }
 
-  function nextAssistantTextCardForNode(node) {
+    /**
+   * 智能提取回复中的完整文案（支持小红书文案、代码块、多段落内容），打破严苛限制
+   */
+  function extractAssistantCopyText(messageNode) {
+    if (!messageNode) return '';
+    // 1. 如果有代码块 (pre code)，且包含文本，往往是专门输出的排版文案
+    const codeBlocks = [...messageNode.querySelectorAll('pre code, pre')];
+    for (const cb of codeBlocks) {
+      const txt = String(cb.innerText || cb.textContent || '').trim();
+      if (txt.length >= 20 && (/(?:标题|正文|小红书|团建|行程|方案|#)/i.test(txt) || txt.includes('\n'))) {
+        return txt;
+      }
+    }
+    // 2. 提取消息主体中的所有文本卡片或正文容器
+    const clone = messageNode.cloneNode(true);
+    // 清理掉所有按钮、插槽、图片、svg、菜单
+    clone.querySelectorAll?.(`button, svg, img, .${TEXT_DOWNLOAD_SLOT_CLASS}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, #${MENU_ID}, [aria-hidden="true"]`)
+      .forEach((el) => el.remove());
+    const rawText = String(clone.innerText || clone.textContent || '').trim();
+    // 规范换行
+    const cleanText = rawText.replace(/\n{3,}/g, '\n\n').trim();
+    if (cleanText.length >= 15) {
+      return cleanText;
+    }
+    return '';
+  }
+
+function nextAssistantTextCardForNode(node) {
     const currentMessage = assistantMessageForNode(node);
     if (!currentMessage) return null;
     const main = document.querySelector('main') || document.body;
@@ -2529,13 +2558,22 @@
     if (currentIndex < 0) return null;
     // 新版 ChatGPT 把同一助手回合的图片与文本卡放在一个 [data-turn-key] 中；
     // 先检查同一回合，再检查紧邻的下一条助手消息/回合，不跨过其他回合配文。
-    for (const candidateIndex of [currentIndex, currentIndex + 1]) {
+    for (const candidateIndex of [currentIndex, currentIndex + 1, currentIndex - 1]) {
       const candidate = messages[candidateIndex];
       if (!candidate) continue;
+      // 优先从卡片取
       const cards = textCardsForAssistantMessage(candidate);
-      if (cards.length !== 1) continue;
-      const copyText = textContentForDownload(cards[0]);
-      if (copyText) return { message: candidate, card: cards[0], copyText };
+      if (cards.length > 0) {
+        const copyText = cards.map(textContentForDownload).filter(Boolean).join('\n\n');
+        if (copyText && copyText.length >= 12) {
+          return { message: candidate, card: cards[0], copyText };
+        }
+      }
+      // 智能全节点提取保底
+      const smartText = extractAssistantCopyText(candidate);
+      if (smartText && smartText.length >= 15) {
+        return { message: candidate, card: candidate, copyText: smartText };
+      }
     }
     return null;
   }
@@ -4174,7 +4212,14 @@ function imageUrlForDirectDownload(img) {
       return;
     }
     const batchId = imageButton?.dataset.cgptWorkPackageBatchId || newDownloadBatchId();
-    const frozenTask = await freezeWorkPackageTask(batchId, expectedImages, button.__cgptPackageCopyText || '');
+    let copyText = button.__cgptPackageCopyText || '';
+    if (!copyText) {
+      const container = button.__cgptPackageImageButton?.__cgptImageDownloadContainer
+        || button.closest('[data-cgpt-image-download-container]')
+        || imageTurnContainer(button);
+      copyText = extractAssistantCopyText(container) || extractAssistantCopyText(container?.nextElementSibling) || extractAssistantCopyText(container?.previousElementSibling);
+    }
+    const frozenTask = await freezeWorkPackageTask(batchId, expectedImages, copyText || '');
     if (!frozenTask) {
       showImageDownloadToast('请先复制当前窗口的小红书文案，再点“下载并打包”', false);
       setWorkPackageButtonState(button, 'needs-text');
