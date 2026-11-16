@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.45
+// @version      1.22.46
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -31,7 +31,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.45';
+  const SCRIPT_VERSION = '1.22.46';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2415,9 +2415,10 @@
     anchor.remove();
   }
 
-  function broadImageElements(scope = document, minSize = 24) {
+  function broadImageElements(scope = document, minSize = 100) {
     const root = scope === document ? (document.querySelector('main') || document.body) : scope;
     return [...root.querySelectorAll('img')].filter((img) => {
+      if (isIgnoredImage(img)) return false;
       if (img.closest?.(`#${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return false;
       if (img.closest?.('#history, nav, aside, [role="navigation"]')) return false;
       if (img.closest?.('[data-radix-menu-content], [data-radix-popper-content-wrapper]')) return false;
@@ -2444,6 +2445,7 @@
   function contentImageElements(scope = document) {
     const root = scope === document ? (document.querySelector('main') || document.body) : scope;
     return [...root.querySelectorAll('img')].filter((img) => {
+      if (isIgnoredImage(img)) return false;
       if (img.closest?.(`#${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return false;
       if (img.closest?.('#history, nav, aside, [role="navigation"]')) return false;
       if (img.closest?.('[data-radix-menu-content], [data-radix-popper-content-wrapper]')) return false;
@@ -3082,7 +3084,67 @@
     return { status, count, label };
   }
 
-  function imageUrlForDirectDownload(img) {
+    /**
+   * 严格过滤杂质图标、GitHub Logo、Favicon、头像与小徽章
+   * 确保只提取并下载真正的作品大图（DALL-E 3、生成海报、配图等）
+   */
+  function isIgnoredImage(img) {
+    if (!img || !img.tagName) return true;
+    const src = String(img.currentSrc || img.src || '').toLowerCase();
+    if (!src || /^data:image\/svg/i.test(src)) return true;
+
+    // 1. 黑名单：GitHub 图标、Favicon、头像、Emoji、第三方外链小图标
+    if (/(?:github|githubassets|githubusercontent|octocat)/i.test(src)) return true;
+    if (/(?:favicon|favicons|apple-touch-icon|identicon|badge|avatar|emoji|twemoji)/i.test(src)) return true;
+    if (/(?:google\.com\/s2\/favicons|duckduckgo\.com\/ip3)/i.test(src)) return true;
+
+    // 2. DOM 容器黑名单：外链卡片、引用来源、头像、作者信息、工具栏
+    if (img.closest?.(`
+      #${MENU_ID},
+      .${IMAGE_DOWNLOAD_SLOT_CLASS},
+      .${TEXT_DOWNLOAD_SLOT_CLASS},
+      #history, nav, aside, [role="navigation"],
+      [data-radix-menu-content], [data-radix-popper-content-wrapper],
+      [class*="avatar"], [data-testid*="avatar"],
+      [class*="citation"], [class*="source"], [data-testid*="source"], [class*="attribution"],
+      [class*="link-preview"], [class*="link-card"],
+      a[href*="github.com"]
+    `)) {
+      return true;
+    }
+
+    // 3. 属性黑名单：alt、title 等带有图标标识
+    const alt = String(img.getAttribute?.('alt') || '').toLowerCase();
+    const title = String(img.getAttribute?.('title') || '').toLowerCase();
+    const aria = String(img.getAttribute?.('aria-label') || '').toLowerCase();
+    const metaStr = `${alt} ${title} ${aria}`;
+    if (/(?:github|favicon|avatar|头像|图标|logo|icon|badge|emoji)/i.test(metaStr)) {
+      if (!img.closest?.('[data-testid="generated-image-gallery"], div[class*="generated-image"], div[class*="Stage"], div[class*="stage"]')) {
+        return true;
+      }
+    }
+
+    // 4. 尺寸过滤：作品原图/生成图尺寸巨大（通常 1024x1024 等），杂质图标天然尺寸通常只有 16~64px
+    const nw = Number(img.naturalWidth || 0);
+    const nh = Number(img.naturalHeight || 0);
+    if (nw > 0 && nh > 0 && (nw < 120 || nh < 120)) {
+      if (!img.closest?.('[data-testid="generated-image-gallery"], div[class*="generated-image"], div[class*="Stage"]')) {
+        return true;
+      }
+    }
+
+    const rect = img.getBoundingClientRect?.();
+    if (rect && rect.width > 0 && rect.height > 0 && (rect.width < 64 || rect.height < 64)) {
+      if (!img.closest?.('[data-testid="generated-image-gallery"], div[class*="generated-image"], div[class*="Stage"]')) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+function imageUrlForDirectDownload(img) {
+    if (!img || isIgnoredImage(img)) return '';
     const src = img?.currentSrc || img?.src || '';
     if (!src || /^data:image\/svg/i.test(src)) return '';
     return src;
@@ -3190,6 +3252,7 @@
   function groupImageElements(scope = document) {
     const root = scope === document ? (document.querySelector('main') || document.body) : scope;
     return [...root.querySelectorAll('img')].filter((img) => {
+      if (isIgnoredImage(img)) return false;
       if (img.closest?.(`#${MENU_ID}, .${IMAGE_DOWNLOAD_SLOT_CLASS}, .${TEXT_DOWNLOAD_SLOT_CLASS}`)) return false;
       if (img.closest?.('#history, nav, aside, [role="navigation"]')) return false;
       if (img.closest?.('[data-radix-menu-content], [data-radix-popper-content-wrapper]')) return false;
