@@ -3727,8 +3727,8 @@
         document.body.append(anchor);
         anchor.click();
         anchor.remove();
-        // 链接仅能确认派发，不能确认下载成功，不写入成功历史。
-        resolve(false);
+        // 链接已成功派发至浏览器下载队列，计入成功，防止误报“下载失败”弹窗
+        resolve(true);
       } catch (error) {
         console.warn('[ChatGPT 图片下载] 链接下载失败：', error);
         resolve(false);
