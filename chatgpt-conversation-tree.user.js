@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.44
+// @version      1.22.45
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -31,7 +31,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.44';
+  const SCRIPT_VERSION = '1.22.45';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -1613,6 +1613,14 @@
         margin: 0 !important;
         padding: 0 !important;
       }
+      .${IMAGE_DOWNLOAD_CLASS} *,
+      .${WORK_PACKAGE_CLASS} *,
+      .${TEXT_DOWNLOAD_CLASS} * {
+        pointer-events: none !important;
+        user-select: none !important;
+        -webkit-user-select: none !important;
+        cursor: pointer !important;
+      }
       .${IMAGE_DOWNLOAD_CLASS} span,
       .${WORK_PACKAGE_CLASS} span,
       .${IMAGE_DOWNLOAD_CLASS} .cgpt-image-download-btn-text,
@@ -2235,7 +2243,9 @@
   }
 
   function triggerTextDownloadButton(button, event = null) {
-    if (!button) return;
+    if (!button || button.__cgptTextDownloading) return;
+    button.__cgptTextDownloading = true;
+    window.setTimeout(() => { button.__cgptTextDownloading = false; }, 800);
     event?.preventDefault?.();
     event?.stopPropagation?.();
     event?.stopImmediatePropagation?.();
@@ -3902,8 +3912,8 @@
       for (let i = 0; i < urls.length; i += 1) {
         if (await gmDownload(urls[i], directDownloadName(i, urls.length, urls[i], batchId))) saved += 1;
       }
-      const textSaved = downloadBlobFallback(new Blob([copyText], { type: 'text/plain;charset=utf-8' }), textDownloadFilename(copyText));
-      if (urls.length && saved === urls.length && textSaved) {
+      // 纯粹下载图片，不再偷偷顺带下文案，文案由文案按钮或下载到成品库专职处理，杜绝下出2个TXT
+      if (urls.length && saved === urls.length) {
         button.dataset.cgptWorkPackageBatchId = batchId;
         button.dataset.cgptImageDownloaded = String(urls.length);
         markImageGroupDownloaded(images, { count: urls.length, batchId, title: extractWorkPackageTitle(copyText) });
@@ -4373,6 +4383,12 @@
   }
 
   function refreshCombinedHeader(validSlots) {
+    // 用户指示：砍掉最右上角/消息顶部的图合集能力，回归纯净正常视图
+    const existing = document.getElementById(HEADER_ID);
+    if (existing) {
+      try { existing.remove(); } catch (_) {}
+    }
+    return;
     const main = document.querySelector('main');
     const header = document.querySelector('header');
     if (!main || !header) return;
