@@ -2412,6 +2412,49 @@ try {
             -RuntimeMirrorPath $historyRuntimeMirrorPath
     }
 
+        # 2026-11-16: 10分钟同窗口/同作品追加检测 (10-minute same-session merge window)
+    $recentMergeTarget = $null
+    $tenMinutesAgo = (Get-Date).AddMinutes(-10)
+    $manualDir = Join-Path $libraryDir $targetSubfolder
+    $checkRoots = @($manualDir, $libraryDir) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+    $gptConversationMetadata = Get-GptConversationMetadata
+    $curConvUrl = if ($null -ne $gptConversationMetadata) { [string]$gptConversationMetadata.conversationUrl } else { "" }
+    $title = Get-SafeNamePart -Text (Get-TitleLine -Text $text)
+
+    foreach ($chkRoot in $checkRoots) {
+        $candidateDirs = @(Get-ChildItem -LiteralPath $chkRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $tenMinutesAgo } | Sort-Object LastWriteTime -Descending)
+        foreach ($cand in $candidateDirs) {
+            $candManifestPath = Join-Path $cand.FullName "manifest.json"
+            $matchFound = $false
+            if (Test-Path -LiteralPath $candManifestPath) {
+                $candManifest = Read-JsonFile -Path $candManifestPath
+                if ($null -ne $candManifest) {
+                    $candConvUrl = [string]$candManifest.conversationUrl
+                    if (-not [string]::IsNullOrWhiteSpace($candConvUrl) -and -not [string]::IsNullOrWhiteSpace($curConvUrl) -and ($candConvUrl.Trim() -eq $curConvUrl.Trim())) {
+                        $matchFound = $true
+                    }
+                    if (-not $matchFound) {
+                        $candTitle = [string]$candManifest.title
+                        if (-not [string]::IsNullOrWhiteSpace($candTitle) -and ($candTitle.Trim() -eq $title.Trim())) {
+                            $matchFound = $true
+                        }
+                    }
+                }
+            }
+            if (-not $matchFound) {
+                if ($cand.Name -like "*$title*") {
+                    $matchFound = $true
+                }
+            }
+            if ($matchFound) {
+                $recentMergeTarget = $cand.FullName
+                break
+            }
+        }
+        if ($null -ne $recentMergeTarget) { break }
+    }
+    $isSameSessionMerge = ($null -ne $recentMergeTarget)
+
     $duplicateExists = Test-ImageSetHashExists -Database $historyDatabase -ImageSetHash $imageHashInfo.SetHash
     $similarTextExists = @($historyDatabase.entries | Where-Object { $_.textSha256 -eq $currentHash }).Count -gt 0
 
@@ -2448,6 +2491,7 @@ try {
         return
     }
 
+    if ($isSameSessionMerge) { $visualSimilarityBypassed = $true }
     $visualSimilarityBypassed = Test-AndConsumeVisualSimilarityOverride `
         -Path $visualOverridePath `
         -ImageSetHash $imageHashInfo.SetHash
@@ -2542,22 +2586,27 @@ try {
         }
         $packageRootDir = if (Test-Path -LiteralPath $manualDir -PathType Container) { $manualDir } else { $libraryDir }
     }
-    $targetDir = if ([string]::IsNullOrWhiteSpace($folderStamp)) {
-        Join-Path $packageRootDir $folderTitle
+    if ($isSameSessionMerge -and (Test-Path -LiteralPath $recentMergeTarget)) {
+        $targetDir = $recentMergeTarget
+        $packageId = Split-Path -Leaf $targetDir
     } else {
-        Join-Path $packageRootDir "$folderStamp`_$folderTitle"
-    }
-    $packageId = $stamp
-
-    $index = 2
-    while (Test-Path -LiteralPath $targetDir) {
         $targetDir = if ([string]::IsNullOrWhiteSpace($folderStamp)) {
-            Join-Path $packageRootDir "$folderTitle`_$index"
+            Join-Path $packageRootDir $folderTitle
         } else {
-            Join-Path $packageRootDir "$folderStamp`_$folderTitle`_$index"
+            Join-Path $packageRootDir "$folderStamp`_$folderTitle"
         }
-        $packageId = "$stamp`_$index"
-        $index++
+        $packageId = $stamp
+
+        $index = 2
+        while (Test-Path -LiteralPath $targetDir) {
+            $targetDir = if ([string]::IsNullOrWhiteSpace($folderStamp)) {
+                Join-Path $packageRootDir "$folderTitle`_$index"
+            } else {
+                Join-Path $packageRootDir "$folderStamp`_$folderTitle`_$index"
+            }
+            $packageId = "$stamp`_$index"
+            $index++
+        }
     }
 
     if ($Preview) {
@@ -2664,10 +2713,16 @@ try {
         $image = $images[$i]
         $ext = $image.Extension.ToLowerInvariant()
         # 遵循内容流水线标准命名规范：封面为 P1-封面，内页依次为 P2-内页1, P2-内页2...
-        $newName = if ($i -eq 0) {
-            "P1-封面$ext"
-        } else {
-            "P2-内页$($i)$ext"
+        $baseCandidateName = if ($i -eq 0) { "P1-封面" } else { "P2-内页$($i)" }
+        $newName = "$baseCandidateName$ext"
+        $targetExistingNames = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        if (Test-Path -LiteralPath $targetDir) {
+            Get-ChildItem -LiteralPath $targetDir -File -ErrorAction SilentlyContinue | ForEach-Object { $targetExistingNames.Add($_.Name) | Out-Null }
+        }
+        $candNum = 2
+        while ($targetExistingNames.Contains($newName) -or (Test-Path -LiteralPath (Join-Path $stagingDir $newName))) {
+            $newName = "$baseCandidateName`_$candNum$ext"
+            $candNum++
         }
         $newPath = Join-Path $stagingDir $newName
         $originalPath = $image.FullName
@@ -2683,7 +2738,14 @@ try {
         }
     }
 
-    Move-Item -LiteralPath $stagingDir -Destination $targetDir -ErrorAction Stop
+    if (Test-Path -LiteralPath $targetDir) {
+        Get-ChildItem -LiteralPath $stagingDir -File | ForEach-Object {
+            Move-Item -LiteralPath $_.FullName -Destination (Join-Path $targetDir $_.Name) -Force
+        }
+        Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+        Move-Item -LiteralPath $stagingDir -Destination $targetDir -ErrorAction Stop
+    }
     # 临时目录需要隐藏，但正式作品包必须恢复为可见目录。
     try {
         $committedItem = Get-Item -LiteralPath $targetDir -Force
@@ -2766,6 +2828,9 @@ try {
         "已在下载文件夹创建作品包：$(Split-Path -Leaf $finalTargetDir)"
     } else {
         $successMessage
+    }
+    if ($isSameSessionMerge) {
+        $effectiveSuccessMessage = "已直接加进已有作品包：$(Split-Path -Leaf $targetDir)（10分钟内同作品追加）"
     }
     $stageMessages.Add($effectiveSuccessMessage)
     if ($similarTextExists) {
