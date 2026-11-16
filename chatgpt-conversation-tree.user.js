@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.43
+// @version      1.22.44
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -31,7 +31,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.43';
+  const SCRIPT_VERSION = '1.22.44';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -3877,7 +3877,17 @@
     const images = button.__cgptImageElements || [];
     const previous = findDownloadedGroup(images);
     if (previous) {
-      showImageDownloadToast('正在重新下载图片...', true);
+      const timeStr = previous.time ? new Date(previous.time).toLocaleString('zh-CN', { hour12: false }) : '';
+      const promptText = `【检测到图片已下载过】\n\n`
+        + `本组图片此前于 ${timeStr || '之前'} 已经下载过。\n\n`
+        + `是否仍然要再次下载？\n`
+        + `· 点击【确定】：允许再次下载图片与文案\n`
+        + `· 点击【取消】：停止操作，保持原状`;
+      if (!window.confirm(promptText)) {
+        showImageDownloadToast('已取消重复下载', false);
+        return;
+      }
+      showImageDownloadToast('已确认，正在重新下载图片...', true);
     }
     const copyText = button.__cgptPackageCopyText || (button.dataset.cgptCombined === 'true' ? '' : textContentForDownload(button.__cgptImageDownloadContainer));
     if (!copyText.trim()) {
@@ -4035,7 +4045,24 @@
       || button.parentElement?.querySelector('.' + IMAGE_DOWNLOAD_CLASS);
     const previousRecord = findDownloadedGroup(imageButtonCheck?.__cgptImageElements || []);
     if (previousRecord) {
-      showImageDownloadToast('正在重新下载并更新成品包...', true);
+      const typeDesc = previousRecord.status === 'packaged' ? '已打包入库' : '已下载过';
+      const titleDesc = previousRecord.title ? `《${previousRecord.title}》` : '本作品';
+      const timeStr = previousRecord.time ? new Date(previousRecord.time).toLocaleString('zh-CN', { hour12: false }) : '';
+      const promptText = `【作品助手检测到已处理过】\n\n`
+        + `${titleDesc} 此前于 ${timeStr || '之前'} ${typeDesc}。\n\n`
+        + `是否仍然要再次下载并处理？\n`
+        + `· 点击【确定】：允许重新下载（支持10分钟内追加修改封面）\n`
+        + `· 点击【取消】：停止操作，保持原状`;
+      if (!window.confirm(promptText)) {
+        showImageDownloadToast('已取消操作，保持原状', false);
+        setWorkPackageButtonState(button, previousRecord.status === 'packaged' ? 'done' : 'idle');
+        return;
+      }
+      showImageDownloadToast('已确认，正在重新处理...', true);
+      if (imageButtonCheck) {
+        imageButtonCheck.dataset.cgptImageDownloaded = '0';
+        imageButtonCheck.dataset.cgptWorkPackageBatchId = newDownloadBatchId();
+      }
     }
     // 直存：趁点击事件的同步栈把目录选择器拉起来
     fsSinkCapturePickerNow();
