@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.42
+// @version      1.22.43
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -31,7 +31,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.42';
+  const SCRIPT_VERSION = '1.22.43';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -125,7 +125,7 @@
   // 作品助手写回 _收件区 的 chatgpt-workpkg-result-<batchId>.json，只能干等 45s 超时。
   // 这里提供一条不依赖直存句柄的兜底：用 GM_xmlhttpRequest 读固定收件区路径下的回执。
   // 前提：Tampermonkey 扩展需开启「允许访问文件网址」。
-  const ACK_INBOX_DEFAULT_PATH = 'D:/AICode/项目推进/projects/江湖有旅人/主项目/03-成品库/_收件区';
+  const ACK_INBOX_DEFAULT_PATH = 'D:/江湖有旅人/03-生产车间/05-成品库/_收件区';
   const ACK_INBOX_PATH_KEY = 'ack-inbox-path-v1';
 
   // 图标
@@ -3700,6 +3700,24 @@
 
   function gmDownload(url, name) {
     return new Promise((resolve) => {
+      const fallbackToAnchor = () => {
+        try {
+          const anchor = document.createElement('a');
+          anchor.href = url;
+          anchor.download = name;
+          anchor.rel = 'noopener';
+          anchor.style.display = 'none';
+          document.body.append(anchor);
+          anchor.click();
+          anchor.remove();
+          // 链接已成功派发至浏览器下载队列，计入成功，防止误报“下载失败”
+          resolve(true);
+        } catch (error) {
+          console.warn('[ChatGPT 图片下载] 链接下载失败：', error);
+          resolve(false);
+        }
+      };
+
       if (typeof GM_download === 'function' && !/^blob:/i.test(url)) {
         try {
           GM_download({
@@ -3709,30 +3727,19 @@
             onload: () => resolve(true),
             onerror: (error) => {
               console.warn('[ChatGPT 图片下载] GM_download 失败，改用链接下载：', error);
-              resolve(false);
+              fallbackToAnchor();
             },
-            ontimeout: () => resolve(false),
+            ontimeout: () => {
+              console.warn('[ChatGPT 图片下载] GM_download 超时，改用链接下载');
+              fallbackToAnchor();
+            },
           });
           return;
         } catch (error) {
           console.warn('[ChatGPT 图片下载] GM_download 调用失败，改用链接下载：', error);
         }
       }
-      try {
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = name;
-        anchor.rel = 'noopener';
-        anchor.style.display = 'none';
-        document.body.append(anchor);
-        anchor.click();
-        anchor.remove();
-        // 链接已成功派发至浏览器下载队列，计入成功，防止误报“下载失败”弹窗
-        resolve(true);
-      } catch (error) {
-        console.warn('[ChatGPT 图片下载] 链接下载失败：', error);
-        resolve(false);
-      }
+      fallbackToAnchor();
     });
   }
 
@@ -3807,7 +3814,7 @@
     }
 
     if (!images.length) {
-      window.alert('这个回复里暂时没有找到可下载的图片。');
+      showImageDownloadToast('这个回复里暂时没有找到可下载的图片', false);
       return null;
     }
 
@@ -3842,7 +3849,7 @@
         button.dataset.cgptWorkPackageBatchId = downloadResult.batchId;
       }
       if (!downloaded) {
-        window.alert('下载失败了，可能是网络问题或者图片地址变了。');
+        showImageDownloadToast('部分图片未完成下载，请稍后重试', false);
       } else if (totalImages && downloaded >= totalImages) {
         showImageDownloadToast(`图片下载完成：${downloaded}/${totalImages}`, true);
       } else {
@@ -3850,7 +3857,7 @@
       }
     } catch (error) {
       console.warn('[ChatGPT 图片下载快捷按钮] 下载失败：', error);
-      window.alert('下载出错了，打开控制台看详细信息。');
+      showImageDownloadToast('下载过程异常，请稍后重试', false);
     } finally {
       window.setTimeout(() => {
         button.disabled = false;
