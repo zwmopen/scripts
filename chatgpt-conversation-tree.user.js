@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.47
+// @version      1.22.48
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -31,7 +31,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.47';
+  const SCRIPT_VERSION = '1.22.48';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -96,7 +96,7 @@
 
   // ===== 2026-10-23 宿主钩子 =====
   // 内容制作 App 这类宿主可以先注入 window.__CGPT_APP_HOOKS__，把「图片保存」交给
-  // 宿主自己的落盘通道（如本地 4327 服务）。脚本本体保持纯净，vendor 副本就能整文件
+  // 宿主自己的本地落盘通道。脚本本体保持纯净，vendor 副本就能整文件
   // 跟随上游升级，不必再人工打补丁。
   //   hooks.saveFile(url, name) -> Promise<boolean>   true 表示宿主已保存成功
   const APP_HOOKS = (() => {
@@ -2351,7 +2351,7 @@
     return false;
   }
 
-  async function freezeWorkPackageTask(batchId, expectedImages, copyTextOverride = '') {
+  async function freezeWorkPackageTask(batchId, expectedImages, copyTextOverride = '', options = {}) {
     if (!batchId) return null;
     let copyText = String(copyTextOverride || '');
     if (!copyText.trim()) {
@@ -2384,20 +2384,24 @@
       scriptVersion: SCRIPT_VERSION,
     };
 
-    const blob = new Blob([JSON.stringify(task, null, 2)], { type: 'application/json;charset=utf-8' });
-    const taskFileName = `chatgpt-workpkg-task-${batchId}.json`;
-    // 直存可用时直接写盘，避免再多一个浏览器下载；否则保持原来的链接下载
-    if (fsSinkReady && fsSinkHandle) {
-      const written = await fsSinkWriteFile(taskFileName, blob);
-      if (written) {
-        addDiagnosticLog('workpkg:task-frozen-direct', { batchId, fileName: taskFileName });
+    if (options.persist !== false) {
+      const blob = new Blob([JSON.stringify(task, null, 2)], { type: 'application/json;charset=utf-8' });
+      const taskFileName = `chatgpt-workpkg-task-${batchId}.json`;
+      // 直存可用时直接写盘，避免再多一个浏览器下载；否则保持原来的链接下载
+      if (fsSinkReady && fsSinkHandle) {
+        const written = await fsSinkWriteFile(taskFileName, blob);
+        if (written) {
+          addDiagnosticLog('workpkg:task-frozen-direct', { batchId, fileName: taskFileName });
+        } else {
+          downloadBlobFallback(blob, taskFileName);
+        }
       } else {
         downloadBlobFallback(blob, taskFileName);
       }
+      await sleep(180);
     } else {
-      downloadBlobFallback(blob, taskFileName);
+      addDiagnosticLog('workpkg:task-frozen-memory', { batchId, expectedImages: task.expectedImages });
     }
-    await sleep(180);
     addDiagnosticLog('workpkg:task-frozen', {
       batchId,
       expectedImages: task.expectedImages,
@@ -3702,14 +3706,20 @@ function imageUrlForDirectDownload(img) {
   }
 
   /** 统一保存入口：能用直存就直存，否则回落 gmDownload */
-  async function saveFileSmart(url, name) {
-    // 宿主钩子优先：内容制作 App 走本地 4327 服务直存
+  async function saveFileSmart(url, name, workPackageContext = {}) {
+    // 宿主钩子优先：内容制作 App 走本地服务直存
     if (typeof APP_HOOKS.saveFile === 'function') {
+      const mustUseHostSave = Boolean(APP_HOOKS.runWorkPackage && workPackageContext.packageRequired);
       try {
-        const handled = await APP_HOOKS.saveFile(url, name);
+        const handled = await APP_HOOKS.saveFile(url, name, workPackageContext);
         if (handled) return true;
+        if (mustUseHostSave) {
+          console.warn('[保存] 本地暂存接口未确认写入，本批停止以避免图片落入其他目录：', name);
+          return false;
+        }
       } catch (error) {
-        console.warn('[保存] 宿主钩子失败，回落内置通道：', error);
+        console.warn(mustUseHostSave ? '[保存] 本地暂存接口失败，本批停止：' : '[保存] 宿主钩子失败，回落内置通道：', error);
+        if (mustUseHostSave) return false;
       }
     }
     if (fsSinkEnabled && fsSinkReady && fsSinkHandle) {
@@ -3857,6 +3867,16 @@ function imageUrlForDirectDownload(img) {
   async function downloadUrlsConcurrently(urls, onProgress = null, concurrency = 4, requestedBatchId = '') {
     const total = urls.length;
     const batchId = requestedBatchId || newDownloadBatchId();
+    const workPackageContext = {
+      batchId,
+      taskId: batchId,
+      accountName: currentWorkPackageAccountName(),
+      conversationUrl: currentWorkPackageConversationUrl(),
+      packageRequired: Boolean(requestedBatchId),
+      downloadRoot: typeof APP_HOOKS.getDownloadRoot === 'function'
+        ? String(APP_HOOKS.getDownloadRoot() || '')
+        : '',
+    };
     const limit = Math.max(1, Math.min(8, Number(concurrency || 4), total || 1));
     let nextIndex = 0;
     let ok = 0;
@@ -3864,7 +3884,11 @@ function imageUrlForDirectDownload(img) {
       while (nextIndex < total) {
         const index = nextIndex;
         nextIndex += 1;
-        const success = await saveFileSmart(urls[index], directDownloadName(index, total, urls[index], batchId));
+        const success = await saveFileSmart(
+          urls[index],
+          directDownloadName(index, total, urls[index], batchId),
+          workPackageContext
+        );
         if (success) ok += 1;
         if (onProgress) {
           try { onProgress(ok, total); } catch {}
@@ -3892,8 +3916,7 @@ function imageUrlForDirectDownload(img) {
     return downloadUrlsConcurrently(usableUrls, onProgress, 4, requestedBatchId);
   }
 
-  async function runImageDownloadShortcut(button, requestedBatchId = '', onProgress = null) {
-    if (button.disabled) return null;
+  function collectDirectDownloadImages(button) {
     const container = button.__cgptImageDownloadContainer
       || button.closest('[data-cgpt-image-download-container]')
       || document;
@@ -3917,6 +3940,12 @@ function imageUrlForDirectDownload(img) {
         images.push(img);
       }
     });
+    return { container, images };
+  }
+
+  async function runImageDownloadShortcut(button, requestedBatchId = '', onProgress = null) {
+    if (button.disabled) return null;
+    const { container, images } = collectDirectDownloadImages(button);
 
     // 确保若有残留的预览弹窗则静默关闭
     const previewClose = document.querySelector('[role="dialog"] button[aria-label*="Close"], [role="dialog"] button[aria-label*="关闭"], button[aria-label*="Close modal"], button[aria-label*="Close preview"]');
@@ -4087,6 +4116,15 @@ function imageUrlForDirectDownload(img) {
       button.setAttribute('aria-label', '正在打开文件夹');
       return;
     }
+    if (state === 'folder-failed') {
+      button.classList.add('cgpt-work-package-warning');
+      button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">已打包，打开失败</span>`;
+      button.title = detail.error
+        ? `作品已打包，但资源管理器未确认打开：${detail.error}。点击重试打开文件夹。`
+        : '作品已打包，但资源管理器未确认打开。点击重试打开文件夹。';
+      button.setAttribute('aria-label', '已打包，点击重试打开文件夹');
+      return;
+    }
     if (state === 'needs-text') {
       button.classList.add('cgpt-work-package-warning');
       button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">请先复制文案</span>`;
@@ -4147,11 +4185,49 @@ function imageUrlForDirectDownload(img) {
     button.setAttribute('aria-label', copyCount ? `下载到成品库（文档${copyCount} + 图片${total}）` : (total ? `下载到成品库（${total} 张）` : '下载到成品库'));
   }
 
+  function countUniqueDirectDownloadImages(images = []) {
+    const urls = new Set();
+    (Array.isArray(images) ? images : []).forEach((img) => {
+      if (!img?.isConnected) return;
+      try {
+        const url = imageUrlForDirectDownload(img);
+        if (url && !/^data:image\/svg/i.test(url)) urls.add(url);
+      } catch {}
+    });
+    return urls.size;
+  }
+
   async function triggerWorkPackageButton(button, event = null) {
     if (!button || button.disabled) return;
     event?.preventDefault?.();
     event?.stopPropagation?.();
     event?.stopImmediatePropagation?.();
+
+    const retryFolderPath = String(button.dataset.cgptWorkPackageFolderRetryPath || '').trim();
+    if (retryFolderPath) {
+      setWorkPackageButtonState(button, 'opening-folder');
+      let openResult = null;
+      try {
+        openResult = await APP_HOOKS.openFolder?.(retryFolderPath);
+      } catch (error) {
+        openResult = { ok: false, error: error?.message || String(error) };
+      }
+      if (openResult === true || openResult?.ok === true) {
+        delete button.dataset.cgptWorkPackageFolderRetryPath;
+        const folder = retryFolderPath.split(/[\\/]/).filter(Boolean).pop() || retryFolderPath;
+        setWorkPackageButtonState(button, 'done', {
+          total: Number(button.dataset.cgptImageTotal || 0),
+          folder,
+        });
+        showImageDownloadToast(`已打开成品文件夹：${folder}`, true);
+      } else {
+        const error = String(openResult?.error || '资源管理器没有确认启动');
+        setWorkPackageButtonState(button, 'folder-failed', { error });
+        showImageDownloadToast(`作品已经打包，但打开文件夹失败：${error}`, false);
+      }
+      return;
+    }
+
     const imageButtonCheck = button.__cgptPackageImageButton
       || button.parentElement?.querySelector('.' + IMAGE_DOWNLOAD_CLASS);
     const previousRecord = findDownloadedGroup(imageButtonCheck?.__cgptImageElements || []);
@@ -4175,19 +4251,24 @@ function imageUrlForDirectDownload(img) {
         imageButtonCheck.dataset.cgptWorkPackageBatchId = newDownloadBatchId();
       }
     }
-    // 直存：趁点击事件的同步栈把目录选择器拉起来
-    fsSinkCapturePickerNow();
-    if (!await ensureWorkPackageHelperReady()) {
-      setWorkPackageButtonState(button, 'idle');
-      return;
+    const useWorkbenchPackageHook = typeof APP_HOOKS.runWorkPackage === 'function';
+    if (!useWorkbenchPackageHook) {
+      // standalone userscript retains the File System Access / protocol path
+      fsSinkCapturePickerNow();
+      if (!await ensureWorkPackageHelperReady()) {
+        setWorkPackageButtonState(button, 'idle');
+        return;
+      }
     }
     setWorkPackageButtonState(button, 'preparing');
     const slot = button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
     const imageButton = button.__cgptPackageImageButton
       || slot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
 
-    let expectedImages = Number(imageButton?.dataset.cgptImageTotal || 0);
-    const downloadedImages = Number(imageButton?.dataset.cgptImageDownloaded || 0);
+    let imageElements = imageButton?.__cgptImageElements || button.__cgptPackageImageElements || [];
+    let imagesToDownload = imageButton ? collectDirectDownloadImages(imageButton).images : imageElements;
+    // The live image set wins over a stale per-button count left by a previous render.
+    let expectedImages = countUniqueDirectDownloadImages(imagesToDownload);
     // v1.22.19 防空跑：按钮计件为 0 时先现场重扫一轮 Turn；仍为 0 则直接中止，绝不生成空任务/调用本地协议
     if (!expectedImages) {
       const container = imageButton?.__cgptImageDownloadContainer
@@ -4201,17 +4282,26 @@ function imageUrlForDirectDownload(img) {
         const src = img?.currentSrc || img?.src || '';
         return img?.isConnected && Boolean(src) && !/^data:image\/svg/i.test(src);
       });
-      expectedImages = uniqueImageUrls(recount).length || recount.length || 0;
-      if (expectedImages && imageButton) {
-        imageButton.dataset.cgptImageTotal = String(expectedImages);
-      }
+      imagesToDownload = recount;
+      imageElements = imageButton?.__cgptImageElements || recount;
+      expectedImages = countUniqueDirectDownloadImages(recount)
+        || uniqueImageUrls(recount).length
+        || recount.length
+        || 0;
     }
     if (!expectedImages) {
       setWorkPackageButtonState(button, 'idle');
       showImageDownloadToast('本轮未识别到图片（可能尚未生成完或未加载），已取消打包', false);
       return;
     }
+    if (imageButton) imageButton.dataset.cgptImageTotal = String(expectedImages);
+    if (!imageButton) {
+      setWorkPackageButtonState(button, 'failed', { error: '找不到与本组图片绑定的下载按钮' });
+      showImageDownloadToast('没有找到与本组图片绑定的下载按钮，未开始打包', false);
+      return;
+    }
     const batchId = imageButton?.dataset.cgptWorkPackageBatchId || newDownloadBatchId();
+    if (imageButton) imageButton.dataset.cgptWorkPackageBatchId = batchId;
     let copyText = button.__cgptPackageCopyText || '';
     if (!copyText) {
       const container = button.__cgptPackageImageButton?.__cgptImageDownloadContainer
@@ -4219,8 +4309,10 @@ function imageUrlForDirectDownload(img) {
         || imageTurnContainer(button);
       copyText = extractAssistantCopyText(container) || extractAssistantCopyText(container?.nextElementSibling) || extractAssistantCopyText(container?.previousElementSibling);
     }
-    const frozenTask = await freezeWorkPackageTask(batchId, expectedImages, copyText || '');
-    if (!frozenTask) {
+    if (!String(copyText || '').trim() && navigator.clipboard?.readText) {
+      try { copyText = await navigator.clipboard.readText(); } catch {}
+    }
+    if (!String(copyText || '').trim()) {
       showImageDownloadToast('请先复制当前窗口的小红书文案，再点“下载并打包”', false);
       setWorkPackageButtonState(button, 'needs-text');
       window.setTimeout(() => {
@@ -4230,8 +4322,8 @@ function imageUrlForDirectDownload(img) {
       }, 2400);
       return;
     }
-    showImageDownloadToast(`任务已冻结：${frozenTask.copyTitle || '已复制文案'} · ${expectedImages} 张`, true);
 
+    const downloadedImages = Number(imageButton.dataset.cgptImageDownloaded || 0);
     if (imageButton && expectedImages > 0 && (
       downloadedImages < expectedImages
       || imageButton.dataset.cgptWorkPackageBatchId !== batchId
@@ -4246,10 +4338,115 @@ function imageUrlForDirectDownload(img) {
         setWorkPackageButtonState(button, 'idle');
         return;
       }
+      expectedImages = Math.max(0, Number(downloadResult.total || expectedImages));
+      imageButton.dataset.cgptImageTotal = String(expectedImages);
+      imageElements = imageButton.__cgptImageElements || imageElements;
       await sleep(450);
     }
+
+    const frozenTask = await freezeWorkPackageTask(batchId, expectedImages, copyText || '', {
+      persist: !useWorkbenchPackageHook,
+    });
+    if (!frozenTask) {
+      showImageDownloadToast('没有拿到可打包的文案，图片暂留在 C 盘下载暂存区', false);
+      setWorkPackageButtonState(button, 'needs-text');
+      return;
+    }
+    frozenTask.expectedImages = expectedImages;
+    showImageDownloadToast(`任务已冻结：${frozenTask.copyTitle || '已复制文案'} · ${expectedImages} 张`, true);
+
     setWorkPackageButtonState(button, 'archiving');
     showImageDownloadToast('图片下载完成，正在处理并打包…', true);
+
+    if (useWorkbenchPackageHook) {
+      let result = null;
+      try {
+        result = await APP_HOOKS.runWorkPackage({
+          batchId,
+          taskId: batchId,
+          expectedImageCount: expectedImages,
+          clipboardText: frozenTask.copyText,
+          title: frozenTask.copyTitle,
+          conversationTitle: frozenTask.conversationTitle,
+          accountName: frozenTask.accountName,
+          conversationUrl: frozenTask.conversationUrl,
+          downloadRoot: typeof APP_HOOKS.getDownloadRoot === 'function'
+            ? String(APP_HOOKS.getDownloadRoot() || '')
+            : '',
+        });
+      } catch (error) {
+        result = { ok: false, error: error?.message || String(error) };
+      }
+      if (!result?.ok) {
+        const error = String(result?.error || '本地打包服务没有确认完成');
+        setWorkPackageButtonState(button, 'failed', { error });
+        showImageDownloadToast(`打包失败：${error}；请检查 C 盘暂存区和成品库后再重试`, false);
+        addDiagnosticLog('workpkg:host-package-failed', { batchId, expectedImages, error });
+        return;
+      }
+
+      const packagePath = String(result.packagePath || '').trim();
+      const packageFolder = packagePath.split(/[\\/]/).filter(Boolean).pop() || '';
+      if (result.duplicate) {
+        markImageGroupDownloaded(imageElements, {
+          title: frozenTask.copyTitle || '',
+          count: expectedImages,
+          batchId,
+          packaged: true,
+          packageFolder,
+          packagePath,
+        });
+        if (packagePath && result.folderOpened !== true) {
+          button.dataset.cgptWorkPackageFolderRetryPath = packagePath;
+          setWorkPackageButtonState(button, 'folder-failed', {
+            error: String(result.openFolderError || '资源管理器没有确认启动'),
+          });
+          showImageDownloadToast(`检测到重复作品，已找到原成品包但未确认打开：${packagePath}。点击按钮重试`, false);
+          return;
+        }
+        setWorkPackageButtonState(button, 'duplicate');
+        showImageDownloadToast(packagePath
+          ? '检测到重复作品，已清理本批图片并打开已有成品文件夹'
+          : '检测到重复作品，已清理本批重复图片', false);
+        return;
+      }
+
+      if (!packagePath) {
+        const error = '打包服务没有返回成品目录路径';
+        setWorkPackageButtonState(button, 'failed', { error });
+        showImageDownloadToast(`打包结果未确认：${error}；请检查 C 盘暂存区和成品库`, false);
+        return;
+      }
+      const actualImageCount = Number(result.imageCount || 0);
+      if (actualImageCount < expectedImages) {
+        const error = `成品图片核对失败：${actualImageCount}/${expectedImages}`;
+        setWorkPackageButtonState(button, 'failed', { error });
+        showImageDownloadToast(`打包未通过核对：${error}；请检查成品目录和 C 盘暂存区`, false);
+        return;
+      }
+      markImageGroupDownloaded(imageElements, {
+        title: frozenTask.copyTitle || '',
+        count: actualImageCount,
+        batchId,
+        packaged: true,
+        packageFolder,
+        packagePath,
+      });
+      if (result.folderOpened !== true) {
+        button.dataset.cgptWorkPackageFolderRetryPath = packagePath;
+        setWorkPackageButtonState(button, 'folder-failed', {
+          error: String(result.openFolderError || '资源管理器没有确认启动'),
+        });
+        showImageDownloadToast(`已打包到成品库，但没有确认打开文件夹：${packagePath}。点击按钮重试打开`, false);
+        addDiagnosticLog('workpkg:host-package-folder-open-failed', { batchId, packagePath, error: result.openFolderError || '' });
+        return;
+      }
+      setWorkPackageButtonState(button, 'done', { total: actualImageCount, folder: packageFolder });
+      showImageDownloadToast(`已保存并打开：成品库\\${packageFolder}`, true);
+      addDiagnosticLog('workpkg:host-package-completed', { batchId, expectedImages, imageCount: actualImageCount, packagePath });
+      return;
+    }
+
     try {
       const protocolUrl = `${WORK_PACKAGE_PROTOCOL_URL}?target=library&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}`;
       openWorkPackageProtocol(protocolUrl);
@@ -4260,7 +4457,6 @@ function imageUrlForDirectDownload(img) {
       return;
     }
     // v1.22.25 真回执：轮询本地脚本写回收件区的 result ack，按真实状态驱动按钮文案
-    const imageElements = imageButton?.__cgptImageElements || button.__cgptPackageImageElements || [];
     await pollWorkPackageResult(button, batchId, expectedImages, imageElements);
   }
 

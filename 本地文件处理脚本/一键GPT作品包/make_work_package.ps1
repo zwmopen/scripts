@@ -5,6 +5,7 @@
     [int]$ExpectedImageCount = 0,
     [string]$TargetDestination = "",
     [switch]$NoMessage,
+    [switch]$NoOpenFolder,
     [switch]$Preview,
     [switch]$Diagnose,
     [switch]$RebuildHistory,
@@ -2818,10 +2819,12 @@ try {
         } catch {
         }
     }
-    # 固化流程：打包完成后无条件直接打开刚生成的成品文件夹，方便立即验货
-    try {
-        Start-Process -FilePath "explorer.exe" -ArgumentList "`"$finalTargetDir`"" -WindowStyle Normal
-    } catch {
+    if (-not $NoOpenFolder -and $completionOpenFolder) {
+        # 宿主服务完成目录核验后负责打开 Explorer，避免重复启动。
+        try {
+            Start-Process -FilePath "explorer.exe" -ArgumentList "`"$finalTargetDir`"" -WindowStyle Normal
+        } catch {
+        }
     }
     $stageMessages = New-Object System.Collections.Generic.List[string]
     $effectiveSuccessMessage = if ($TargetDestination -eq "default") {
