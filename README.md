@@ -32,7 +32,7 @@
 - `chatgpt-conversation-tree.user.js`
 - `chatgpt-cloud-prompts.json`
 
-当前 ChatGPT 作品助手发布版本为 `1.22.49`。图片先写入 `C:\Users\z\Downloads` 暂存区，再由同批次本地打包流程归档到配置的 D 盘成品库；成品目录、文案和图片数量核验成功后才报告完成。成品库按钮固定显示为“下载到成品库”，不在按钮文字中展开数量。
+当前 ChatGPT 作品助手发布版本为 `1.22.11`。图片先写入 `C:\Users\z\Downloads` 暂存区，再由同批次本地打包流程归档到配置的 D 盘成品库；成品目录、文案和图片数量核验成功后才报告完成。成品库按钮固定显示为“下载到成品库”，不在按钮文字中展开数量。
 
 它们的唯一可编辑真源位于 `D:\AICode\工具开发\projects\chatgpt-conversation-tree`。映射关系见 [MIRRORS.md](MIRRORS.md)，同步与检查方法见 [MAINTENANCE.md](MAINTENANCE.md)。禁止直接编辑镜像。
 
