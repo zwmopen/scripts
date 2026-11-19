@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.48
+// @version      1.22.49
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -31,7 +31,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.48';
+  const SCRIPT_VERSION = '1.22.49';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -4175,14 +4175,11 @@ function imageUrlForDirectDownload(img) {
     }
     const total = Math.max(0, Number(detail.total || 0));
     const copyCount = Math.max(0, Number(button.dataset.cgptPackageCopyCount || 0));
-    const suffix = copyCount
-      ? `（文档${copyCount} + 图片${total}）`
-      : (total ? `（${total}张）` : '');
-    button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">下载到成品库${suffix}</span>`;
+    button.innerHTML = `${icons.package}<span class="cgpt-work-package-label">下载到成品库</span>`;
     button.title = copyCount
       ? `使用紧邻下一条助手消息的文案和本组 ${total} 张图片打包到成品库`
       : (total ? `下载本组 ${total} 张图片，并打包归档到 成品库 \\ A手动制作` : '下载本组全部图片，并打包归档到 成品库 \\ A手动制作');
-    button.setAttribute('aria-label', copyCount ? `下载到成品库（文档${copyCount} + 图片${total}）` : (total ? `下载到成品库（${total} 张）` : '下载到成品库'));
+    button.setAttribute('aria-label', '下载到成品库');
   }
 
   function countUniqueDirectDownloadImages(images = []) {
