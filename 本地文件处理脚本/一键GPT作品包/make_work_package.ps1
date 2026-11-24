@@ -3,21 +3,145 @@
     [string]$ConversationMetadataJsonOverride,
     [string]$BatchId,
     [int]$ExpectedImageCount = 0,
+    [int]$ImageWaitSeconds = 90,
     [string]$TargetDestination = "",
     [switch]$NoMessage,
-    [switch]$NoOpenFolder,
     [switch]$Preview,
     [switch]$Diagnose,
     [switch]$RebuildHistory,
     [switch]$CleanExistingDuplicates,
     [switch]$FlushPortfolio,
+    [switch]$NoOpenFolder,
     [int]$TestFailAfterImageMove = 0
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.8.4"
+$workPackageScriptVersion = "1.9.0"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
+
+function Write-RunLog {
+    param([string]$Message)
+
+    try {
+        if ([string]::IsNullOrWhiteSpace($scriptDir)) { return }
+        $logPath = Join-Path $scriptDir "workpkg_run.log"
+        if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+            $fi = Get-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+            if ($null -ne $fi -and $fi.Length -gt 524288) {
+                Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+        $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        $line = "[$ts] $Message`r`n"
+        [System.IO.File]::AppendAllText($logPath, $line, (New-Object System.Text.UTF8Encoding($false)))
+    } catch {
+    }
+}
+
+function Write-TextWithRetry {
+    param(
+        [string]$Path,
+        [string]$Content,
+        [int]$MaxAttempts = 8,
+        [int]$DelayMs = 200
+    )
+
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $lastError = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            $tmpPath = "$Path.tmp.$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+            [System.IO.File]::WriteAllText($tmpPath, $Content, $encoding)
+            Move-Item -LiteralPath $tmpPath -Destination $Path -Force -ErrorAction Stop
+            return
+        } catch {
+            $lastError = $_
+            if ($tmpPath -and (Test-Path -LiteralPath $tmpPath -PathType Leaf)) {
+                Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
+            }
+            try {
+                [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+                return
+            } catch {
+                $lastError = $_
+            }
+            if ($attempt -lt $MaxAttempts) {
+                Start-Sleep -Milliseconds $DelayMs
+            }
+        }
+    }
+    if ($null -ne $lastError) { throw $lastError }
+}
+
+function Copy-FileWithRetry {
+    param(
+        [string]$Source,
+        [string]$Destination,
+        [int]$MaxAttempts = 6,
+        [int]$DelayMs = 250
+    )
+
+    $lastError = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            $srcInfo = Get-Item -LiteralPath $Source -Force
+            $dstInfo = Get-Item -LiteralPath $Destination -Force
+            if ($dstInfo.Length -ne $srcInfo.Length) {
+                throw "Copied size mismatch for $Destination ($($dstInfo.Length) vs $($srcInfo.Length))"
+            }
+            try {
+                $dstInfo.CreationTime = $srcInfo.CreationTime
+                $dstInfo.LastWriteTime = $srcInfo.LastWriteTime
+            } catch {
+            }
+            return
+        } catch {
+            $lastError = $_
+            if ($attempt -lt $MaxAttempts) {
+                Start-Sleep -Milliseconds $DelayMs
+            }
+        }
+    }
+    if ($null -ne $lastError) { throw $lastError }
+}
+
+function Invoke-DownloadsGarbageCleanup {
+    param(
+        [string]$DownloadsDir,
+        [string]$ActiveBatchId = "",
+        [bool]$RemoveActiveTask = $false
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DownloadsDir) -or -not (Test-Path -LiteralPath $DownloadsDir -PathType Container)) { return }
+    try {
+        Get-ChildItem -LiteralPath $DownloadsDir -Filter "chatgpt-workpkg-task-*.json" -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $isCurrent = (-not [string]::IsNullOrWhiteSpace($ActiveBatchId) -and $_.Name -like "*$ActiveBatchId*")
+            if ($isCurrent) {
+                if ($RemoveActiveTask) {
+                    Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+                }
+            } elseif ((New-TimeSpan -Start $_.LastWriteTime -End (Get-Date)).TotalMinutes -ge 10) {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Get-ChildItem -LiteralPath $DownloadsDir -Filter "chatgpt-workpkg-result-*.json" -File -ErrorAction SilentlyContinue | ForEach-Object {
+            if ((New-TimeSpan -Start $_.LastWriteTime -End (Get-Date)).TotalMinutes -ge 5) {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Get-ChildItem -LiteralPath $DownloadsDir -Filter ".workpkg_staging_*" -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            if ((New-TimeSpan -Start $_.LastWriteTime -End (Get-Date)).TotalMinutes -ge 30) {
+                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+}
 
 function Get-ClipboardText {
     if ($clipboardTextOverrideSpecified) {
@@ -435,8 +559,19 @@ function Get-WorkPackageConfig {
     $defaults = [pscustomobject]@{
         library_name = New-TextFromCodePoints @(0x56E2, 0x5EFA, 0x6210, 0x54C1, 0x5E93)
         library_path = ""
+        target_subfolder = ""
         portfolio_output_path = ""
         image_inbox_path = ""
+        success_message = ""
+        no_text_message = ""
+        no_image_message = ""
+        duplicate_text_message = ""
+        duplicate_existing_message = ""
+        portfolio_grouped_message = ""
+        portfolio_zipped_message = ""
+        portfolio_group_done_message = ""
+        portfolio_zip_done_message = ""
+        portfolio_zip_failed_message = ""
         portfolio_auto_group = $true
         portfolio_auto_zip = $false
         portfolio_batch_size = 14
@@ -469,6 +604,56 @@ function Get-WorkPackageConfig {
     }
 
     return $defaults
+}
+
+function Show-Progress {
+    param(
+        [string]$Message,
+        [int]$Percent = -1,
+        [string]$Stage = ""
+    )
+
+    if ($NoMessage) {
+        return
+    }
+
+    # 复用 shared-notification 通道，把进度作为短命 info 通知发出；
+    # 没有通知服务时静默跳过（进度仅用于前台可见性，不阻断打包）。
+    $notifyScript = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:SHARED_NOTIFICATION_ROOT)) {
+        $candidate = Join-Path $env:SHARED_NOTIFICATION_ROOT "scripts\notify.ps1"
+        if (Test-Path -LiteralPath $candidate) { $notifyScript = $candidate }
+    }
+    if (-not $notifyScript) {
+        $candidate = "D:\AICode\AI\skills\技能包\技能\shared-notification\scripts\notify.ps1"
+        if (Test-Path -LiteralPath $candidate) { $notifyScript = $candidate }
+    }
+    if (-not $notifyScript) { return }
+
+    $label = $Message
+    if ($Percent -ge 0 -and $Percent -le 100) {
+        $bar = ""
+        $filled = [Math]::Round($Percent / 10)
+        $bar = ("█" * $filled) + ("░" * (10 - $filled))
+        $label = "$Message  $bar  $Percent%"
+    } elseif (-not [string]::IsNullOrWhiteSpace($Stage)) {
+        $label = "$Message"
+    }
+
+    try {
+        $notifyArgs = @(
+            '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+            '-File', $notifyScript,
+            '-Message', $label,
+            '-Title', 'GPT作品助手',
+            '-Status', 'info',
+            '-Source', 'chatgpt-workpkg-progress',
+            '-AppName', 'GPT作品助手',
+            '-DurationMs', '1600'
+        )
+        Start-Process -FilePath "powershell.exe" -ArgumentList $notifyArgs -WindowStyle Hidden
+    } catch {
+    }
 }
 
 function Show-Tip {
@@ -732,6 +917,65 @@ function Get-TopLevelImages {
     } | Sort-Object LastWriteTime, Name)
 }
 
+function Test-FileReadyForPackaging {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    try {
+        $info = Get-Item -LiteralPath $Path -Force
+        if ($info.Length -le 0) { return $false }
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        $stream.Close()
+        $stream.Dispose()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Test-HasPendingBrowserDownloads {
+    param(
+        [string]$Directory,
+        [string]$BatchId = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Directory) -or -not (Test-Path -LiteralPath $Directory -PathType Container)) { return $false }
+    try {
+        $pending = @(Get-ChildItem -LiteralPath $Directory -File -Force -ErrorAction SilentlyContinue | Where-Object {
+            $ext = $_.Extension.ToLowerInvariant()
+            ($ext -eq ".crdownload" -or $ext -eq ".part") -or
+            (-not [string]::IsNullOrWhiteSpace($BatchId) -and $_.Name -like "chatgpt-workpkg-$BatchId*" -and $ext -eq ".tmp")
+        })
+        return ($pending.Count -gt 0)
+    } catch {
+        return $false
+    }
+}
+
+function Test-IsCorruptHtmlOrEmptyFile {
+    param([string]$Path)
+
+    try {
+        $info = Get-Item -LiteralPath $Path -Force
+        if ($info.Length -le 0) { return $true }
+        $stream = [System.IO.File]::OpenRead($Path)
+        try {
+            $buf = New-Object byte[] 64
+            $read = $stream.Read($buf, 0, $buf.Length)
+            if ($read -le 0) { return $true }
+            $head = [System.Text.Encoding]::ASCII.GetString($buf, 0, $read).TrimStart()
+            if ($head -match '^(?:<!DOCTYPE|<!doctype|<html|<HTML|<head|<HEAD|<script|<SCRIPT)') {
+                return $true
+            }
+        } finally {
+            $stream.Dispose()
+        }
+    } catch {
+        return $false
+    }
+    return $false
+}
+
 function Get-WorkPackageInboxImages {
     param(
         [string]$Directory,
@@ -744,14 +988,18 @@ function Get-WorkPackageInboxImages {
     if ($allImages.Count -eq 0) {
         return [pscustomobject]@{
             Images = @()
+            ExtraDuplicateFiles = @()
+            InboxDir = $Directory
             BatchId = $RequestedBatchId
+            DeclaredCount = 0
             ExpectedCount = [Math]::Max(0, $RequestedExpectedCount)
+            UniqueCount = 0
             IsComplete = [string]::IsNullOrWhiteSpace($RequestedBatchId)
             BatchFound = [string]::IsNullOrWhiteSpace($RequestedBatchId)
         }
     }
 
-    $batchPattern = '^chatgpt-workpkg-(?<batch>\d{8}-\d{6}-[a-z0-9]{4})-(?<index>\d+)-of-(?<total>\d+)\.[^.]+$'
+    $batchPattern = '^chatgpt-workpkg-(?<batch>\d{8}-\d{6}-[a-z0-9]{4})-(?<index>\d+)-of-(?<total>\d+)(?:\s*\(\d+\))?\.[^.]+$'
     $batchRows = @($allImages | ForEach-Object {
         $match = [regex]::Match($_.Name, $batchPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
         if ($match.Success) {
@@ -768,16 +1016,24 @@ function Get-WorkPackageInboxImages {
         if (-not [string]::IsNullOrWhiteSpace($RequestedBatchId)) {
             return [pscustomobject]@{
                 Images = @()
+                ExtraDuplicateFiles = @()
+                InboxDir = $Directory
                 BatchId = $RequestedBatchId
+                DeclaredCount = 0
                 ExpectedCount = [Math]::Max(0, $RequestedExpectedCount)
+                UniqueCount = 0
                 IsComplete = $false
                 BatchFound = $false
             }
         }
         return [pscustomobject]@{
             Images = $allImages
+            ExtraDuplicateFiles = @()
+            InboxDir = $Directory
             BatchId = ""
+            DeclaredCount = $allImages.Count
             ExpectedCount = $allImages.Count
+            UniqueCount = $allImages.Count
             IsComplete = $true
             BatchFound = $true
         }
@@ -798,8 +1054,12 @@ function Get-WorkPackageInboxImages {
     if (@($latestBatch).Count -eq 0) {
         return [pscustomobject]@{
             Images = @()
+            ExtraDuplicateFiles = @()
+            InboxDir = $Directory
             BatchId = $RequestedBatchId
+            DeclaredCount = 0
             ExpectedCount = [Math]::Max(0, $RequestedExpectedCount)
+            UniqueCount = 0
             IsComplete = $false
             BatchFound = $false
         }
@@ -808,7 +1068,13 @@ function Get-WorkPackageInboxImages {
 
     $rows = @($latestBatch.Rows | Sort-Object Index)
     $declaredCount = [int](@($rows.Total | Sort-Object -Descending)[0])
-    $expectedCount = [Math]::Max(1, [Math]::Max($declaredCount, $RequestedExpectedCount))
+    $nonEmptyTotals = @($rows | ForEach-Object { [int]$_.Total } | Select-Object -Unique)
+    # Authoritative count: when files are named -of-XX unanimously, -of-XX reflects actual downloadable URL count.
+    $expectedCount = if ($declaredCount -gt 0 -and $nonEmptyTotals.Count -eq 1) {
+        $declaredCount
+    } else {
+        [Math]::Max(1, [Math]::Max($declaredCount, $RequestedExpectedCount))
+    }
     $matchedRows = @($rows | Where-Object { [int]$_.Total -eq $expectedCount })
     if ($matchedRows.Count -gt 0) {
         $rows = $matchedRows
@@ -816,14 +1082,142 @@ function Get-WorkPackageInboxImages {
         $rows = @($rows | Where-Object { [int]$_.Total -eq $declaredCount })
         $expectedCount = $declaredCount
     }
-    $uniqueIndexes = @($rows.Index | Sort-Object -Unique)
+
+    # If Chrome created (1) duplicates for the same index, pick the newest non-empty file per index.
+    $dedupRows = New-Object System.Collections.Generic.List[object]
+    $extraDupFiles = New-Object System.Collections.Generic.List[System.IO.FileInfo]
+    foreach ($grp in @($rows | Group-Object Index | Sort-Object { [int]$_.Name })) {
+        $sorted = @($grp.Group | Sort-Object @{ Expression = { $_.File.Length -gt 0 }; Descending = $true }, @{ Expression = { $_.File.LastWriteTime }; Descending = $true }, @{ Expression = { $_.File.Name }; Descending = $false })
+        $dedupRows.Add($sorted[0]) | Out-Null
+        if ($sorted.Count -gt 1) {
+            for ($k = 1; $k -lt $sorted.Count; $k++) {
+                $extraDupFiles.Add($sorted[$k].File) | Out-Null
+            }
+        }
+    }
+    $uniqueIndexes = @($dedupRows | ForEach-Object { [int]$_.Index } | Sort-Object -Unique)
 
     return [pscustomobject]@{
-        Images = @($rows.File)
+        Images = @($dedupRows | ForEach-Object { $_.File })
+        ExtraDuplicateFiles = @($extraDupFiles)
+        InboxDir = $Directory
         BatchId = [string]$latestBatch.BatchId
+        DeclaredCount = $declaredCount
         ExpectedCount = $expectedCount
-        IsComplete = ($rows.Count -eq $expectedCount -and $uniqueIndexes.Count -eq $expectedCount)
+        UniqueCount = $uniqueIndexes.Count
+        IsComplete = ($expectedCount -gt 0 -and $dedupRows.Count -eq $expectedCount -and $uniqueIndexes.Count -eq $expectedCount)
         BatchFound = $true
+    }
+}
+
+function Wait-WorkPackageInboxImages {
+    param(
+        [string[]]$InboxDirs,
+        [string[]]$ExcludeNames = @(),
+        [string]$RequestedBatchId = "",
+        [int]$RequestedExpectedCount = 0,
+        [int]$WaitSeconds = 90,
+        [object]$TaskData = $null,
+        [switch]$NoWait
+    )
+
+    $scanOnce = {
+        $best = $null
+        foreach ($dir in $InboxDirs) {
+            if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+            $cand = Get-WorkPackageInboxImages `
+                -Directory $dir `
+                -ExcludeNames $ExcludeNames `
+                -RequestedBatchId $RequestedBatchId `
+                -RequestedExpectedCount $RequestedExpectedCount
+            if ($null -eq $best) {
+                $best = $cand
+                continue
+            }
+            if (@($cand.Images).Count -gt @($best.Images).Count) {
+                $best = $cand
+            }
+        }
+        if ($null -eq $best) {
+            $fallbackDir = if (@($InboxDirs).Count -gt 0) { $InboxDirs[0] } else { "" }
+            $best = [pscustomobject]@{
+                Images = @()
+                ExtraDuplicateFiles = @()
+                InboxDir = $fallbackDir
+                BatchId = $RequestedBatchId
+                DeclaredCount = 0
+                ExpectedCount = [Math]::Max(0, $RequestedExpectedCount)
+                UniqueCount = 0
+                IsComplete = $false
+                BatchFound = $false
+            }
+        }
+        return $best
+    }
+
+    if ($NoWait -or [string]::IsNullOrWhiteSpace($RequestedBatchId)) {
+        return (& $scanOnce)
+    }
+
+    $deadline = (Get-Date).AddSeconds([Math]::Max(1, $WaitSeconds))
+    $lastSig = ""
+    $stableHits = 0
+    $stableSince = $null
+    $lastAckAt = [datetime]::MinValue
+    $selection = $null
+
+    while ($true) {
+        $selection = & $scanOnce
+        $imgs = @($selection.Images)
+        $hasPending = $false
+        if (-not [string]::IsNullOrWhiteSpace($selection.InboxDir)) {
+            $hasPending = Test-HasPendingBrowserDownloads -Directory $selection.InboxDir -BatchId $RequestedBatchId
+        }
+        $allReady = ($imgs.Count -gt 0)
+        if ($allReady) {
+            foreach ($img in $imgs) {
+                if (-not (Test-FileReadyForPackaging -Path $img.FullName)) {
+                    $allReady = $false
+                    break
+                }
+            }
+        }
+
+        if ($selection.IsComplete -and $allReady -and -not $hasPending) {
+            $sig = (@($imgs | Sort-Object Name | ForEach-Object { "$($_.Name):$($_.Length)" })) -join "|"
+            if ($sig -eq $lastSig -and -not [string]::IsNullOrWhiteSpace($sig)) {
+                $stableHits++
+                if ($null -eq $stableSince) { $stableSince = Get-Date }
+            } else {
+                $lastSig = $sig
+                $stableHits = 0
+                $stableSince = Get-Date
+            }
+
+            $needQuietSeconds = if ($RequestedExpectedCount -gt 0 -and $selection.DeclaredCount -gt 0 -and $selection.DeclaredCount -lt $RequestedExpectedCount) { 2.0 } else { 0.35 }
+            $quietElapsed = if ($null -ne $stableSince) { ((Get-Date) - $stableSince).TotalSeconds } else { 0 }
+            if ($stableHits -ge 1 -and $quietElapsed -ge $needQuietSeconds) {
+                return $selection
+            }
+        } else {
+            $lastSig = ""
+            $stableHits = 0
+            $stableSince = $null
+        }
+
+        $now = Get-Date
+        if ($null -ne $TaskData -and ($now - $lastAckAt).TotalSeconds -ge 2.0) {
+            $lastAckAt = $now
+            Set-WorkPackageTaskProperty -Task $TaskData -Name "status" -Value "waiting_images"
+            Set-WorkPackageTaskProperty -Task $TaskData -Name "actualImages" -Value $imgs.Count
+            Set-WorkPackageTaskProperty -Task $TaskData -Name "expectedImages" -Value ([Math]::Max($selection.ExpectedCount, $RequestedExpectedCount))
+            Write-WorkPackageResultAck -Task $TaskData -BatchId $RequestedBatchId
+        }
+
+        if ((Get-Date) -ge $deadline) {
+            return $selection
+        }
+        Start-Sleep -Milliseconds 400
     }
 }
 
@@ -847,12 +1241,44 @@ function Save-WorkPackageTaskJson {
         [string]$Path
     )
 
-    $parent = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
-        New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    }
     $json = $Task | ConvertTo-Json -Depth 8
-    [System.IO.File]::WriteAllText($Path, $json, (New-Object System.Text.UTF8Encoding($false)))
+    Write-TextWithRetry -Path $Path -Content $json
+}
+
+# 2026-11-05 网页真回执通道：把终态结果额外写一份独立 ack 到 Downloads，
+# 供油猴脚本轮询读取真实状态。
+function Write-WorkPackageResultAck {
+    param(
+        [object]$Task,
+        [string]$BatchId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($BatchId) -or $null -eq $Task) { return }
+    try {
+        # 复用脚本级 $imageInboxDir（函数内经动态作用域可见）；为空则退到脚本目录，不抛错
+        $ackDir = if (-not [string]::IsNullOrWhiteSpace($imageInboxDir)) { $imageInboxDir } else { $scriptDir }
+        if (-not (Test-Path -LiteralPath $ackDir -PathType Container)) { return }
+        $expectedVal = if ($Task.PSObject.Properties["expectedImages"] -and $null -ne $Task.expectedImages) { [int]$Task.expectedImages } elseif ($Task.PSObject.Properties["expectedImageCount"] -and $null -ne $Task.expectedImageCount) { [int]$Task.expectedImageCount } else { 0 }
+        $ack = [ordered]@{
+            schemaVersion = 1
+            batchId = [string]$BatchId
+            status = [string]$Task.status
+            stage = [string]$Task.status
+            completedAt = [string]$Task.completedAt
+            actualImages = [int]$Task.actualImages
+            expectedImages = $expectedVal
+            packageFolder = [string]$Task.packageFolder
+            packagePath = [string]$Task.packagePath
+            similarPackagePath = [string]$Task.similarPackagePath
+            duplicateReason = [string]$Task.duplicateReason
+            error = [string]$Task.error
+        }
+        $ackPath = Join-Path $ackDir "chatgpt-workpkg-result-$BatchId.json"
+        $ackJson = $ack | ConvertTo-Json -Depth 6
+        Write-TextWithRetry -Path $ackPath -Content $ackJson -MaxAttempts 4 -DelayMs 100
+    } catch {
+        # 回执是增强能力，失败不阻断主流程
+    }
 }
 
 function Resolve-CityFolder {
@@ -2013,7 +2439,7 @@ if ([string]::IsNullOrWhiteSpace($configuredPortfolioOutputPath)) {
 $targetSubfolder = if ($config.PSObject.Properties["target_subfolder"] -and -not [string]::IsNullOrWhiteSpace([string]$config.target_subfolder)) {
     ([string]$config.target_subfolder).Trim()
 } else {
-    "A手动制作"
+    ""
 }
 $historyDirectory = Join-Path $libraryDir "_作品历史数据"
 $historyPath = Join-Path $historyDirectory "作品历史数据库.json"
@@ -2043,15 +2469,15 @@ function Get-LegacyTextHash {
     param([string]$Text)
     return Get-Sha256Hex -Text $Text
 }
-$successMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305)
-$noImageMessage = New-TextFromCodePoints @(0x8BF7, 0x5148, 0x4E0B, 0x8F7D, 0x4F5C, 0x54C1, 0x56FE)
-$duplicateExistingMessage = New-TextFromCodePoints @(0x672C, 0x6B21, 0x4E3A, 0x91CD, 0x590D, 0x4E0B, 0x8F7D, 0xFF0C, 0x5DF2, 0x5220, 0x9664, 0x672C, 0x5730, 0x56FE, 0x7247, 0x548C, 0x6587, 0x6848, 0x3002)
+$successMessage = if (-not [string]::IsNullOrWhiteSpace([string]$config.success_message)) { [string]$config.success_message } else { New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305) }
+$noImageMessage = if (-not [string]::IsNullOrWhiteSpace([string]$config.no_image_message)) { [string]$config.no_image_message } else { New-TextFromCodePoints @(0x8BF7, 0x5148, 0x4E0B, 0x8F7D, 0x4F5C, 0x54C1, 0x56FE) }
+$duplicateExistingMessage = if (-not [string]::IsNullOrWhiteSpace([string]$config.duplicate_existing_message)) { [string]$config.duplicate_existing_message } else { New-TextFromCodePoints @(0x672C, 0x6B21, 0x4E3A, 0x91CD, 0x590D, 0x4E0B, 0x8F7D, 0xFF0C, 0x5DF2, 0x5220, 0x9664, 0x672C, 0x5730, 0x56FE, 0x7247, 0x548C, 0x6587, 0x6848, 0x3002) }
 $similarTextMessage = "本组有历史相似文案，但图片不同，已继续创建作品包。"
-$portfolioGroupedMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305, 0xFF0C, 0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6)
-$portfolioZippedMessage = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305, 0xFF0C, 0x5DF2, 0x6574, 0x7406, 0x5E76, 0x538B, 0x7F29, 0x4F5C, 0x54C1, 0x96C6)
-$portfolioGroupDoneMessage = New-TextFromCodePoints @(0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6)
-$portfolioZipDoneMessage = New-TextFromCodePoints @(0x5DF2, 0x751F, 0x6210, 0x005A, 0x0049, 0x0050, 0x538B, 0x7F29, 0x5305)
-$portfolioZipFailedMessage = New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6, 0x538B, 0x7F29, 0x5931, 0x8D25)
+$portfolioGroupedMessage = if (-not [string]::IsNullOrWhiteSpace([string]$config.portfolio_grouped_message)) { [string]$config.portfolio_grouped_message } else { New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305, 0xFF0C, 0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6) }
+$portfolioZippedMessage = if (-not [string]::IsNullOrWhiteSpace([string]$config.portfolio_zipped_message)) { [string]$config.portfolio_zipped_message } else { New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305, 0xFF0C, 0x5DF2, 0x6574, 0x7406, 0x5E76, 0x538B, 0x7F29, 0x4F5C, 0x54C1, 0x96C6) }
+$portfolioGroupDoneMessage = if (-not [string]::IsNullOrWhiteSpace([string]$config.portfolio_group_done_message)) { [string]$config.portfolio_group_done_message } else { New-TextFromCodePoints @(0x5DF2, 0x6574, 0x7406, 0x4F5C, 0x54C1, 0x96C6) }
+$portfolioZipDoneMessage = if (-not [string]::IsNullOrWhiteSpace([string]$config.portfolio_zip_done_message)) { [string]$config.portfolio_zip_done_message } else { New-TextFromCodePoints @(0x5DF2, 0x751F, 0x6210, 0x005A, 0x0049, 0x0050, 0x538B, 0x7F29, 0x5305) }
+$portfolioZipFailedMessage = if (-not [string]::IsNullOrWhiteSpace([string]$config.portfolio_zip_failed_message)) { [string]$config.portfolio_zip_failed_message } else { New-TextFromCodePoints @(0x4F5C, 0x54C1, 0x96C6, 0x538B, 0x7F29, 0x5931, 0x8D25) }
 $imageExcludeNames = @("$(New-TextFromCodePoints @(0x5206, 0x9694, 0x56FE)).png")
 $portfolioAutoGroup = [bool]$config.portfolio_auto_group
 $portfolioAutoZip = [bool]$config.portfolio_auto_zip
@@ -2077,8 +2503,10 @@ $lockPath = Join-Path $scriptDir ".workpkg.lock"
 $lastHashPath = Join-Path $scriptDir ".workpkg_last_text.sha256"
 $visualOverridePath = Join-Path $scriptDir ".workpkg_visual_similarity_override.json"
 $stagingDir = $null
+$incomingDir = $null
 $movedImages = New-Object System.Collections.Generic.List[object]
 $packageCommitted = $false
+$duplicateHandled = $false
 $taskData = $null
 $taskPath = ""
 
@@ -2132,10 +2560,13 @@ try {
         return
     }
 
+    Write-RunLog "START v=$workPackageScriptVersion batch=$BatchId expected=$ExpectedImageCount target=$TargetDestination preview=$Preview inbox=$($imageInboxDirs -join ';')"
+
     if (Test-Path -LiteralPath $lockPath) {
         try {
             $lockItem = Get-Item -LiteralPath $lockPath -Force
             if (((Get-Date) - $lockItem.LastWriteTime).TotalSeconds -gt 30) {
+                Invoke-DownloadsGarbageCleanup -DownloadsDir $imageInboxDir -ActiveBatchId $BatchId -RemoveActiveTask $false
                 Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
             }
         } catch {
@@ -2283,6 +2714,7 @@ try {
     $taskData = if ($null -ne $taskState) { $taskState.Data } else { $null }
     $taskPath = if ($null -ne $taskState) { [string]$taskState.Path } else { "" }
     if (-not [string]::IsNullOrWhiteSpace($BatchId) -and $null -eq $taskData) {
+        Write-RunLog "TASK_MISSING batch=$BatchId"
         Show-Tip -Message "没有收到本次任务清单，请检查浏览器下载目录。" -Status "warning"
         if ($NoMessage) {
             Write-Output "TASK_MISSING"
@@ -2296,6 +2728,7 @@ try {
         Set-WorkPackageTaskProperty -Task $taskData -Name "status" -Value "processing"
         Set-WorkPackageTaskProperty -Task $taskData -Name "processingAt" -Value ((Get-Date).ToString("o"))
         Save-WorkPackageTaskJson -Task $taskData -Path $taskPath
+        Write-WorkPackageResultAck -Task $taskData -BatchId $BatchId
         $text = [string]$taskData.copyText
         $metadataOverride = [ordered]@{
             accountName = [string]$taskData.accountName
@@ -2303,62 +2736,86 @@ try {
         } | ConvertTo-Json -Compress
         $ConversationMetadataJsonOverride = $metadataOverride
         $conversationMetadataOverrideSpecified = $true
+        Write-RunLog "TASK_LOADED batch=$BatchId path=$taskPath title=$($taskData.copyTitle)"
     } else {
         $text = Get-ClipboardText
     }
     if ($null -eq $text -or [string]::IsNullOrWhiteSpace($text)) {
+        Write-RunLog "NO_TEXT batch=$BatchId"
+        if ($null -ne $taskData) {
+            Set-WorkPackageTaskProperty -Task $taskData -Name "status" -Value "failed"
+            Set-WorkPackageTaskProperty -Task $taskData -Name "error" -Value "文案内容为空"
+            Write-WorkPackageResultAck -Task $taskData -BatchId $BatchId
+        }
         Show-Tip -Message (New-TextFromCodePoints @(0x8BF7, 0x5148, 0x590D, 0x5236, 0x6587, 0x6848)) -Status "warning"
         return
     }
 
-    # 2026-10-23: pick the inbox directory that actually contains this batch.
-    $inboxSelection = $null
-    foreach ($inboxDir in $imageInboxDirs) {
-        if (-not (Test-Path -LiteralPath $inboxDir -PathType Container)) { continue }
-        $candidateSelection = Get-WorkPackageInboxImages `
-            -Directory $inboxDir `
-            -ExcludeNames $imageExcludeNames `
-            -RequestedBatchId $BatchId `
-            -RequestedExpectedCount $ExpectedImageCount
-        if ($null -eq $inboxSelection) {
-            $inboxSelection = $candidateSelection
-            continue
-        }
-        $candidateCount = @($candidateSelection.Images).Count
-        $currentCount = @($inboxSelection.Images).Count
-        if ($candidateCount -gt $currentCount) { $inboxSelection = $candidateSelection }
-    }
-    if ($null -eq $inboxSelection) {
-        $inboxSelection = [pscustomobject]@{
-            Images = @()
-            BatchId = $BatchId
-            ExpectedCount = [Math]::Max(0, $ExpectedImageCount)
-            IsComplete = $false
-            BatchFound = $false
+    $taskExpected = if ($null -ne $taskData -and $null -ne $taskData.expectedImages) { [int]$taskData.expectedImages } else { 0 }
+    $effectiveExpectedCount = [Math]::Max($ExpectedImageCount, $taskExpected)
+    Write-RunLog "WAIT_IMAGES_BEGIN batch=$BatchId expected=$effectiveExpectedCount waitSeconds=$ImageWaitSeconds"
+    $inboxSelection = Wait-WorkPackageInboxImages `
+        -InboxDirs $imageInboxDirs `
+        -ExcludeNames $imageExcludeNames `
+        -RequestedBatchId $BatchId `
+        -RequestedExpectedCount $effectiveExpectedCount `
+        -WaitSeconds $ImageWaitSeconds `
+        -TaskData $taskData `
+        -NoWait:$Preview
+
+    $selectedInboxDir = if (-not [string]::IsNullOrWhiteSpace([string]$inboxSelection.InboxDir)) { [string]$inboxSelection.InboxDir } else { $imageInboxDir }
+    $rawImages = @($inboxSelection.Images)
+    $validImagesList = New-Object System.Collections.Generic.List[System.IO.FileInfo]
+    foreach ($imgItem in $rawImages) {
+        if (Test-IsCorruptHtmlOrEmptyFile -Path $imgItem.FullName) {
+            Write-RunLog "SKIP_CORRUPT_FILE path=$($imgItem.FullName)"
+            Remove-Item -LiteralPath $imgItem.FullName -Force -ErrorAction SilentlyContinue
+        } else {
+            $validImagesList.Add($imgItem) | Out-Null
         }
     }
-    $images = @($inboxSelection.Images)
+    $images = @($validImagesList)
+    $extraDuplicateFiles = @($inboxSelection.ExtraDuplicateFiles)
+    Write-RunLog "WAIT_IMAGES_END batch=$BatchId found=$($images.Count)/$($inboxSelection.ExpectedCount) complete=$($inboxSelection.IsComplete) inbox=$selectedInboxDir"
+
     if ($images.Count -eq 0) {
-        if ($null -ne $taskData) {
-            Set-WorkPackageTaskProperty -Task $taskData -Name "status" -Value "waiting_images"
-            Set-WorkPackageTaskProperty -Task $taskData -Name "actualImages" -Value 0
-            Save-WorkPackageTaskJson -Task $taskData -Path $taskPath
-        }
-        $missingBatchMessage = if ([string]::IsNullOrWhiteSpace($BatchId)) {
+        $timeoutErr = if ([string]::IsNullOrWhiteSpace($BatchId)) {
             $noImageMessage
         } else {
-            "没有找到本次批次图片，请检查浏览器下载是否完成。"
+            "等待图片下载超时：在 $selectedInboxDir 未找到批次图片（期望 $effectiveExpectedCount 张），请检查浏览器下载目录。"
         }
-        Show-Tip -Message $missingBatchMessage -Status "warning"
+        if ($null -ne $taskData) {
+            Set-WorkPackageTaskProperty -Task $taskData -Name "status" -Value "failed"
+            Set-WorkPackageTaskProperty -Task $taskData -Name "actualImages" -Value 0
+            Set-WorkPackageTaskProperty -Task $taskData -Name "error" -Value $timeoutErr
+            Save-WorkPackageTaskJson -Task $taskData -Path $taskPath
+            Write-WorkPackageResultAck -Task $taskData -BatchId $BatchId
+        }
+        Write-RunLog "NO_IMAGES batch=$BatchId err=$timeoutErr"
+        Show-Tip -Message $timeoutErr -Status "warning"
+        if ($NoMessage -and -not [string]::IsNullOrWhiteSpace($BatchId)) {
+            Write-Output "IMAGES_TIMEOUT"
+            Write-Output "Version=$workPackageScriptVersion"
+            Write-Output "BatchId=$BatchId"
+            Write-Output "DownloadedImages=0"
+            Write-Output "ExpectedImages=$effectiveExpectedCount"
+        }
         return
     }
     if (-not $inboxSelection.IsComplete) {
-        if ($null -ne $taskData) {
-            Set-WorkPackageTaskProperty -Task $taskData -Name "status" -Value "incomplete_images"
-            Set-WorkPackageTaskProperty -Task $taskData -Name "actualImages" -Value $images.Count
-            Save-WorkPackageTaskJson -Task $taskData -Path $taskPath
+        $incompleteMessage = if ([string]::IsNullOrWhiteSpace($BatchId)) {
+            "本组图片尚未下载完整：$($images.Count)/$($inboxSelection.ExpectedCount)，请稍后再打包。"
+        } else {
+            "等待图片下载超时：仅收到 $($images.Count)/$($inboxSelection.ExpectedCount) 张，请检查浏览器下载是否被拦截。"
         }
-        $incompleteMessage = "本组图片尚未下载完整：$($images.Count)/$($inboxSelection.ExpectedCount)，请稍后再打包。"
+        if ($null -ne $taskData) {
+            Set-WorkPackageTaskProperty -Task $taskData -Name "status" -Value "failed"
+            Set-WorkPackageTaskProperty -Task $taskData -Name "actualImages" -Value $images.Count
+            Set-WorkPackageTaskProperty -Task $taskData -Name "error" -Value $incompleteMessage
+            Save-WorkPackageTaskJson -Task $taskData -Path $taskPath
+            Write-WorkPackageResultAck -Task $taskData -BatchId $BatchId
+        }
+        Write-RunLog "INCOMPLETE_BATCH batch=$BatchId count=$($images.Count)/$($inboxSelection.ExpectedCount)"
         Show-Tip -Message $incompleteMessage -Status "warning"
         if ($NoMessage) {
             Write-Output "INCOMPLETE_BATCH"
@@ -2413,50 +2870,71 @@ try {
             -RuntimeMirrorPath $historyRuntimeMirrorPath
     }
 
-        # 2026-11-16: 10分钟同窗口/同作品追加检测 (10-minute same-session merge window)
-    $recentMergeTarget = $null
-    $tenMinutesAgo = (Get-Date).AddMinutes(-10)
-    $manualDir = Join-Path $libraryDir $targetSubfolder
-    $checkRoots = @($manualDir, $libraryDir) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+    $title = Get-SafeNamePart -Text (Get-TitleLine -Text $text)
+    $gptConversationTitle = if ($null -ne $taskData -and -not [string]::IsNullOrWhiteSpace([string]$taskData.conversationTitle)) {
+        Get-NormalizedGptWindowTitle -WindowTitle ([string]$taskData.conversationTitle)
+    } else {
+        Get-GptConversationTitle
+    }
     $gptConversationMetadata = Get-GptConversationMetadata
     $curConvUrl = if ($null -ne $gptConversationMetadata) { [string]$gptConversationMetadata.conversationUrl } else { "" }
-    $title = Get-SafeNamePart -Text (Get-TitleLine -Text $text)
 
-    foreach ($chkRoot in $checkRoots) {
-        $candidateDirs = @(Get-ChildItem -LiteralPath $chkRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $tenMinutesAgo } | Sort-Object LastWriteTime -Descending)
-        foreach ($cand in $candidateDirs) {
-            $candManifestPath = Join-Path $cand.FullName "manifest.json"
-            $matchFound = $false
-            if (Test-Path -LiteralPath $candManifestPath) {
-                $candManifest = Read-JsonFile -Path $candManifestPath
-                if ($null -ne $candManifest) {
-                    $candConvUrl = [string]$candManifest.conversationUrl
-                    if (-not [string]::IsNullOrWhiteSpace($candConvUrl) -and -not [string]::IsNullOrWhiteSpace($curConvUrl) -and ($candConvUrl.Trim() -eq $curConvUrl.Trim())) {
-                        $matchFound = $true
-                    }
-                    if (-not $matchFound) {
-                        $candTitle = [string]$candManifest.title
-                        if (-not [string]::IsNullOrWhiteSpace($candTitle) -and ($candTitle.Trim() -eq $title.Trim())) {
-                            $matchFound = $true
-                        }
-                    }
-                }
-            }
-            if (-not $matchFound) {
-                if ($cand.Name -like "*$title*") {
-                    $matchFound = $true
-                }
-            }
-            if ($matchFound) {
-                $recentMergeTarget = $cand.FullName
+    if ($TargetDestination -eq "default") {
+        $downloadsDir = if (@($imageInboxDirs).Count -gt 0) { $imageInboxDirs[0] } else { [System.IO.Path]::Combine($env:USERPROFILE, "Downloads") }
+        foreach ($inbox in $imageInboxDirs) {
+            if ($inbox -match 'Downloads' -or $inbox -match '下载') {
+                $downloadsDir = $inbox
                 break
             }
         }
-        if ($null -ne $recentMergeTarget) { break }
+        if (-not (Test-Path -LiteralPath $downloadsDir)) {
+            $downloadsDir = [System.IO.Path]::Combine($env:USERPROFILE, "Downloads")
+        }
+        $packageRootDir = $downloadsDir
+    } else {
+        if (-not [string]::IsNullOrWhiteSpace($targetSubfolder)) {
+            $manualDir = Join-Path $libraryDir $targetSubfolder
+            if (-not $Preview -and -not (Test-Path -LiteralPath $manualDir -PathType Container)) {
+                try { New-Item -ItemType Directory -Path $manualDir -Force | Out-Null } catch {}
+            }
+            $packageRootDir = if ($Preview -or (Test-Path -LiteralPath $manualDir -PathType Container)) { $manualDir } else { $libraryDir }
+        } else {
+            $packageRootDir = $libraryDir
+        }
+    }
+
+    # 2026-11-16: 10分钟同窗口/同作品追加检测 (scoped to taskData or conversationUrl so unrelated clipboard runs don't collide)
+    $recentMergeTarget = $null
+    if ($TargetDestination -ne "default" -and ($null -ne $taskData -or -not [string]::IsNullOrWhiteSpace($curConvUrl))) {
+        $tenMinutesAgo = (Get-Date).AddMinutes(-10)
+        $checkRoots = @($packageRootDir) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+        foreach ($chkRoot in $checkRoots) {
+            $candidateDirs = @(Get-ChildItem -LiteralPath $chkRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $tenMinutesAgo } | Sort-Object LastWriteTime -Descending)
+            foreach ($cand in $candidateDirs) {
+                $candManifestPath = Join-Path $cand.FullName "manifest.json"
+                if (-not (Test-Path -LiteralPath $candManifestPath -PathType Leaf)) { continue }
+                $candManifest = try { Get-Content -LiteralPath $candManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $null }
+                if ($null -eq $candManifest) { continue }
+                $candConvUrl = [string]$candManifest.conversationUrl
+                $convUrlMatch = (-not [string]::IsNullOrWhiteSpace($candConvUrl) -and -not [string]::IsNullOrWhiteSpace($curConvUrl) -and ($candConvUrl.Trim() -eq $curConvUrl.Trim()))
+                $candTitle = [string]$candManifest.title
+                $candConvTitle = [string]$candManifest.conversationTitle
+                $taskTitleMatch = ($null -ne $taskData -and -not [string]::IsNullOrWhiteSpace($title) -and -not [string]::IsNullOrWhiteSpace($candTitle) -and ($candTitle.Trim() -eq $title.Trim()) -and ($candConvTitle.Trim() -eq [string]$gptConversationTitle.Trim()))
+                if ($convUrlMatch -or $taskTitleMatch) {
+                    $recentMergeTarget = $cand.FullName
+                    break
+                }
+            }
+            if ($null -ne $recentMergeTarget) { break }
+        }
     }
     $isSameSessionMerge = ($null -ne $recentMergeTarget)
 
-    $duplicateExists = Test-ImageSetHashExists -Database $historyDatabase -ImageSetHash $imageHashInfo.SetHash
+    if ($isSameSessionMerge) {
+        $duplicateExists = $false
+    } else {
+        $duplicateExists = Test-ImageSetHashExists -Database $historyDatabase -ImageSetHash $imageHashInfo.SetHash
+    }
     $similarTextExists = @($historyDatabase.entries | Where-Object { $_.textSha256 -eq $currentHash }).Count -gt 0
 
     if ($duplicateExists) {
@@ -2468,6 +2946,9 @@ try {
             return
         }
         $removedImages = Remove-DuplicateDownloadImages -Images $images
+        foreach ($extraDup in $extraDuplicateFiles) {
+            Remove-Item -LiteralPath $extraDup.FullName -Force -ErrorAction SilentlyContinue
+        }
         if ($null -ne $taskData) {
             Set-WorkPackageTaskProperty -Task $taskData -Name "status" -Value "duplicate"
             Set-WorkPackageTaskProperty -Task $taskData -Name "completedAt" -Value ((Get-Date).ToString("o"))
@@ -2475,12 +2956,15 @@ try {
             Set-WorkPackageTaskProperty -Task $taskData -Name "duplicateReason" -Value "ExactImageSet"
             $taskLogPath = Join-Path (Join-Path $scriptDir "任务记录") "chatgpt-workpkg-task-$BatchId.json"
             Save-WorkPackageTaskJson -Task $taskData -Path $taskLogPath
+            Write-WorkPackageResultAck -Task $taskData -BatchId $BatchId
             if (-not [string]::IsNullOrWhiteSpace($taskPath) -and (Test-Path -LiteralPath $taskPath -PathType Leaf)) {
                 Remove-Item -LiteralPath $taskPath -Force -ErrorAction SilentlyContinue
             }
         } else {
             Clear-ClipboardAfterSuccess
         }
+        $duplicateHandled = $true
+        Write-RunLog "DUPLICATE batch=$BatchId deleted=$removedImages"
         Show-Tip -Message $duplicateExistingMessage -Status "warning"
         if ($NoMessage) {
             Write-Output "DUPLICATE"
@@ -2492,10 +2976,10 @@ try {
         return
     }
 
-    if ($isSameSessionMerge) { $visualSimilarityBypassed = $true }
-    $visualSimilarityBypassed = Test-AndConsumeVisualSimilarityOverride `
+    $overrideBypassed = Test-AndConsumeVisualSimilarityOverride `
         -Path $visualOverridePath `
         -ImageSetHash $imageHashInfo.SetHash
+    $visualSimilarityBypassed = ($isSameSessionMerge -or $overrideBypassed)
     if ($visualSimilarityEnabled -and -not $visualSimilarityBypassed) {
         $visualMatch = Get-VisualSimilarityMatch `
             -Database $historyDatabase `
@@ -2512,7 +2996,9 @@ try {
                 Set-WorkPackageTaskProperty -Task $taskData -Name "visualAverageDistance" -Value $visualMatch.AverageDistance
                 Set-WorkPackageTaskProperty -Task $taskData -Name "visualMaximumDistance" -Value $visualMatch.MaximumDistance
                 Save-WorkPackageTaskJson -Task $taskData -Path $taskPath
+                Write-WorkPackageResultAck -Task $taskData -BatchId $BatchId
             }
+            Write-RunLog "VISUAL_SIMILAR batch=$BatchId similar=$similarPackagePath"
             Show-Tip -Message "检测到图片视觉近似历史作品，已停止打包；相似包路径已复制。" -Status "warning" -ActionTarget $similarPackagePath -ActionLabel "查看相似作品"
             if ($NoMessage) {
                 Write-Output "VISUAL_SIMILAR"
@@ -2526,13 +3012,6 @@ try {
         }
     }
 
-    $title = Get-SafeNamePart -Text (Get-TitleLine -Text $text)
-    $gptConversationTitle = if ($null -ne $taskData -and -not [string]::IsNullOrWhiteSpace([string]$taskData.conversationTitle)) {
-        Get-NormalizedGptWindowTitle -WindowTitle ([string]$taskData.conversationTitle)
-    } else {
-        Get-GptConversationTitle
-    }
-    $gptConversationMetadata = Get-GptConversationMetadata
     $folderTitle = switch ($packageNamingMode) {
         "conversation_title" {
             if ([string]::IsNullOrWhiteSpace($gptConversationTitle)) {
@@ -2567,26 +3046,6 @@ try {
         default { $packageTime.ToString("yyyyMMdd_HHmmss") }
     }
 
-    # 2026-10-30: 支持按目标路由（默认下载 -> 下载文件夹；下载到成品库 -> A手动制作）
-    if ($TargetDestination -eq "default") {
-        $downloadsDir = if (@($imageInboxDirs).Count -gt 0) { $imageInboxDirs[0] } else { [System.IO.Path]::Combine($env:USERPROFILE, "Downloads") }
-        foreach ($inbox in $imageInboxDirs) {
-            if ($inbox -match 'Downloads' -or $inbox -match '下载') {
-                $downloadsDir = $inbox
-                break
-            }
-        }
-        if (-not (Test-Path -LiteralPath $downloadsDir)) {
-            $downloadsDir = [System.IO.Path]::Combine($env:USERPROFILE, "Downloads")
-        }
-        $packageRootDir = $downloadsDir
-    } else {
-        $manualDir = Join-Path $libraryDir $targetSubfolder
-        if (-not (Test-Path -LiteralPath $manualDir -PathType Container)) {
-            try { New-Item -ItemType Directory -Path $manualDir -Force | Out-Null } catch {}
-        }
-        $packageRootDir = if (Test-Path -LiteralPath $manualDir -PathType Container) { $manualDir } else { $libraryDir }
-    }
     if ($isSameSessionMerge -and (Test-Path -LiteralPath $recentMergeTarget)) {
         $targetDir = $recentMergeTarget
         $packageId = Split-Path -Leaf $targetDir
@@ -2619,7 +3078,15 @@ try {
         return
     }
 
-    $stagingBaseDir = if ($TargetDestination -eq "default") { $packageRootDir } else { $libraryDir }
+    if ($null -ne $taskData) {
+        Set-WorkPackageTaskProperty -Task $taskData -Name "status" -Value "packaging"
+        Set-WorkPackageTaskProperty -Task $taskData -Name "actualImages" -Value $images.Count
+        Set-WorkPackageTaskProperty -Task $taskData -Name "expectedImages" -Value $images.Count
+        Write-WorkPackageResultAck -Task $taskData -BatchId $BatchId
+    }
+
+    # Always assemble on the same volume as the downloaded images (C:\Users\z\Downloads)
+    $stagingBaseDir = $selectedInboxDir
     $stagingDir = Join-Path $stagingBaseDir ".workpkg_staging_$packageId"
     $stagingIndex = 2
     while (Test-Path -LiteralPath $stagingDir) {
@@ -2632,6 +3099,7 @@ try {
         $stagingItem.Attributes = $stagingItem.Attributes -bor [System.IO.FileAttributes]::Hidden
     } catch {
     }
+    Write-RunLog "STAGING_CREATED staging=$stagingDir target=$targetDir merge=$isSameSessionMerge"
 
     $mediaPrefix = "$title`_$packageId"
 
@@ -2662,9 +3130,11 @@ try {
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "completedAt" -Value $completedIso
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "producedAt" -Value $completedIso
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "actualImages" -Value $images.Count
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "expectedImages" -Value $images.Count
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "textSha256" -Value $currentHash
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "imageSetSha256" -Value $imageHashInfo.SetHash
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "packageFolder" -Value (Split-Path -Leaf $targetDir)
+    Set-WorkPackageTaskProperty -Task $packageRecord -Name "packagePath" -Value $targetDir
     if ($null -ne $gptConversationMetadata) {
         Set-WorkPackageTaskProperty -Task $packageRecord -Name "accountName" -Value ([string]$gptConversationMetadata.accountName)
         Set-WorkPackageTaskProperty -Task $packageRecord -Name "conversationUrl" -Value ([string]$gptConversationMetadata.conversationUrl)
@@ -2681,8 +3151,7 @@ try {
             Set-WorkPackageTaskProperty -Task $packageRecord -Name "templateId" -Value ([string]$gptConversationMetadata.templateId)
         }
     }
-    Save-WorkPackageTaskJson -Task $packageRecord -Path (Join-Path $stagingDir $packageRecordFileName)
-        $categoryName = if ($TargetDestination -eq "default") { "本地默认下载" } else { $targetSubfolder }
+    $categoryName = if ($TargetDestination -eq "default") { "本地默认下载" } elseif (-not [string]::IsNullOrWhiteSpace($targetSubfolder)) { $targetSubfolder } else { $libraryName }
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "category" -Value $categoryName
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "title" -Value $title
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "destination" -Value (Split-Path -Leaf $packageRootDir)
@@ -2702,14 +3171,13 @@ try {
         "抖音可发",
         $categoryName
     )
-    Save-WorkPackageTaskJson -Task $packageRecord -Path (Join-Path $stagingDir "manifest.json")
-
-    # 规范化：写入单一 文案.txt（原数据全部收拢在单一 manifest.json，不生成多余文件）
-    [System.IO.File]::WriteAllText((Join-Path $stagingDir "文案.txt"), $text, (New-Object System.Text.UTF8Encoding($false)))
+    Save-WorkPackageTaskJson -Task $packageRecord -Path (Join-Path $stagingDir $packageRecordFileName)
     Set-FileTimes -Path (Join-Path $stagingDir $packageRecordFileName) -Time $packageTime
 
     $numberFormat = "D$([Math]::Max(2, $images.Count.ToString().Length))"
 
+    Show-Progress -Message "正在打包：准备图片" -Percent 5
+    $totalImages = [Math]::Max(1, $images.Count)
     for ($i = 0; $i -lt $images.Count; $i++) {
         $image = $images[$i]
         $ext = $image.Extension.ToLowerInvariant()
@@ -2737,16 +3205,91 @@ try {
         if ($TestFailAfterImageMove -gt 0 -and $movedImages.Count -ge $TestFailAfterImageMove) {
             throw "Simulated failure after moving $($movedImages.Count) image(s)."
         }
+        # 图片阶段进度映射到 5%→70%，按张数推进
+        $imgPercent = [Math]::Round(5 + (($i + 1) / $totalImages) * 65)
+        Show-Progress -Message "正在打包：整理图片 $($i + 1)/$totalImages" -Percent $imgPercent
     }
 
-    if (Test-Path -LiteralPath $targetDir) {
-        Get-ChildItem -LiteralPath $stagingDir -File | ForEach-Object {
-            Move-Item -LiteralPath $_.FullName -Destination (Join-Path $targetDir $_.Name) -Force
+    # Verify staged directory completeness on C drive before transfer
+    $stagedFiles = @(Get-ChildItem -LiteralPath $stagingDir -File -Force)
+    foreach ($sf in $stagedFiles) {
+        if ($sf.Length -le 0) {
+            throw "Staged file is empty: $($sf.FullName)"
         }
-        Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
-    } else {
-        Move-Item -LiteralPath $stagingDir -Destination $targetDir -ErrorAction Stop
     }
+
+    Show-Progress -Message "正在打包：移入成品库" -Percent 75
+    $stagingVolumeRoot = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($stagingDir)).TrimEnd('\').ToUpperInvariant()
+    $targetVolumeRoot = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($targetDir)).TrimEnd('\').ToUpperInvariant()
+    $isCrossVolume = ($stagingVolumeRoot -ne $targetVolumeRoot)
+
+    if (-not $isCrossVolume) {
+        if (Test-Path -LiteralPath $targetDir) {
+            foreach ($sf in $stagedFiles) {
+                Move-Item -LiteralPath $sf.FullName -Destination (Join-Path $targetDir $sf.Name) -Force -ErrorAction Stop
+            }
+            Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+        } else {
+            Move-Item -LiteralPath $stagingDir -Destination $targetDir -ErrorAction Stop
+        }
+    } else {
+        Write-RunLog "CROSS_VOLUME_TRANSFER src=$stagingDir dst=$targetDir files=$($stagedFiles.Count)"
+        if (Test-Path -LiteralPath $targetDir) {
+            foreach ($sf in $stagedFiles) {
+                $destFile = Join-Path $targetDir $sf.Name
+                Copy-FileWithRetry -Source $sf.FullName -Destination $destFile
+            }
+            foreach ($sf in $stagedFiles) {
+                $destFile = Join-Path $targetDir $sf.Name
+                if (-not (Test-Path -LiteralPath $destFile -PathType Leaf)) {
+                    throw "Cross-volume merge verification missing: $destFile"
+                }
+                if ((Get-Item -LiteralPath $destFile -Force).Length -ne $sf.Length) {
+                    throw "Cross-volume merge verification size mismatch: $destFile"
+                }
+            }
+            Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+        } else {
+            $incomingParent = Split-Path -Parent $targetDir
+            if (-not (Test-Path -LiteralPath $incomingParent -PathType Container)) {
+                New-Item -ItemType Directory -Path $incomingParent -Force | Out-Null
+            }
+            $incomingDir = Join-Path $incomingParent ".workpkg_incoming_$packageId"
+            $incIdx = 2
+            while (Test-Path -LiteralPath $incomingDir) {
+                $incomingDir = Join-Path $incomingParent ".workpkg_incoming_$packageId`_$incIdx"
+                $incIdx++
+            }
+            New-Item -ItemType Directory -Path $incomingDir -Force | Out-Null
+            try {
+                $incItem = Get-Item -LiteralPath $incomingDir -Force
+                $incItem.Attributes = $incItem.Attributes -bor [System.IO.FileAttributes]::Hidden
+            } catch {
+            }
+            foreach ($sf in $stagedFiles) {
+                $destFile = Join-Path $incomingDir $sf.Name
+                Copy-FileWithRetry -Source $sf.FullName -Destination $destFile
+            }
+            # Verify 100% file count & exact byte length on D: before committing
+            $incomingFiles = @(Get-ChildItem -LiteralPath $incomingDir -File -Force)
+            if ($incomingFiles.Count -ne $stagedFiles.Count) {
+                throw "Cross-volume verification count mismatch ($($incomingFiles.Count) vs $($stagedFiles.Count))"
+            }
+            foreach ($sf in $stagedFiles) {
+                $destFile = Join-Path $incomingDir $sf.Name
+                if (-not (Test-Path -LiteralPath $destFile -PathType Leaf)) {
+                    throw "Cross-volume verification missing file: $destFile"
+                }
+                if ((Get-Item -LiteralPath $destFile -Force).Length -ne $sf.Length) {
+                    throw "Cross-volume verification size mismatch: $destFile"
+                }
+            }
+            Move-Item -LiteralPath $incomingDir -Destination $targetDir -ErrorAction Stop
+            $incomingDir = $null
+            Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     # 临时目录需要隐藏，但正式作品包必须恢复为可见目录。
     try {
         $committedItem = Get-Item -LiteralPath $targetDir -Force
@@ -2757,11 +3300,17 @@ try {
     $packageCommitted = $true
     $stagingDir = $null
     $txtPath = Join-Path $targetDir "$textPrefix.txt"
+    foreach ($extraDup in $extraDuplicateFiles) {
+        Remove-Item -LiteralPath $extraDup.FullName -Force -ErrorAction SilentlyContinue
+    }
+    Write-RunLog "COMMITTED target=$targetDir images=$($images.Count)"
 
     Save-LastTextHash -Path $lastHashPath -Hash $currentHash
+    Show-Progress -Message "正在打包：写入台账" -Percent 88
 
     $portfolioResult = $null
     if ($portfolioAutoGroup -and $TargetDestination -ne "default") {
+        Show-Progress -Message "正在打包：整理作品集" -Percent 92
         $portfolioResult = Invoke-PortfolioAutoGroup `
             -LibraryDir $libraryDir `
             -PortfolioOutputDir $portfolioOutputDir `
@@ -2790,6 +3339,7 @@ try {
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "packagePath" -Value $finalTargetDir
     Save-WorkPackageTaskJson -Task $packageRecord -Path (Join-Path $finalTargetDir $packageRecordFileName)
     if ($null -ne $taskData) {
+        Write-WorkPackageResultAck -Task $packageRecord -BatchId $BatchId
         if (-not [string]::IsNullOrWhiteSpace($taskPath) -and (Test-Path -LiteralPath $taskPath -PathType Leaf)) {
             Remove-Item -LiteralPath $taskPath -Force -ErrorAction SilentlyContinue
         }
@@ -2820,10 +3370,21 @@ try {
         }
     }
     if (-not $NoOpenFolder -and $completionOpenFolder) {
-        # 宿主服务完成目录核验后负责打开 Explorer，避免重复启动。
+        # Host integrations can open the verified package path themselves and
+        # return an explicit Explorer launch acknowledgement to the browser.
+        Show-Progress -Message "打包完成，正在打开文件夹…" -Percent 100
         try {
-            Start-Process -FilePath "explorer.exe" -ArgumentList "`"$finalTargetDir`"" -WindowStyle Normal
+            $openTarget = $finalTargetDir
+            Start-Process -FilePath "explorer.exe" -ArgumentList "`"$openTarget`"" -WindowStyle Normal
+            Write-RunLog "EXPLORER_OPENED target=$openTarget"
         } catch {
+            try {
+                $shellApp = New-Object -ComObject Shell.Application
+                $shellApp.Open($finalTargetDir)
+                Write-RunLog "EXPLORER_SHELL_OPENED target=$finalTargetDir"
+            } catch {
+                Write-RunLog "EXPLORER_OPEN_FAILED target=$finalTargetDir err=$($_.Exception.Message)"
+            }
         }
     }
     $stageMessages = New-Object System.Collections.Generic.List[string]
@@ -2887,10 +3448,17 @@ try {
             Set-WorkPackageTaskProperty -Task $taskData -Name "failedAt" -Value ((Get-Date).ToString("o"))
             Set-WorkPackageTaskProperty -Task $taskData -Name "error" -Value $originalError.Exception.Message
             Save-WorkPackageTaskJson -Task $taskData -Path $taskPath
+            Write-WorkPackageResultAck -Task $taskData -BatchId $BatchId
         } catch {
         }
     }
     if (-not $packageCommitted) {
+        if (-not [string]::IsNullOrWhiteSpace($incomingDir) -and (Test-Path -LiteralPath $incomingDir)) {
+            try {
+                Remove-Item -LiteralPath $incomingDir -Recurse -Force -ErrorAction SilentlyContinue
+            } catch {
+            }
+        }
         $restoreErrors = Restore-StagedImages -MovedImages $movedImages.ToArray()
         if (-not [string]::IsNullOrWhiteSpace($stagingDir) -and (Test-Path -LiteralPath $stagingDir)) {
             try {
@@ -2906,6 +3474,7 @@ try {
             }
         }
     }
+    Write-RunLog "ERROR batch=$BatchId msg=$($originalError.Exception.Message)"
     try {
         Write-ErrorLog -Directory $scriptDir -Stamp $stamp -Message ("Make work package failed:`r`n" + $_.Exception.Message)
     } catch {
@@ -2918,6 +3487,7 @@ try {
     }
 
     if ($null -ne $lockStream -and (Test-Path -LiteralPath $lockPath)) {
+        Invoke-DownloadsGarbageCleanup -DownloadsDir $imageInboxDir -ActiveBatchId $BatchId -RemoveActiveTask ($packageCommitted -or $duplicateHandled)
         Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
     }
 }

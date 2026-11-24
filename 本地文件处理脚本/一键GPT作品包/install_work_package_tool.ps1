@@ -75,6 +75,7 @@ Copy-Item -LiteralPath $centerSource -Destination $centerDest -Force
 $config = [ordered]@{
     library_name = $LibraryName
     library_path = ""
+    target_subfolder = ""
     portfolio_output_path = ""
     image_inbox_path = ""
     success_message = New-TextFromCodePoints @(0x5DF2, 0x521B, 0x5EFA, 0x4F5C, 0x54C1, 0x5305)
