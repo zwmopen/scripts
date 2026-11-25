@@ -12,11 +12,12 @@
     [switch]$CleanExistingDuplicates,
     [switch]$FlushPortfolio,
     [switch]$NoOpenFolder,
+    [switch]$AllowDuplicate,
     [int]$TestFailAfterImageMove = 0
 )
 
 $ErrorActionPreference = "Stop"
-$workPackageScriptVersion = "1.9.0"
+$workPackageScriptVersion = "1.9.1"
 $clipboardTextOverrideSpecified = $PSBoundParameters.ContainsKey("ClipboardTextOverride")
 $conversationMetadataOverrideSpecified = $PSBoundParameters.ContainsKey("ConversationMetadataJsonOverride")
 
@@ -2724,19 +2725,41 @@ try {
         return
     }
 
+    $taskNoCopyText = $false
     if ($null -ne $taskData) {
         Set-WorkPackageTaskProperty -Task $taskData -Name "status" -Value "processing"
         Set-WorkPackageTaskProperty -Task $taskData -Name "processingAt" -Value ((Get-Date).ToString("o"))
         Save-WorkPackageTaskJson -Task $taskData -Path $taskPath
         Write-WorkPackageResultAck -Task $taskData -BatchId $BatchId
         $text = [string]$taskData.copyText
+        $taskClipboardDenied = [bool]($taskData.PSObject.Properties["clipboardPermissionDenied"] -and $taskData.clipboardPermissionDenied)
+        $taskNoCopyText = [bool]($taskData.PSObject.Properties["noCopyText"] -and $taskData.noCopyText)
+        if ($taskClipboardDenied) {
+            $sysClip = Get-ClipboardText
+            if (-not [string]::IsNullOrWhiteSpace($sysClip) -and $sysClip.Trim().Length -ge 40 -and ([regex]::Matches($sysClip, '[\u4e00-\u9fff]')).Count -ge 15) {
+                $text = $sysClip
+                $taskNoCopyText = $false
+                Set-WorkPackageTaskProperty -Task $taskData -Name "copyText" -Value $text
+                Set-WorkPackageTaskProperty -Task $taskData -Name "copyTitle" -Value (Get-SafeNamePart -Text (Get-TitleLine -Text $text))
+                Set-WorkPackageTaskProperty -Task $taskData -Name "noCopyText" -Value $false
+                Write-RunLog "SYSTEM_CLIPBOARD_RECOVERED batch=$BatchId len=$($text.Length)"
+            }
+        }
+        if ($taskNoCopyText -and [string]::IsNullOrWhiteSpace($text)) {
+            $fallbackTitle = if (-not [string]::IsNullOrWhiteSpace([string]$taskData.conversationTitle)) {
+                [string]$taskData.conversationTitle
+            } else {
+                New-TextFromCodePoints @(0x624B, 0x52A8, 0x5236, 0x4F5C, 0x4F5C, 0x54C1)
+            }
+            $text = "$fallbackTitle`r`n`r`n（未复制文案，正文待补充）"
+        }
         $metadataOverride = [ordered]@{
             accountName = [string]$taskData.accountName
             conversationUrl = [string]$taskData.conversationUrl
         } | ConvertTo-Json -Compress
         $ConversationMetadataJsonOverride = $metadataOverride
         $conversationMetadataOverrideSpecified = $true
-        Write-RunLog "TASK_LOADED batch=$BatchId path=$taskPath title=$($taskData.copyTitle)"
+        Write-RunLog "TASK_LOADED batch=$BatchId path=$taskPath title=$($taskData.copyTitle) noCopyText=$taskNoCopyText"
     } else {
         $text = Get-ClipboardText
     }
@@ -2892,8 +2915,13 @@ try {
         }
         $packageRootDir = $downloadsDir
     } else {
-        if (-not [string]::IsNullOrWhiteSpace($targetSubfolder)) {
-            $manualDir = Join-Path $libraryDir $targetSubfolder
+        $effectiveSubfolder = $targetSubfolder
+        if ($TargetDestination -eq "manual" -and [string]::IsNullOrWhiteSpace($effectiveSubfolder)) {
+            $effectiveSubfolder = New-TextFromCodePoints @(0x0041, 0x624B, 0x52A8, 0x5236, 0x4F5C)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($effectiveSubfolder)) {
+            $targetSubfolder = $effectiveSubfolder
+            $manualDir = Join-Path $libraryDir $effectiveSubfolder
             if (-not $Preview -and -not (Test-Path -LiteralPath $manualDir -PathType Container)) {
                 try { New-Item -ItemType Directory -Path $manualDir -Force | Out-Null } catch {}
             }
@@ -2903,9 +2931,11 @@ try {
         }
     }
 
+    $allowDuplicateEffective = ($AllowDuplicate.IsPresent -or ($null -ne $taskData -and $taskData.PSObject.Properties["allowDuplicate"] -and [bool]$taskData.allowDuplicate))
+
     # 2026-11-16: 10分钟同窗口/同作品追加检测 (scoped to taskData or conversationUrl so unrelated clipboard runs don't collide)
     $recentMergeTarget = $null
-    if ($TargetDestination -ne "default" -and ($null -ne $taskData -or -not [string]::IsNullOrWhiteSpace($curConvUrl))) {
+    if (-not $allowDuplicateEffective -and $TargetDestination -ne "default" -and ($null -ne $taskData -or -not [string]::IsNullOrWhiteSpace($curConvUrl))) {
         $tenMinutesAgo = (Get-Date).AddMinutes(-10)
         $checkRoots = @($packageRootDir) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
         foreach ($chkRoot in $checkRoots) {
@@ -2930,7 +2960,10 @@ try {
     }
     $isSameSessionMerge = ($null -ne $recentMergeTarget)
 
-    if ($isSameSessionMerge) {
+    if ($allowDuplicateEffective) {
+        $duplicateExists = $false
+        Write-RunLog "ALLOW_DUPLICATE batch=$BatchId"
+    } elseif ($isSameSessionMerge) {
         $duplicateExists = $false
     } else {
         $duplicateExists = Test-ImageSetHashExists -Database $historyDatabase -ImageSetHash $imageHashInfo.SetHash
@@ -2979,7 +3012,7 @@ try {
     $overrideBypassed = Test-AndConsumeVisualSimilarityOverride `
         -Path $visualOverridePath `
         -ImageSetHash $imageHashInfo.SetHash
-    $visualSimilarityBypassed = ($isSameSessionMerge -or $overrideBypassed)
+    $visualSimilarityBypassed = ($isSameSessionMerge -or $overrideBypassed -or $allowDuplicateEffective)
     if ($visualSimilarityEnabled -and -not $visualSimilarityBypassed) {
         $visualMatch = Get-VisualSimilarityMatch `
             -Database $historyDatabase `
@@ -3164,8 +3197,9 @@ try {
         lastDispatchedAt = $null
         status = "待使用"
     })
+    $statusTag = if ($taskNoCopyText) { "⚠️待补文案" } else { "✅图文齐全" }
     Set-WorkPackageTaskProperty -Task $packageRecord -Name "tags" -Value @(
-        "✅图文齐全",
+        $statusTag,
         "待使用",
         "小红书可发",
         "抖音可发",

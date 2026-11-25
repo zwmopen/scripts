@@ -79,7 +79,7 @@ Sub LogLaunch(baseDir, msg)
 End Sub
 
 Dim isConfigure, isCenter, isDiagnose, protocolUrl, baseDir
-Dim scriptPath, command, batchId, expectedCount, targetDest
+Dim scriptPath, command, batchId, expectedCount, targetDest, forceFlag
 
 isConfigure = False
 isCenter = False
@@ -109,6 +109,7 @@ Else
     batchId = QueryValue(protocolUrl, "batch")
     expectedCount = QueryValue(protocolUrl, "expected")
     targetDest = QueryValue(protocolUrl, "target")
+    forceFlag = QueryValue(protocolUrl, "force")
     If batchId <> "" Then
         command = command & " -BatchId " & Chr(34) & batchId & Chr(34)
     End If
@@ -117,6 +118,9 @@ Else
     End If
     If targetDest <> "" Then
         command = command & " -TargetDestination " & Chr(34) & targetDest & Chr(34)
+    End If
+    If forceFlag = "1" Or LCase(forceFlag) = "true" Then
+        command = command & " -AllowDuplicate"
     End If
 End If
 

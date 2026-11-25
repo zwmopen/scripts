@@ -2,7 +2,7 @@
 // @name         ChatGPT 最近对话分组（飞书式目录）
 // @name:zh-CN   ChatGPT 作品助手（图片下载、打包与提示词）
 // @namespace    https://chatgpt.com/
-// @version      1.22.51
+// @version      1.22.52
 // @description  为 ChatGPT 提供图片组快捷下载、下载并打包、本地作品去重与提示词管理；不再修改原生侧边栏。
 // @author       Codex
 // @match        https://chatgpt.com/*
@@ -32,7 +32,7 @@
   'use strict';
 
   const APP_ID = 'cgpt-conversation-tree';
-  const SCRIPT_VERSION = '1.22.51';
+  const SCRIPT_VERSION = '1.22.52';
   // 1.16.0 起停止向 ChatGPT 原生侧边栏注入分组、拖动和历史预加载功能。
   // 1.17.0 彻底剥离旧侧边栏废弃代码，脚本轻量化运行。
   const SIDEBAR_GROUPING_ENABLED = false;
@@ -2392,29 +2392,26 @@
     });
   }
 
-  function confirmWorkPackageRedownloadDialog(titleDesc, timeStr, typeDesc) {
+  // v1.22.52 通用页内确认弹窗（不用 window.confirm，保留点击手势，按钮可直接继续下载）
+  function confirmCgptDialog({ heading = '请确认', message = '', detail = '', confirmText = '确认', cancelText = '取消' } = {}) {
     return new Promise((resolve) => {
       if (!document?.body?.append || typeof document.createElement !== 'function') {
-        if (typeof window.confirm === 'function') {
-          resolve(window.confirm(`${titleDesc} 此前已${typeDesc}，是否仍然再次下载并处理？`));
-        } else {
-          resolve(false);
-        }
+        resolve(typeof window.confirm === 'function' ? window.confirm(`${heading}\n${message}\n${detail}`) : false);
         return;
       }
-      const old = document.getElementById(`${APP_ID}-work-package-redownload`);
-      old?.remove();
+      document.getElementById(`${APP_ID}-confirm-dialog`)?.remove();
+      document.getElementById(`${APP_ID}-work-package-redownload`)?.remove();
       const overlay = document.createElement('div');
-      overlay.id = `${APP_ID}-work-package-redownload`;
+      overlay.id = `${APP_ID}-confirm-dialog`;
       overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.34);display:flex;align-items:center;justify-content:center;padding:20px';
       overlay.innerHTML = `
-        <section role="dialog" aria-modal="true" aria-label="确认重新下载作品" style="width:min(440px,calc(100vw - 32px));background:var(--main-surface-primary,#fff);color:var(--text-primary,#0d0d0d);border:1px solid rgba(127,127,127,.25);border-radius:18px;box-shadow:0 18px 60px rgba(0,0,0,.22);padding:22px;font:14px/1.6 system-ui,-apple-system,sans-serif">
-          <h2 style="font-size:18px;margin:0 0 8px">检测到本组作品已处理过</h2>
-          <p style="margin:0 0 12px">${titleDesc} 此前于 ${timeStr || '之前'} ${typeDesc}。</p>
-          <p style="margin:0 0 16px;color:var(--text-secondary,#555)">是否仍然要再次下载并处理？（支持 10 分钟内同作品追加或更新封面）</p>
+        <section role="dialog" aria-modal="true" aria-label="${escapeHtml(heading)}" style="width:min(440px,calc(100vw - 32px));background:var(--main-surface-primary,#fff);color:var(--text-primary,#0d0d0d);border:1px solid rgba(127,127,127,.25);border-radius:18px;box-shadow:0 18px 60px rgba(0,0,0,.22);padding:22px;font:14px/1.6 system-ui,-apple-system,sans-serif">
+          <h2 style="font-size:18px;margin:0 0 8px">${escapeHtml(heading)}</h2>
+          ${message ? `<p style="margin:0 0 12px">${escapeHtml(message)}</p>` : ''}
+          ${detail ? `<p style="margin:0 0 16px;color:var(--text-secondary,#555)">${escapeHtml(detail)}</p>` : ''}
           <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
-            <button data-action="cancel" style="border:1px solid rgba(127,127,127,.3);background:transparent;border-radius:10px;padding:8px 14px;cursor:pointer">取消</button>
-            <button data-action="confirm" style="border:0;background:#10a37f;color:#fff;border-radius:10px;padding:8px 16px;cursor:pointer">确认重新下载</button>
+            <button data-action="cancel" style="border:1px solid rgba(127,127,127,.3);background:transparent;color:inherit;border-radius:10px;padding:8px 14px;cursor:pointer">${escapeHtml(cancelText)}</button>
+            <button data-action="confirm" style="border:0;background:#10a37f;color:#fff;border-radius:10px;padding:8px 16px;cursor:pointer">${escapeHtml(confirmText)}</button>
           </div>
         </section>`;
       const finish = (confirmed) => {
@@ -2422,12 +2419,150 @@
         resolve(Boolean(confirmed));
       };
       overlay.addEventListener('click', (event) => {
+        event.stopPropagation();
         const action = event.target.closest('[data-action]')?.dataset.action;
         if (action === 'confirm') finish(true);
         else if (action === 'cancel' || event.target === overlay) finish(false);
       });
       document.body.append(overlay);
+      try { overlay.querySelector('[data-action="confirm"]')?.focus(); } catch {}
     });
+  }
+
+  function confirmWorkPackageRedownloadDialog(titleDesc, timeStr, typeDesc) {
+    return confirmCgptDialog({
+      heading: '已下载过，是否再次下载？',
+      message: `${titleDesc} 已于 ${timeStr || '之前'} ${typeDesc}。`,
+      detail: '点击「再次下载」会重新下载全部图片；下载到成品库时会跳过重复拦截，另建一个新的作品文件夹。',
+      confirmText: '再次下载',
+    });
+  }
+
+  // ---------- v1.22.52 文案检查：没复制文案 / 复制的不是文案 / 还是上一条文案 → 弹窗确认 ----------
+  const LAST_COPY_TEXT_KEY = 'last-used-copy-text-v1';
+
+  function simpleTextHash(text) {
+    const s = String(text || '').replace(/\s+/g, '');
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i += 1) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return `${s.length}:${(h >>> 0).toString(16)}`;
+  }
+
+  function isLikelyWorkPackageCopyText(text) {
+    const s = String(text || '').trim();
+    if (s.length < 40) return false;
+    const cjk = (s.match(/[\u4e00-\u9fff]/g) || []).length;
+    return cjk >= 15;
+  }
+
+  async function readClipboardTextSafe() {
+    try {
+      if (!navigator.clipboard?.readText) return { text: '', denied: true };
+      const text = String(await navigator.clipboard.readText() || '');
+      return { text, denied: false };
+    } catch (error) {
+      addDiagnosticLog('workpkg:clipboard-read-failed', { message: error?.message || String(error) });
+      return { text: '', denied: true };
+    }
+  }
+
+  function readLastUsedCopyText() {
+    try {
+      const raw = GM_getValue(LAST_COPY_TEXT_KEY, null);
+      const rec = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (rec && typeof rec === 'object') return rec;
+    } catch {}
+    try {
+      return JSON.parse(localStorage.getItem(`${APP_ID}:${LAST_COPY_TEXT_KEY}`) || 'null');
+    } catch {}
+    return null;
+  }
+
+  function rememberUsedCopyText(text, images = []) {
+    if (!isLikelyWorkPackageCopyText(text)) return;
+    const rec = JSON.stringify({ hash: simpleTextHash(text), fp: computeImageGroupFingerprint(images) || '', time: Date.now() });
+    try { GM_setValue(LAST_COPY_TEXT_KEY, rec); } catch {}
+    try { localStorage.setItem(`${APP_ID}:${LAST_COPY_TEXT_KEY}`, rec); } catch {}
+  }
+
+  function isStaleCopyText(text, images = []) {
+    const last = readLastUsedCopyText();
+    if (!last?.hash || last.hash !== simpleTextHash(text)) return false;
+    const fp = computeImageGroupFingerprint(images) || '';
+    // 同一组图重新下载时沿用同一份文案是正常的；只有给另一组图复用上一条文案才算“没复制新文案”
+    return Boolean(last.fp && fp && last.fp !== fp);
+  }
+
+  // 只接受页面里真正的「纯文本」文案卡片，不把助手的闲聊回复当文案
+  function pairedTextCardCopyText(node) {
+    try {
+      const paired = nextAssistantTextCardForNode(node);
+      if (paired && paired.card && paired.card !== paired.message && isLikelyWorkPackageCopyText(paired.copyText)) {
+        return paired.copyText;
+      }
+    } catch {}
+    return '';
+  }
+
+  function resolveCopyTextForDownload(clipInput, pairedText, images = []) {
+    const clip = clipInput && typeof clipInput === 'object'
+      ? String(clipInput.text || '')
+      : String(clipInput || '');
+    const clipDenied = Boolean(clipInput && typeof clipInput === 'object' && clipInput.denied);
+    if (isLikelyWorkPackageCopyText(clip) && !isStaleCopyText(clip, images)) {
+      return { text: clip, source: 'clipboard', reason: '', clipboardDenied: false };
+    }
+    const paired = String(pairedText || '');
+    if (isLikelyWorkPackageCopyText(paired) && !isStaleCopyText(paired, images)) {
+      return { text: paired, source: 'text-card', reason: '', clipboardDenied: false };
+    }
+    let reason = 'empty';
+    if (clip.trim()) {
+      reason = isLikelyWorkPackageCopyText(clip) ? 'stale' : 'invalid';
+    } else if (clipDenied) {
+      reason = 'denied';
+    }
+    return { text: '', source: '', reason, clipboardDenied: clipDenied };
+  }
+
+  function confirmMissingCopyText(reason, mode = 'library') {
+    const message = reason === 'stale'
+      ? '剪贴板里还是上一次用过的文案，没有检测到这组图片的新文案。'
+      : (reason === 'invalid'
+        ? '剪贴板里的内容不像文案（太短或不是中文正文）。'
+        : (reason === 'denied'
+          ? '未读取到剪贴板文案（可能尚未复制，或浏览器未授权读取剪贴板）。'
+          : '没有检测到已复制的文案。'));
+    const detail = mode === 'library'
+      ? '是否确认不带文案直接下载？作品会以会话标题命名，归档到 成品库\\A手动制作。（想带文案请先取消，复制文案后再点）'
+      : '是否确认不带文案直接下载图片？图片会以会话标题重命名。（想带文案请先取消，复制文案后再点）';
+    return confirmCgptDialog({
+      heading: '没有复制文案，是否确认下载？',
+      message,
+      detail,
+      confirmText: '确认下载',
+      cancelText: '取消',
+    });
+  }
+
+  function safeDownloadTitle(title) {
+    const t = String(title || '')
+      .replace(/[\\/:*?"<>|\r\n\t]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/^[.\s]+|[.\s]+$/g, '')
+      .slice(0, 40)
+      .trim();
+    return t || '作品';
+  }
+
+  function readableDownloadName(index, total, url, title) {
+    const workpkgName = directDownloadName(index, total, url, 'x');
+    const ext = (workpkgName.match(/\.([a-z0-9]+)$/i) || [])[1] || 'jpg';
+    const page = index === 0 ? 'P1-封面' : `P2-内页${index}`;
+    return `${safeDownloadTitle(title)}-${page}.${ext}`;
   }
 
   async function ensureWorkPackageHelperReady() {
@@ -2475,6 +2610,9 @@
       conversationUrl: currentWorkPackageConversationUrl(),
       pageUrl: location.href,
       scriptVersion: SCRIPT_VERSION,
+      allowDuplicate: Boolean(options.allowDuplicate),
+      noCopyText: Boolean(options.noCopyText),
+      clipboardPermissionDenied: Boolean(options.clipboardPermissionDenied),
     };
 
     if (options.persist !== false) {
@@ -3611,7 +3749,7 @@ function imageUrlForDirectDownload(img) {
     
     if (button.dataset.cgptCombined === 'true') {
       button.innerHTML = icons.download;
-      button.title = forcedState === 'packaged' ? '已打包过' : (forcedState === 'previously-downloaded' ? '已下载过' : '下载文档和图片到浏览器默认目录');
+      button.title = forcedState === 'packaged' ? '已打包过，点击可再次下载' : (forcedState === 'previously-downloaded' ? '已下载过，点击可再次下载' : '下载文档和图片到浏览器默认目录');
       button.setAttribute('aria-label', button.title);
       return;
     }
@@ -3639,7 +3777,9 @@ function imageUrlForDirectDownload(img) {
       }
     }
     button.classList.toggle('cgpt-image-download-done', complete && !busy);
-    button.title = '默认下载：下载全部图片及文案TXT到浏览器默认下载目录';
+    button.title = state === 'packaged'
+      ? '本组图片已打包过，点击可再次下载'
+      : (state === 'previously-downloaded' ? '本组图片已下载过，点击可再次下载' : '默认下载：下载全部图片（及文案TXT）到浏览器默认下载目录');
     button.setAttribute('aria-label', `默认下载${safeTotal ? ' (' + safeTotal + ')' : ''}`);
   }
 
@@ -4314,46 +4454,64 @@ function imageUrlForDirectDownload(img) {
   }
 
   async function triggerImageDownloadButton(button, event = null) {
-    if (!button || button.disabled) return;
+    if (!button || button.disabled || button.dataset.cgptClickLock === '1') return;
+    button.dataset.cgptClickLock = '1';
     event?.preventDefault?.(); event?.stopPropagation?.(); event?.stopImmediatePropagation?.();
-    const { container, images } = collectDirectDownloadImages(button);
-    const targetImages = images.length ? images : (button.__cgptImageElements || []);
-    const previous = findDownloadedGroup(targetImages);
-    if (previous) {
-      const timeStr = previous.time ? new Date(previous.time).toLocaleString('zh-CN', { hour12: false }) : '';
-      const titleDesc = previous.title ? `《${previous.title}》` : '本组图片';
-      const confirmed = await confirmWorkPackageRedownloadDialog(titleDesc, timeStr, '已经下载过');
-      if (!confirmed) {
-        showImageDownloadToast('已取消重复下载', false);
+    try {
+      // 趁点击手势还在，先读剪贴板（之后可能会弹确认框）
+      const clipboardInfo = await readClipboardTextSafe();
+      const { container, images } = collectDirectDownloadImages(button);
+      const targetImages = images.length ? images : (button.__cgptImageElements || []);
+      const previous = findDownloadedGroup(targetImages);
+      if (previous) {
+        const timeStr = previous.time ? new Date(previous.time).toLocaleString('zh-CN', { hour12: false }) : '';
+        const titleDesc = previous.title ? `《${previous.title}》` : '本组图片';
+        const confirmed = await confirmWorkPackageRedownloadDialog(titleDesc, timeStr, previous.status === 'packaged' ? '打包入库过' : '下载过');
+        if (!confirmed) {
+          showImageDownloadToast('已取消重复下载', false);
+          return;
+        }
+        showImageDownloadToast('已确认，正在重新下载图片...', true);
+      }
+      const urls = uniqueImageUrls(targetImages);
+      if (!urls.length) {
+        showImageDownloadToast('这个回复里暂时没有找到可下载的图片', false);
         return;
       }
-      showImageDownloadToast('已确认，正在重新下载图片...', true);
-    }
-    const copyText = button.__cgptPackageCopyText
-      || (button.dataset.cgptCombined === 'true' ? '' : extractAssistantCopyText(container))
-      || '';
-    const urls = uniqueImageUrls(targetImages);
-    if (!urls.length) {
-      showImageDownloadToast('这个回复里暂时没有找到可下载的图片', false);
-      return;
-    }
-    button.disabled = true;
-    try {
+      const pairedText = pairedTextCardCopyText(button) || pairedTextCardCopyText(container) || '';
+      const resolved = resolveCopyTextForDownload(clipboardInfo, pairedText, targetImages);
+      if (!resolved.text) {
+        const goOn = await confirmMissingCopyText(resolved.reason, 'default');
+        if (!goOn) {
+          showImageDownloadToast('已取消下载，请先复制文案再点下载', false);
+          return;
+        }
+      }
+      const copyText = resolved.text;
+      const title = copyText
+        ? extractWorkPackageTitle(copyText)
+        : (currentWorkPackageConversationTitle() || '作品');
+      button.disabled = true;
       const batchId = newDownloadBatchId();
       let saved = 0;
       for (let i = 0; i < urls.length; i += 1) {
-        if (await gmDownload(urls[i], directDownloadName(i, urls.length, urls[i], batchId))) saved += 1;
+        if (await gmDownload(urls[i], readableDownloadName(i, urls.length, urls[i], title))) saved += 1;
       }
-      // 纯粹下载图片，不再偷偷顺带下文案，文案由文案按钮或下载到成品库专职处理，杜绝下出2个TXT
+      if (copyText) {
+        try {
+          downloadBlobFallback(new Blob([copyText], { type: 'text/plain;charset=utf-8' }), `${safeDownloadTitle(title)}-文案.txt`);
+        } catch {}
+      }
       if (urls.length && saved === urls.length) {
         button.dataset.cgptWorkPackageBatchId = batchId;
         button.dataset.cgptImageDownloaded = String(urls.length);
         markImageGroupDownloaded(targetImages, {
           count: urls.length,
           batchId,
-          title: copyText ? extractWorkPackageTitle(copyText) : '',
+          title,
         });
-        showImageDownloadToast(`图片下载请求已提交至浏览器默认目录（${saved}/${urls.length}）`, true);
+        if (copyText) rememberUsedCopyText(copyText, targetImages);
+        showImageDownloadToast(`已下载《${safeDownloadTitle(title)}》${saved} 张图片${copyText ? ' + 文案TXT' : ''}到浏览器默认目录`, true);
       } else {
         showImageDownloadToast(`有图片未能提交下载（${saved}/${urls.length}），请查看浏览器下载列表`, false);
       }
@@ -4361,6 +4519,7 @@ function imageUrlForDirectDownload(img) {
       showImageDownloadToast('下载失败：' + (error?.message || String(error)), false);
     } finally {
       button.disabled = false;
+      delete button.dataset.cgptClickLock;
       scheduleImageDownloadButtons();
     }
   }
@@ -4496,291 +4655,321 @@ function imageUrlForDirectDownload(img) {
   }
 
   async function triggerWorkPackageButton(button, event = null) {
-    if (!button || button.disabled) return;
+    if (!button || button.disabled || button.dataset.cgptClickLock === '1') return;
+    button.dataset.cgptClickLock = '1';
     event?.preventDefault?.();
     event?.stopPropagation?.();
     event?.stopImmediatePropagation?.();
-
-    const retryFolderPath = String(button.dataset.cgptWorkPackageFolderRetryPath || '').trim();
-    if (retryFolderPath) {
-      setWorkPackageButtonState(button, 'opening-folder');
-      let openResult = null;
-      try {
-        openResult = await APP_HOOKS.openFolder?.(retryFolderPath);
-      } catch (error) {
-        openResult = { ok: false, error: error?.message || String(error) };
-      }
-      if (openResult === true || openResult?.ok === true) {
-        delete button.dataset.cgptWorkPackageFolderRetryPath;
-        const folder = retryFolderPath.split(/[\\/]/).filter(Boolean).pop() || retryFolderPath;
-        setWorkPackageButtonState(button, 'done', {
-          total: Number(button.dataset.cgptImageTotal || 0),
-          folder,
-        });
-        showImageDownloadToast(`已打开成品文件夹：${folder}`, true);
-      } else {
-        const error = String(openResult?.error || '资源管理器没有确认启动');
-        setWorkPackageButtonState(button, 'folder-failed', { error });
-        showImageDownloadToast(`作品已经打包，但打开文件夹失败：${error}`, false);
-      }
-      return;
-    }
-
-    const imageButtonCheck = button.__cgptPackageImageButton
-      || button.parentElement?.querySelector('.' + IMAGE_DOWNLOAD_CLASS);
-    const previousRecord = findDownloadedGroup(imageButtonCheck?.__cgptImageElements || []);
-    if (previousRecord) {
-      const typeDesc = previousRecord.status === 'packaged' ? '已打包入库' : '已下载过';
-      const titleDesc = previousRecord.title ? `《${previousRecord.title}》` : '本作品';
-      const timeStr = previousRecord.time ? new Date(previousRecord.time).toLocaleString('zh-CN', { hour12: false }) : '';
-      const confirmed = await confirmWorkPackageRedownloadDialog(titleDesc, timeStr, typeDesc);
-      if (!confirmed) {
-        showImageDownloadToast('已取消操作，保持原状', false);
-        setWorkPackageButtonState(button, previousRecord.status === 'packaged' ? 'already-packaged' : 'idle', {
-          total: previousRecord.count || 0,
-          folder: previousRecord.packageFolder || '',
-        });
-        return;
-      }
-      showImageDownloadToast('已确认，正在重新处理...', true);
-    }
-    const useWorkbenchPackageHook = typeof APP_HOOKS.runWorkPackage === 'function';
-    if (!useWorkbenchPackageHook) {
-      // standalone userscript retains the File System Access / protocol path
-      fsSinkCapturePickerNow();
-      if (!await ensureWorkPackageHelperReady()) {
-        setWorkPackageButtonState(button, 'idle');
-        return;
-      }
-    }
-    setWorkPackageButtonState(button, 'preparing');
-    const slot = button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
-    const imageButton = button.__cgptPackageImageButton
-      || slot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`);
-
-    let imageElements = imageButton?.__cgptImageElements || button.__cgptPackageImageElements || [];
-    let imagesToDownload = imageButton ? collectDirectDownloadImages(imageButton).images : imageElements;
-    // The live image set wins over a stale per-button count left by a previous render.
-    let expectedImages = countUniqueDirectDownloadImages(imagesToDownload);
-    // v1.22.19 防空跑：按钮计件为 0 时先现场重扫一轮 Turn；仍为 0 则直接中止，绝不生成空任务/调用本地协议
-    if (!expectedImages) {
-      const container = imageButton?.__cgptImageDownloadContainer
-        || imageButton?.closest('[data-cgpt-image-download-container]')
-        || imageTurnContainer(button);
-      const recount = [
-        ...contentImageElements(container),
-        ...broadImageElements(container, 24),
-        ...(container ? [...container.querySelectorAll('[data-testid="generated-image-gallery"] img, div[class*="generated-image"] img, button[data-testid="generated-image-preview"] img')] : []),
-      ].filter((img) => {
-        const src = img?.currentSrc || img?.src || '';
-        return img?.isConnected && Boolean(src) && !/^data:image\/svg/i.test(src);
-      });
-      imagesToDownload = recount;
-      imageElements = imageButton?.__cgptImageElements || recount;
-      expectedImages = countUniqueDirectDownloadImages(recount)
-        || uniqueImageUrls(recount).length
-        || recount.length
-        || 0;
-    }
-    if (!expectedImages) {
-      setWorkPackageButtonState(button, 'idle');
-      showImageDownloadToast('本轮未识别到图片（可能尚未生成完或未加载），已取消打包', false);
-      return;
-    }
-    if (imageButton) imageButton.dataset.cgptImageTotal = String(expectedImages);
-    if (!imageButton) {
-      setWorkPackageButtonState(button, 'failed', { error: '找不到与本组图片绑定的下载按钮' });
-      showImageDownloadToast('没有找到与本组图片绑定的下载按钮，未开始打包', false);
-      return;
-    }
-    // 每次触发「下载到成品库」都分配全新 batchId，杜绝重试时撞上 Chrome 的 (1) 重名或读到旧 task/result 回执
-    const batchId = newDownloadBatchId();
-    imageButton.dataset.cgptImageDownloaded = '0';
-    imageButton.dataset.cgptWorkPackageBatchId = batchId;
-
-    // 1. 优先同步提取当前或相邻【助手回合】文案（绝不提取用户提问气泡！）
-    let copyText = button.__cgptPackageCopyText || '';
-    if (!copyText) {
-      const container = button.__cgptPackageImageButton?.__cgptImageDownloadContainer
-        || button.closest('[data-cgpt-image-download-container]')
-        || imageTurnContainer(button);
-      const pairedNow = nextAssistantTextCardForNode(button) || nextAssistantTextCardForNode(container);
-      copyText = pairedNow?.copyText || extractAssistantCopyText(container) || '';
-    }
-    // 2. 仅当页面 DOM 无助手文案时，才读取剪贴板；若仍为空则以会话标题保底，绝不卡死打包！
-    if (!String(copyText || '').trim() && navigator.clipboard?.readText) {
-      try { copyText = await navigator.clipboard.readText(); } catch {}
-    }
-    if (!String(copyText || '').trim()) {
-      const fallbackConvTitle = currentWorkPackageConversationTitle() || '精选团建作品';
-      copyText = `${fallbackConvTitle}\n\n（本组共 ${expectedImages} 张作品图，正文文案待补充）`;
-    }
-
-    // 3. 独立浏览器模式下，趁用户点击手势（User Activation）100% 活跃的第一时间，
-    //    立即写出 task.json 并拉起 cgpt-workpkg://run！本地打包器会轮询等待图片全部落盘。
-    let protocolPreLaunched = false;
-    let frozenTask = await freezeWorkPackageTask(batchId, expectedImages, copyText, {
-      persist: !useWorkbenchPackageHook,
-      skipDelay: !useWorkbenchPackageHook,
-    });
-    if (!frozenTask) {
-      const fallbackConvTitle = currentWorkPackageConversationTitle() || '精选团建作品';
-      frozenTask = await freezeWorkPackageTask(batchId, expectedImages, `${fallbackConvTitle}\n`, {
-        persist: !useWorkbenchPackageHook,
-        skipDelay: !useWorkbenchPackageHook,
-      });
-    }
-    if (!useWorkbenchPackageHook && frozenTask) {
-      try {
-        const earlyProtocolUrl = `${WORK_PACKAGE_PROTOCOL_URL}?target=library&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}`;
-        openWorkPackageProtocol(earlyProtocolUrl);
-        protocolPreLaunched = true;
-        addDiagnosticLog('workpkg:protocol-prelaunched-with-gesture', { batchId, expectedImages });
-        await sleep(120);
-      } catch (err) {
-        console.warn('[ChatGPT 作品包按钮] 预唤醒本地协议异常：', err);
-      }
-    }
-
-    let usedHostSave = false;
-    if (imageButton && expectedImages > 0) {
-      showImageDownloadToast(`正在下载全部图片：0/${expectedImages}（本地打包器已就绪等待）`, true);
-      setWorkPackageButtonState(button, 'downloading', { current: 0, total: expectedImages });
-      const downloadResult = await runImageDownloadShortcut(imageButton, batchId, (current, total) => {
-        setWorkPackageButtonState(button, 'downloading', { current, total });
-      });
-      if (!downloadResult || !downloadResult.downloaded) {
-        showImageDownloadToast('图片未能提交下载，请稍后重试', false);
-        setWorkPackageButtonState(button, 'idle');
-        return;
-      }
-      usedHostSave = Boolean(downloadResult.usedHostSave);
-      expectedImages = Math.max(0, Number(downloadResult.total || expectedImages));
-      imageButton.dataset.cgptImageTotal = String(expectedImages);
-      imageElements = imageButton.__cgptImageElements || imageElements;
-      frozenTask.expectedImages = expectedImages;
-      await sleep(250);
-    }
-
-    showImageDownloadToast(`图片已派发（${expectedImages} 张），正在 C 盘组装作品包并移入 D 盘成品库…`, true);
-    setWorkPackageButtonState(button, 'archiving', { stageText: '正在打包入库' });
-
-    if (useWorkbenchPackageHook && usedHostSave) {
-      let result = null;
-      try {
-        result = await APP_HOOKS.runWorkPackage({
-          batchId,
-          taskId: batchId,
-          expectedImageCount: expectedImages,
-          clipboardText: frozenTask.copyText,
-          title: frozenTask.copyTitle,
-          conversationTitle: frozenTask.conversationTitle,
-          accountName: frozenTask.accountName,
-          conversationUrl: frozenTask.conversationUrl,
-          downloadRoot: typeof APP_HOOKS.getDownloadRoot === 'function'
-            ? String(APP_HOOKS.getDownloadRoot() || '')
-            : '',
-        });
-      } catch (error) {
-        result = { ok: false, error: error?.message || String(error) };
-      }
-      if (!result?.ok) {
-        const error = String(result?.error || '本地打包服务未连接');
-        console.warn('[ChatGPT 作品包按钮] 宿主接口未完成，自动降级走本地 cgpt-workpkg:// 协议：', error);
-        addDiagnosticLog('workpkg:host-package-fallback-protocol', { batchId, expectedImages, error });
-        await freezeWorkPackageTask(batchId, expectedImages, frozenTask.copyText, { persist: true });
+    try {
+      const retryFolderPath = String(button.dataset.cgptWorkPackageFolderRetryPath || '').trim();
+      if (retryFolderPath) {
+        setWorkPackageButtonState(button, 'opening-folder');
+        let openResult = null;
         try {
-          const fallbackUrl = `${WORK_PACKAGE_PROTOCOL_URL}?target=library&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}`;
-          openWorkPackageProtocol(fallbackUrl);
-          await pollWorkPackageResult(button, batchId, expectedImages, imageElements);
+          openResult = await APP_HOOKS.openFolder?.(retryFolderPath);
+        } catch (error) {
+          openResult = { ok: false, error: error?.message || String(error) };
+        }
+        if (openResult === true || openResult?.ok === true) {
+          delete button.dataset.cgptWorkPackageFolderRetryPath;
+          const folder = retryFolderPath.split(/[\\/]/).filter(Boolean).pop() || retryFolderPath;
+          setWorkPackageButtonState(button, 'done', {
+            total: Number(button.dataset.cgptImageTotal || 0),
+            folder,
+          });
+          showImageDownloadToast(`已打开成品文件夹：${folder}`, true);
+        } else {
+          const error = String(openResult?.error || '资源管理器没有确认启动');
+          setWorkPackageButtonState(button, 'folder-failed', { error });
+          showImageDownloadToast(`作品已经打包，但打开文件夹失败：${error}`, false);
+        }
+        return;
+      }
+
+      const imageButtonCheck = button.__cgptPackageImageButton
+        || button.parentElement?.querySelector('.' + IMAGE_DOWNLOAD_CLASS);
+      // 趁点击手势还在，先读剪贴板（后面可能弹确认框）
+      const clipboardInfo = await readClipboardTextSafe();
+      const previousRecord = findDownloadedGroup(imageButtonCheck?.__cgptImageElements || []);
+      let allowDuplicate = false;
+      if (previousRecord) {
+        const typeDesc = previousRecord.status === 'packaged' ? '打包入库过' : '下载过';
+        const titleDesc = previousRecord.title ? `《${previousRecord.title}》` : '本作品';
+        const timeStr = previousRecord.time ? new Date(previousRecord.time).toLocaleString('zh-CN', { hour12: false }) : '';
+        const confirmed = await confirmWorkPackageRedownloadDialog(titleDesc, timeStr, typeDesc);
+        if (!confirmed) {
+          showImageDownloadToast('已取消操作，保持原状', false);
+          setWorkPackageButtonState(button, previousRecord.status === 'packaged' ? 'already-packaged' : 'idle', {
+            total: previousRecord.count || 0,
+            folder: previousRecord.packageFolder || '',
+          });
           return;
-        } catch (_) {
-          setWorkPackageButtonState(button, 'failed', { error });
-          showImageDownloadToast(`打包失败：${error}；请检查 C 盘暂存区和成品库后再重试`, false);
+        }
+        allowDuplicate = true;
+        showImageDownloadToast('已确认，正在重新下载...', true);
+      }
+      const useWorkbenchPackageHook = typeof APP_HOOKS.runWorkPackage === 'function';
+      if (!useWorkbenchPackageHook) {
+        // standalone userscript retains the File System Access / protocol path
+        fsSinkCapturePickerNow();
+        if (!await ensureWorkPackageHelperReady()) {
+          setWorkPackageButtonState(button, 'idle');
           return;
         }
       }
+      const slot = button.closest(`.${IMAGE_DOWNLOAD_SLOT_CLASS}`);
+      const imageButton = button.__cgptPackageImageButton
+        || slot?.querySelector(`.${IMAGE_DOWNLOAD_CLASS}`)
+        || imageButtonCheck;
 
-      const packagePath = String(result.packagePath || '').trim();
-      const packageFolder = packagePath.split(/[\\/]/).filter(Boolean).pop() || '';
-      if (result.duplicate) {
+      let imageElements = imageButton?.__cgptImageElements || button.__cgptPackageImageElements || [];
+      let imagesToDownload = imageButton ? collectDirectDownloadImages(imageButton).images : imageElements;
+      // The live image set wins over a stale per-button count left by a previous render.
+      let expectedImages = countUniqueDirectDownloadImages(imagesToDownload);
+      // v1.22.19 防空跑：按钮计件为 0 时先现场重扫一轮 Turn；仍为 0 则直接中止，绝不生成空任务/调用本地协议
+      if (!expectedImages) {
+        const container = imageButton?.__cgptImageDownloadContainer
+          || imageButton?.closest('[data-cgpt-image-download-container]')
+          || imageTurnContainer(button);
+        const recount = [
+          ...contentImageElements(container),
+          ...broadImageElements(container, 24),
+          ...(container ? [...container.querySelectorAll('[data-testid="generated-image-gallery"] img, div[class*="generated-image"] img, button[data-testid="generated-image-preview"] img')] : []),
+        ].filter((img) => {
+          const src = img?.currentSrc || img?.src || '';
+          return img?.isConnected && Boolean(src) && !/^data:image\/svg/i.test(src);
+        });
+        imagesToDownload = recount;
+        imageElements = imageButton?.__cgptImageElements || recount;
+        expectedImages = countUniqueDirectDownloadImages(recount)
+          || uniqueImageUrls(recount).length
+          || recount.length
+          || 0;
+      }
+      if (!expectedImages) {
+        setWorkPackageButtonState(button, 'idle');
+        showImageDownloadToast('本轮未识别到图片（可能尚未生成完或未加载），已取消打包', false);
+        return;
+      }
+      if (imageButton) imageButton.dataset.cgptImageTotal = String(expectedImages);
+      if (!imageButton) {
+        setWorkPackageButtonState(button, 'failed', { error: '找不到与本组图片绑定的下载按钮' });
+        showImageDownloadToast('没有找到与本组图片绑定的下载按钮，未开始打包', false);
+        return;
+      }
+      // 1. 文案：优先用户已复制的文案（剪贴板），其次页面上真正的「纯文本」文案卡片；
+      //    都没有（或还是上一条旧文案）就弹窗让用户确认，确认后才不带文案下载。
+      const pairedCandidate = pairedTextCardCopyText(button) || '';
+      const resolvedCopy = resolveCopyTextForDownload(clipboardInfo, pairedCandidate, imagesToDownload);
+      let noCopyText = false;
+      let clipboardPermissionDenied = false;
+      let copyText = resolvedCopy.text;
+      if (!copyText) {
+        const goOn = await confirmMissingCopyText(resolvedCopy.reason, 'library');
+        if (!goOn) {
+          setWorkPackageButtonState(
+            button,
+            previousRecord?.status === 'packaged' ? 'already-packaged' : 'idle',
+            { total: expectedImages, folder: previousRecord?.packageFolder || '' }
+          );
+          showImageDownloadToast('已取消下载，请先复制文案再点「下载到成品库」', false);
+          return;
+        }
+        clipboardPermissionDenied = Boolean(resolvedCopy.clipboardDenied);
+        noCopyText = true;
+        const fallbackConvTitle = currentWorkPackageConversationTitle() || '手动制作作品';
+        copyText = `${fallbackConvTitle}\n\n（本组共 ${expectedImages} 张作品图，未复制文案，正文待补充）`;
+      }
+      // 每次触发「下载到成品库」都分配全新 batchId，杜绝重试时撞上 Chrome 的 (1) 重名或读到旧 task/result 回执
+      const batchId = newDownloadBatchId();
+      imageButton.dataset.cgptImageDownloaded = '0';
+      imageButton.dataset.cgptWorkPackageBatchId = batchId;
+      setWorkPackageButtonState(button, 'preparing');
+
+      // 3. 独立浏览器模式下，趁用户点击手势（User Activation）活跃时，
+      //    立即写出 task.json 并拉起 cgpt-workpkg://run！本地打包器会轮询等待图片全部落盘。
+      let protocolPreLaunched = false;
+      const freezeOptions = {
+        persist: !useWorkbenchPackageHook,
+        skipDelay: !useWorkbenchPackageHook,
+        allowDuplicate,
+        noCopyText,
+        clipboardPermissionDenied,
+      };
+      let frozenTask = await freezeWorkPackageTask(batchId, expectedImages, copyText, freezeOptions);
+      if (!frozenTask) {
+        const fallbackConvTitle = currentWorkPackageConversationTitle() || '手动制作作品';
+        frozenTask = await freezeWorkPackageTask(batchId, expectedImages, `${fallbackConvTitle}\n`, { ...freezeOptions, noCopyText: true });
+      }
+      if (frozenTask && !noCopyText) rememberUsedCopyText(copyText, imagesToDownload);
+      const forceParam = allowDuplicate ? '&force=1' : '';
+      if (!useWorkbenchPackageHook && frozenTask) {
+        try {
+          const earlyProtocolUrl = `${WORK_PACKAGE_PROTOCOL_URL}?target=manual&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}${forceParam}`;
+          openWorkPackageProtocol(earlyProtocolUrl);
+          protocolPreLaunched = true;
+          addDiagnosticLog('workpkg:protocol-prelaunched-with-gesture', { batchId, expectedImages });
+          await sleep(120);
+        } catch (err) {
+          console.warn('[ChatGPT 作品包按钮] 预唤醒本地协议异常：', err);
+        }
+      }
+
+      let usedHostSave = false;
+      if (imageButton && expectedImages > 0) {
+        showImageDownloadToast(`正在下载全部图片：0/${expectedImages}（本地打包器已就绪等待）`, true);
+        setWorkPackageButtonState(button, 'downloading', { current: 0, total: expectedImages });
+        const downloadResult = await runImageDownloadShortcut(imageButton, batchId, (current, total) => {
+          setWorkPackageButtonState(button, 'downloading', { current, total });
+        });
+        if (!downloadResult || !downloadResult.downloaded) {
+          showImageDownloadToast('图片未能提交下载，请稍后重试', false);
+          setWorkPackageButtonState(button, 'idle');
+          return;
+        }
+        usedHostSave = Boolean(downloadResult.usedHostSave);
+        expectedImages = Math.max(0, Number(downloadResult.total || expectedImages));
+        imageButton.dataset.cgptImageTotal = String(expectedImages);
+        imageElements = imageButton.__cgptImageElements || imageElements;
+        frozenTask.expectedImages = expectedImages;
+        await sleep(250);
+      }
+
+      showImageDownloadToast(`图片已派发（${expectedImages} 张），正在 C 盘组装作品包并移入 D 盘成品库…`, true);
+      setWorkPackageButtonState(button, 'archiving', { stageText: '正在打包入库' });
+
+      if (useWorkbenchPackageHook && usedHostSave) {
+        let result = null;
+        try {
+          result = await APP_HOOKS.runWorkPackage({
+            batchId,
+            taskId: batchId,
+            expectedImageCount: expectedImages,
+            clipboardText: frozenTask.copyText,
+            title: frozenTask.copyTitle,
+            conversationTitle: frozenTask.conversationTitle,
+            accountName: frozenTask.accountName,
+            conversationUrl: frozenTask.conversationUrl,
+            allowDuplicate,
+            noCopyText,
+            clipboardPermissionDenied,
+            downloadRoot: typeof APP_HOOKS.getDownloadRoot === 'function'
+              ? String(APP_HOOKS.getDownloadRoot() || '')
+              : '',
+          });
+        } catch (error) {
+          result = { ok: false, error: error?.message || String(error) };
+        }
+        if (!result?.ok) {
+          const error = String(result?.error || '本地打包服务未连接');
+          console.warn('[ChatGPT 作品包按钮] 宿主接口未完成，自动降级走本地 cgpt-workpkg:// 协议：', error);
+          addDiagnosticLog('workpkg:host-package-fallback-protocol', { batchId, expectedImages, error });
+          await freezeWorkPackageTask(batchId, expectedImages, frozenTask.copyText, {
+            persist: true,
+            allowDuplicate,
+            noCopyText,
+            clipboardPermissionDenied,
+          });
+          try {
+            const fallbackUrl = `${WORK_PACKAGE_PROTOCOL_URL}?target=manual&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}${forceParam}`;
+            openWorkPackageProtocol(fallbackUrl);
+            await pollWorkPackageResult(button, batchId, expectedImages, imageElements);
+            return;
+          } catch (_) {
+            setWorkPackageButtonState(button, 'failed', { error });
+            showImageDownloadToast(`打包失败：${error}；请检查 C 盘暂存区和成品库后再重试`, false);
+            return;
+          }
+        }
+
+        const packagePath = String(result.packagePath || '').trim();
+        const packageFolder = packagePath.split(/[\\/]/).filter(Boolean).pop() || '';
+        if (result.duplicate) {
+          markImageGroupDownloaded(imageElements, {
+            title: frozenTask.copyTitle || '',
+            count: expectedImages,
+            batchId,
+            packaged: true,
+            packageFolder,
+            packagePath,
+          });
+          if (packagePath && result.folderOpened !== true) {
+            button.dataset.cgptWorkPackageFolderRetryPath = packagePath;
+            setWorkPackageButtonState(button, 'folder-failed', {
+              error: String(result.openFolderError || '资源管理器没有确认启动'),
+            });
+            showImageDownloadToast(`检测到重复作品，已找到原成品包但未确认打开：${packagePath}。点击按钮重试`, false);
+            return;
+          }
+          setWorkPackageButtonState(button, 'duplicate');
+          showImageDownloadToast(packagePath
+            ? '检测到重复作品，已清理本批图片并打开已有成品文件夹'
+            : '检测到重复作品，已清理本批重复图片', false);
+          return;
+        }
+
+        if (!packagePath) {
+          const error = '打包服务没有返回成品目录路径';
+          setWorkPackageButtonState(button, 'failed', { error });
+          showImageDownloadToast(`打包结果未确认：${error}；请检查 C 盘暂存区和成品库`, false);
+          return;
+        }
+        const actualImageCount = Number(result.imageCount || 0);
+        if (actualImageCount < expectedImages) {
+          const error = `成品图片核对失败：${actualImageCount}/${expectedImages}`;
+          setWorkPackageButtonState(button, 'failed', { error });
+          showImageDownloadToast(`打包未通过核对：${error}；请检查成品目录和 C 盘暂存区`, false);
+          return;
+        }
         markImageGroupDownloaded(imageElements, {
           title: frozenTask.copyTitle || '',
-          count: expectedImages,
+          count: actualImageCount,
           batchId,
           packaged: true,
           packageFolder,
           packagePath,
         });
-        if (packagePath && result.folderOpened !== true) {
+        if (result.folderOpened !== true) {
           button.dataset.cgptWorkPackageFolderRetryPath = packagePath;
           setWorkPackageButtonState(button, 'folder-failed', {
             error: String(result.openFolderError || '资源管理器没有确认启动'),
           });
-          showImageDownloadToast(`检测到重复作品，已找到原成品包但未确认打开：${packagePath}。点击按钮重试`, false);
+          showImageDownloadToast(`已打包到成品库，但没有确认打开文件夹：${packagePath}。点击按钮重试打开`, false);
+          addDiagnosticLog('workpkg:host-package-folder-open-failed', { batchId, packagePath, error: result.openFolderError || '' });
           return;
         }
-        setWorkPackageButtonState(button, 'duplicate');
-        showImageDownloadToast(packagePath
-          ? '检测到重复作品，已清理本批图片并打开已有成品文件夹'
-          : '检测到重复作品，已清理本批重复图片', false);
+        setWorkPackageButtonState(button, 'done', { total: actualImageCount, folder: packageFolder });
+        showImageDownloadToast(`已保存并打开：成品库\\${packageFolder}`, true);
+        addDiagnosticLog('workpkg:host-package-completed', { batchId, expectedImages, imageCount: actualImageCount, packagePath });
         return;
       }
 
-      if (!packagePath) {
-        const error = '打包服务没有返回成品目录路径';
-        setWorkPackageButtonState(button, 'failed', { error });
-        showImageDownloadToast(`打包结果未确认：${error}；请检查 C 盘暂存区和成品库`, false);
-        return;
-      }
-      const actualImageCount = Number(result.imageCount || 0);
-      if (actualImageCount < expectedImages) {
-        const error = `成品图片核对失败：${actualImageCount}/${expectedImages}`;
-        setWorkPackageButtonState(button, 'failed', { error });
-        showImageDownloadToast(`打包未通过核对：${error}；请检查成品目录和 C 盘暂存区`, false);
-        return;
-      }
-      markImageGroupDownloaded(imageElements, {
-        title: frozenTask.copyTitle || '',
-        count: actualImageCount,
-        batchId,
-        packaged: true,
-        packageFolder,
-        packagePath,
-      });
-      if (result.folderOpened !== true) {
-        button.dataset.cgptWorkPackageFolderRetryPath = packagePath;
-        setWorkPackageButtonState(button, 'folder-failed', {
-          error: String(result.openFolderError || '资源管理器没有确认启动'),
+      if (useWorkbenchPackageHook && !usedHostSave) {
+        addDiagnosticLog('workpkg:host-save-bypassed-use-protocol', { batchId, expectedImages });
+        await freezeWorkPackageTask(batchId, expectedImages, frozenTask.copyText, {
+          persist: true,
+          allowDuplicate,
+          noCopyText,
+          clipboardPermissionDenied,
         });
-        showImageDownloadToast(`已打包到成品库，但没有确认打开文件夹：${packagePath}。点击按钮重试打开`, false);
-        addDiagnosticLog('workpkg:host-package-folder-open-failed', { batchId, packagePath, error: result.openFolderError || '' });
-        return;
       }
-      setWorkPackageButtonState(button, 'done', { total: actualImageCount, folder: packageFolder });
-      showImageDownloadToast(`已保存并打开：成品库\\${packageFolder}`, true);
-      addDiagnosticLog('workpkg:host-package-completed', { batchId, expectedImages, imageCount: actualImageCount, packagePath });
-      return;
-    }
 
-    if (useWorkbenchPackageHook && !usedHostSave) {
-      addDiagnosticLog('workpkg:host-save-bypassed-use-protocol', { batchId, expectedImages });
-      await freezeWorkPackageTask(batchId, expectedImages, frozenTask.copyText, { persist: true });
-    }
-
-    if (!protocolPreLaunched) {
-      try {
-        const protocolUrl = `${WORK_PACKAGE_PROTOCOL_URL}?target=library&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}`;
-        openWorkPackageProtocol(protocolUrl);
-      } catch (error) {
-        console.warn('[ChatGPT 作品包按钮] 调用本地协议失败：', error);
-        showImageDownloadToast('调用本地作品包协议失败，请检查安装状态', false);
-        setWorkPackageButtonState(button, 'idle');
-        return;
+      if (!protocolPreLaunched) {
+        try {
+          const protocolUrl = `${WORK_PACKAGE_PROTOCOL_URL}?target=manual&batch=${encodeURIComponent(batchId)}&expected=${encodeURIComponent(expectedImages)}${forceParam}`;
+          openWorkPackageProtocol(protocolUrl);
+        } catch (error) {
+          console.warn('[ChatGPT 作品包按钮] 调用本地协议失败：', error);
+          showImageDownloadToast('调用本地作品包协议失败，请检查安装状态', false);
+          setWorkPackageButtonState(button, 'idle');
+          return;
+        }
       }
+      // v1.22.50 真回执：轮询本地脚本写回 Downloads 的 result ack，按真实状态驱动按钮文案
+      await pollWorkPackageResult(button, batchId, expectedImages, imageElements);
+    } finally {
+      delete button.dataset.cgptClickLock;
     }
-    // v1.22.50 真回执：轮询本地脚本写回 Downloads 的 result ack，按真实状态驱动按钮文案
-    await pollWorkPackageResult(button, batchId, expectedImages, imageElements);
   }
 
   // v1.22.50 轮询本地打包回执，把「等图→查重→归档→完成/重复/近似/失败」真实反映到按钮
@@ -4875,7 +5064,10 @@ function imageUrlForDirectDownload(img) {
       return null;
     }
     const textCardToolbar = isTextCardActionToolbar(actionRow);
-    const pairedText = textCardToolbar ? null : nextAssistantTextCardForNode(actionRow);
+    const pairedRaw = textCardToolbar ? null : nextAssistantTextCardForNode(actionRow);
+    const pairedText = (pairedRaw && pairedRaw.card && pairedRaw.card !== pairedRaw.message && isLikelyWorkPackageCopyText(pairedRaw.copyText))
+      ? pairedRaw
+      : null;
 
     container?.setAttribute?.('data-cgpt-image-download-container', 'true');
 
